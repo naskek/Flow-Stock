@@ -29,6 +29,7 @@ public partial class MainWindow : Window
         StockGrid.ItemsSource = _stock;
 
         LoadAll();
+        UpdateDocView();
     }
 
     private void LoadAll()
@@ -82,6 +83,19 @@ public partial class MainWindow : Window
         {
             _stock.Add(row);
         }
+
+        UpdateStockEmptyState(search);
+    }
+
+    private void UpdateStockEmptyState(string? search)
+    {
+        if (string.IsNullOrWhiteSpace(search) && _stock.Count == 0)
+        {
+            StockEmptyText.Visibility = Visibility.Visible;
+            return;
+        }
+
+        StockEmptyText.Visibility = Visibility.Collapsed;
     }
 
     private void StatusSearch_Click(object sender, RoutedEventArgs e)
@@ -91,8 +105,7 @@ public partial class MainWindow : Window
 
     private void StatusRefresh_Click(object sender, RoutedEventArgs e)
     {
-        StatusSearchBox.Text = string.Empty;
-        LoadStock(null);
+        LoadStock(StatusSearchBox.Text);
     }
 
     private void DocsRefresh_Click(object sender, RoutedEventArgs e)
@@ -109,7 +122,7 @@ public partial class MainWindow : Window
         }
 
         _selectedDoc = doc;
-        DocInfoText.Text = $"{doc.DocRef} | {DocTypeMapper.ToOpString(doc.Type)} | {DocTypeMapper.StatusToString(doc.Status)}";
+        UpdateDocView();
         LoadDocLines(doc.Id);
         MainTabs.SelectedIndex = 2;
     }
@@ -133,17 +146,27 @@ public partial class MainWindow : Window
         LoadStock(StatusSearchBox.Text);
 
         var refreshed = _docs.FirstOrDefault(d => d.Id == _selectedDoc.Id);
-        if (refreshed != null)
-        {
-            _selectedDoc = refreshed;
-            DocInfoText.Text = $"{refreshed.DocRef} | {DocTypeMapper.ToOpString(refreshed.Type)} | {DocTypeMapper.StatusToString(refreshed.Status)}";
-        }
+        _selectedDoc = refreshed;
+        UpdateDocView();
 
-        LoadDocLines(_selectedDoc.Id);
+        if (_selectedDoc != null)
+        {
+            LoadDocLines(_selectedDoc.Id);
+        }
+        else
+        {
+            _docLines.Clear();
+        }
     }
 
     private void AddItem_Click(object sender, RoutedEventArgs e)
     {
+        if (string.IsNullOrWhiteSpace(ItemNameBox.Text))
+        {
+            MessageBox.Show("Введите имя товара.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         try
         {
             _services.Catalog.CreateItem(ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, ItemUomBox.Text);
@@ -165,6 +188,12 @@ public partial class MainWindow : Window
 
     private void AddLocation_Click(object sender, RoutedEventArgs e)
     {
+        if (string.IsNullOrWhiteSpace(LocationCodeBox.Text) || string.IsNullOrWhiteSpace(LocationNameBox.Text))
+        {
+            MessageBox.Show("Введите код и имя локации.", "Локации", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         try
         {
             _services.Catalog.CreateLocation(LocationCodeBox.Text, LocationNameBox.Text);
@@ -205,7 +234,7 @@ public partial class MainWindow : Window
         }
 
         var result = _services.Import.ImportJsonl(path);
-        ImportStatsText.Text = $"Статистика: imported={result.Imported}, duplicates={result.Duplicates}, errors={result.Errors}";
+        ImportStatsText.Text = $"Статистика: импортировано={result.Imported}, дубли={result.Duplicates}, ошибки={result.Errors}";
 
         LoadDocs();
     }
@@ -219,5 +248,29 @@ public partial class MainWindow : Window
         });
         window.Owner = this;
         window.ShowDialog();
+    }
+
+    private void UpdateDocView()
+    {
+        if (_selectedDoc == null)
+        {
+            DocInfoText.Text = string.Empty;
+            DocCloseButton.IsEnabled = false;
+            DocLinesGrid.Visibility = Visibility.Collapsed;
+            DocEmptyText.Visibility = Visibility.Visible;
+            return;
+        }
+
+        DocInfoText.Text = FormatDocHeader(_selectedDoc);
+        DocCloseButton.IsEnabled = _selectedDoc.Status != DocStatus.Closed;
+        DocLinesGrid.Visibility = Visibility.Visible;
+        DocEmptyText.Visibility = Visibility.Collapsed;
+    }
+
+    private static string FormatDocHeader(Doc doc)
+    {
+        var createdAt = doc.CreatedAt.ToString("g");
+        var closedAt = doc.ClosedAt.HasValue ? doc.ClosedAt.Value.ToString("g") : "—";
+        return $"Ref: {doc.DocRef} | Type: {DocTypeMapper.ToOpString(doc.Type)} | Status: {DocTypeMapper.StatusToString(doc.Status)} | CreatedAt: {createdAt} | ClosedAt: {closedAt}";
     }
 }
