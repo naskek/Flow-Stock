@@ -1,0 +1,65 @@
+<Window x:Class="LightWms.App.OperationDetailsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Операция"
+        Height="640" Width="1050"
+        PreviewKeyDown="OperationDetailsWindow_PreviewKeyDown">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Margin="0,0,0,8">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="Операция:" FontWeight="Bold" VerticalAlignment="Center" />
+                <TextBlock x:Name="DocInfoText" Margin="8,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
+                <Button x:Name="DocCloseButton" Content="Закрыть операцию" Click="DocClose_Click" Margin="16,0,0,0" />
+            </StackPanel>
+            <StackPanel x:Name="DocHeaderPanel" Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Контрагент" VerticalAlignment="Center" />
+                <ComboBox x:Name="DocPartnerCombo" Width="220" Margin="6,0,12,0" DisplayMemberPath="DisplayName" />
+                <TextBlock Text="Заказ" VerticalAlignment="Center" />
+                <TextBox x:Name="DocOrderRefBox" Width="160" Margin="6,0,12,0" />
+                <TextBlock Text="Отгрузка" VerticalAlignment="Center" />
+                <TextBox x:Name="DocShippingRefBox" Width="160" Margin="6,0,12,0" />
+                <Button x:Name="DocHeaderSaveButton" Content="Сохранить" Click="DocHeaderSave_Click" Margin="8,0,0,0" />
+            </StackPanel>
+        </StackPanel>
+        <GroupBox x:Name="DocEditGroup" Grid.Row="1" Header="Редактирование (DRAFT)" Margin="0,0,0,8">
+            <StackPanel Margin="8">
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <TextBlock Text="Штрихкод" VerticalAlignment="Center" />
+                    <TextBox x:Name="DocBarcodeBox" Width="160" Margin="6,0,12,0"
+                             KeyDown="DocBarcodeBox_KeyDown" />
+                    <TextBlock Text="Товар" VerticalAlignment="Center" />
+                    <ComboBox x:Name="DocItemCombo" Width="200" Margin="6,0,12,0" DisplayMemberPath="Name" />
+                    <TextBlock Text="Кол-во" VerticalAlignment="Center" />
+                    <TextBox x:Name="DocItemQtyBox" Width="90" Margin="6,0,12,0" />
+                    <TextBlock x:Name="DocFromLabel" Text="Откуда" VerticalAlignment="Center" />
+                    <ComboBox x:Name="DocFromCombo" Width="120" Margin="6,0,12,0" DisplayMemberPath="Code" />
+                    <TextBlock x:Name="DocToLabel" Text="Куда" VerticalAlignment="Center" />
+                    <ComboBox x:Name="DocToCombo" Width="120" Margin="6,0,12,0" DisplayMemberPath="Code" />
+                    <Button Content="Добавить" Click="DocAddLine_Click" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Кол-во (выделенная строка)" VerticalAlignment="Center" />
+                    <TextBox x:Name="DocLineQtyBox" Width="100" Margin="6,0,12,0" />
+                    <Button Content="Сохранить" Click="DocUpdateLine_Click" />
+                    <Button Content="Удалить" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
+                </StackPanel>
+            </StackPanel>
+        </GroupBox>
+        <DataGrid x:Name="DocLinesGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
+                  SelectionChanged="DocLines_SelectionChanged"
+                  KeyDown="DocLinesGrid_KeyDown">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
+                <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="160" />
+                <DataGridTextColumn Header="Кол-во" Binding="{Binding Qty}" Width="100" />
+                <DataGridTextColumn Header="Откуда" Binding="{Binding FromLocation}" Width="140" />
+                <DataGridTextColumn Header="Куда" Binding="{Binding ToLocation}" Width="140" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+</Window>
