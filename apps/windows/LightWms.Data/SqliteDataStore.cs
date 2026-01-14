@@ -200,12 +200,73 @@ SELECT last_insert_rowid();
         });
     }
 
+    public void UpdateItem(Item item)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE items
+SET name = @name,
+    barcode = @barcode,
+    gtin = @gtin,
+    uom = @uom
+WHERE id = @id;
+");
+            command.Parameters.AddWithValue("@name", item.Name);
+            command.Parameters.AddWithValue("@barcode", (object?)item.Barcode ?? DBNull.Value);
+            command.Parameters.AddWithValue("@gtin", (object?)item.Gtin ?? DBNull.Value);
+            command.Parameters.AddWithValue("@uom", (object?)item.Uom ?? DBNull.Value);
+            command.Parameters.AddWithValue("@id", item.Id);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void DeleteItem(long itemId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM items WHERE id = @id");
+            command.Parameters.AddWithValue("@id", itemId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public bool IsItemUsed(long itemId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT 1 FROM doc_lines WHERE item_id = @id LIMIT 1");
+            command.Parameters.AddWithValue("@id", itemId);
+            if (command.ExecuteScalar() != null)
+            {
+                return true;
+            }
+
+            using var ledgerCommand = CreateCommand(connection, "SELECT 1 FROM ledger WHERE item_id = @id LIMIT 1");
+            ledgerCommand.Parameters.AddWithValue("@id", itemId);
+            return ledgerCommand.ExecuteScalar() != null;
+        });
+    }
+
     public Location? FindLocationByCode(string code)
     {
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, "SELECT id, code, name FROM locations WHERE code = @code");
             command.Parameters.AddWithValue("@code", code);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadLocation(reader) : null;
+        });
+    }
+
+    public Location? FindLocationById(long id)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT id, code, name FROM locations WHERE id = @id");
+            command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadLocation(reader) : null;
         });
@@ -239,6 +300,57 @@ SELECT last_insert_rowid();
             command.Parameters.AddWithValue("@code", location.Code);
             command.Parameters.AddWithValue("@name", location.Name);
             return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateLocation(Location location)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE locations
+SET code = @code,
+    name = @name
+WHERE id = @id;
+");
+            command.Parameters.AddWithValue("@code", location.Code);
+            command.Parameters.AddWithValue("@name", location.Name);
+            command.Parameters.AddWithValue("@id", location.Id);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void DeleteLocation(long locationId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM locations WHERE id = @id");
+            command.Parameters.AddWithValue("@id", locationId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public bool IsLocationUsed(long locationId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT 1
+FROM doc_lines
+WHERE from_location_id = @id OR to_location_id = @id
+LIMIT 1;
+");
+            command.Parameters.AddWithValue("@id", locationId);
+            if (command.ExecuteScalar() != null)
+            {
+                return true;
+            }
+
+            using var ledgerCommand = CreateCommand(connection, "SELECT 1 FROM ledger WHERE location_id = @id LIMIT 1");
+            ledgerCommand.Parameters.AddWithValue("@id", locationId);
+            return ledgerCommand.ExecuteScalar() != null;
         });
     }
 
@@ -312,6 +424,45 @@ SELECT last_insert_rowid();
             command.Parameters.AddWithValue("@code", (object?)partner.Code ?? DBNull.Value);
             command.Parameters.AddWithValue("@created_at", ToDbDate(partner.CreatedAt));
             return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdatePartner(Partner partner)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE partners
+SET name = @name,
+    code = @code
+WHERE id = @id;
+");
+            command.Parameters.AddWithValue("@name", partner.Name);
+            command.Parameters.AddWithValue("@code", (object?)partner.Code ?? DBNull.Value);
+            command.Parameters.AddWithValue("@id", partner.Id);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void DeletePartner(long partnerId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM partners WHERE id = @id");
+            command.Parameters.AddWithValue("@id", partnerId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public bool IsPartnerUsed(long partnerId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT 1 FROM docs WHERE partner_id = @id LIMIT 1");
+            command.Parameters.AddWithValue("@id", partnerId);
+            return command.ExecuteScalar() != null;
         });
     }
 

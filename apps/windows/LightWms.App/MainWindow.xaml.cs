@@ -22,6 +22,9 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<StockRow> _stock = new();
     private Doc? _selectedDoc;
     private DocLineView? _selectedDocLine;
+    private Item? _selectedItem;
+    private Location? _selectedLocation;
+    private Partner? _selectedPartner;
     private const int TabStatusIndex = 0;
     private const int TabDocsIndex = 1;
     private const int TabDocIndex = 2;
@@ -47,6 +50,9 @@ public partial class MainWindow : Window
         DocPartnerCombo.ItemsSource = _partners;
 
         LoadAll();
+        ClearItemForm();
+        ClearLocationForm();
+        ClearPartnerForm();
         UpdateDocView();
     }
 
@@ -300,11 +306,8 @@ public partial class MainWindow : Window
         {
             var uom = (ItemUomCombo.SelectedItem as Uom)?.Name;
             _services.Catalog.CreateItem(ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, uom);
-            ItemNameBox.Text = string.Empty;
-            ItemBarcodeBox.Text = string.Empty;
-            ItemGtinBox.Text = string.Empty;
-            ItemUomCombo.SelectedItem = null;
             LoadItems();
+            ClearItemForm();
         }
         catch (ArgumentException ex)
         {
@@ -327,9 +330,8 @@ public partial class MainWindow : Window
         try
         {
             _services.Catalog.CreateLocation(LocationCodeBox.Text, LocationNameBox.Text);
-            LocationCodeBox.Text = string.Empty;
-            LocationNameBox.Text = string.Empty;
             LoadLocations();
+            ClearLocationForm();
         }
         catch (ArgumentException ex)
         {
@@ -352,13 +354,207 @@ public partial class MainWindow : Window
         try
         {
             _services.Catalog.CreatePartner(PartnerNameBox.Text, PartnerCodeBox.Text);
-            PartnerNameBox.Text = string.Empty;
-            PartnerCodeBox.Text = string.Empty;
             LoadPartners();
+            ClearPartnerForm();
         }
         catch (ArgumentException ex)
         {
             MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ItemsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        _selectedItem = ItemsGrid.SelectedItem as Item;
+        ItemSaveButton.IsEnabled = _selectedItem != null;
+        ItemDeleteButton.IsEnabled = _selectedItem != null;
+        if (_selectedItem == null)
+        {
+            return;
+        }
+
+        ItemNameBox.Text = _selectedItem.Name;
+        ItemBarcodeBox.Text = _selectedItem.Barcode ?? string.Empty;
+        ItemGtinBox.Text = _selectedItem.Gtin ?? string.Empty;
+        ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _selectedItem.Uom, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void UpdateItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedItem == null)
+        {
+            MessageBox.Show("Выберите товар.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            var uom = (ItemUomCombo.SelectedItem as Uom)?.Name;
+            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, uom);
+            LoadItems();
+            ClearItemForm();
+        }
+        catch (ArgumentException ex)
+        {
+            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void DeleteItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedItem == null)
+        {
+            MessageBox.Show("Выберите товар.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var confirm = MessageBox.Show("Удалить выбранный товар?", "Товары", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Catalog.DeleteItem(_selectedItem.Id);
+            LoadItems();
+            ClearItemForm();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void LocationsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        _selectedLocation = LocationsGrid.SelectedItem as Location;
+        LocationSaveButton.IsEnabled = _selectedLocation != null;
+        LocationDeleteButton.IsEnabled = _selectedLocation != null;
+        if (_selectedLocation == null)
+        {
+            return;
+        }
+
+        LocationCodeBox.Text = _selectedLocation.Code;
+        LocationNameBox.Text = _selectedLocation.Name;
+    }
+
+    private void UpdateLocation_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedLocation == null)
+        {
+            MessageBox.Show("Выберите место хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            _services.Catalog.UpdateLocation(_selectedLocation.Id, LocationCodeBox.Text, LocationNameBox.Text);
+            LoadLocations();
+            ClearLocationForm();
+        }
+        catch (ArgumentException ex)
+        {
+            MessageBox.Show(ex.Message, "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Места хранения", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void DeleteLocation_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedLocation == null)
+        {
+            MessageBox.Show("Выберите место хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var confirm = MessageBox.Show("Удалить выбранное место хранения?", "Места хранения", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Catalog.DeleteLocation(_selectedLocation.Id);
+            LoadLocations();
+            ClearLocationForm();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Места хранения", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void PartnersGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        _selectedPartner = PartnersGrid.SelectedItem as Partner;
+        PartnerSaveButton.IsEnabled = _selectedPartner != null;
+        PartnerDeleteButton.IsEnabled = _selectedPartner != null;
+        if (_selectedPartner == null)
+        {
+            return;
+        }
+
+        PartnerNameBox.Text = _selectedPartner.Name;
+        PartnerCodeBox.Text = _selectedPartner.Code ?? string.Empty;
+    }
+
+    private void UpdatePartner_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedPartner == null)
+        {
+            MessageBox.Show("Выберите контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            _services.Catalog.UpdatePartner(_selectedPartner.Id, PartnerNameBox.Text, PartnerCodeBox.Text);
+            LoadPartners();
+            ClearPartnerForm();
+        }
+        catch (ArgumentException ex)
+        {
+            MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void DeletePartner_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedPartner == null)
+        {
+            MessageBox.Show("Выберите контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var confirm = MessageBox.Show("Удалить выбранного контрагента?", "Контрагенты", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Catalog.DeletePartner(_selectedPartner.Id);
+            LoadPartners();
+            ClearPartnerForm();
         }
         catch (Exception ex)
         {
@@ -770,6 +966,38 @@ public partial class MainWindow : Window
 
         MessageBox.Show("Выберите товар или укажите штрихкод.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
         return false;
+    }
+
+    private void ClearItemForm()
+    {
+        _selectedItem = null;
+        ItemNameBox.Text = string.Empty;
+        ItemBarcodeBox.Text = string.Empty;
+        ItemGtinBox.Text = string.Empty;
+        ItemUomCombo.SelectedItem = null;
+        ItemSaveButton.IsEnabled = false;
+        ItemDeleteButton.IsEnabled = false;
+        ItemsGrid.SelectedItem = null;
+    }
+
+    private void ClearLocationForm()
+    {
+        _selectedLocation = null;
+        LocationCodeBox.Text = string.Empty;
+        LocationNameBox.Text = string.Empty;
+        LocationSaveButton.IsEnabled = false;
+        LocationDeleteButton.IsEnabled = false;
+        LocationsGrid.SelectedItem = null;
+    }
+
+    private void ClearPartnerForm()
+    {
+        _selectedPartner = null;
+        PartnerNameBox.Text = string.Empty;
+        PartnerCodeBox.Text = string.Empty;
+        PartnerSaveButton.IsEnabled = false;
+        PartnerDeleteButton.IsEnabled = false;
+        PartnersGrid.SelectedItem = null;
     }
 
     private bool EnsureDraftDocSelected()

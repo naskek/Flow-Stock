@@ -3,12 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="LightWMS Local" Height="720" Width="1100"
         PreviewKeyDown="MainWindow_PreviewKeyDown">
-    <Grid Margin="12">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-        </Grid.RowDefinitions>
-        <Menu Grid.Row="0">
+    <DockPanel>
+        <Menu DockPanel.Dock="Top">
             <MenuItem Header="Операции">
                 <MenuItem Header="Новый документ..." InputGestureText="Ctrl+N" Click="NewDocMenu_Click" />
                 <MenuItem Header="Открыть выбранный" InputGestureText="Ctrl+O" Click="DocsOpen_Click" />
@@ -38,7 +34,8 @@
                 <MenuItem Header="Открыть папку логов" Click="OpenLogsFolder_Click" />
             </MenuItem>
         </Menu>
-        <TabControl x:Name="MainTabs" Grid.Row="1">
+        <Border Margin="12">
+            <TabControl x:Name="MainTabs">
             <TabItem Header="Остатки">
                 <Grid>
                     <Grid.RowDefinitions>
@@ -112,8 +109,8 @@
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <StackPanel Margin="0,0,0,8">
                         <StackPanel Orientation="Horizontal">
@@ -131,28 +128,7 @@
                             <Button x:Name="DocHeaderSaveButton" Content="Сохранить" Click="DocHeaderSave_Click" Margin="8,0,0,0" />
                         </StackPanel>
                     </StackPanel>
-                    <DataGrid x:Name="DocLinesGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
-                              SelectionChanged="DocLines_SelectionChanged"
-                              KeyDown="DocLinesGrid_KeyDown">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
-                            <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="160" />
-                            <DataGridTextColumn Header="Кол-во" Binding="{Binding Qty}" Width="100" />
-                            <DataGridTextColumn Header="Откуда" Binding="{Binding FromLocation}" Width="140" />
-                            <DataGridTextColumn Header="Куда" Binding="{Binding ToLocation}" Width="140" />
-                        </DataGrid.Columns>
-                    </DataGrid>
-                    <TextBlock x:Name="DocEmptyText"
-                               Grid.Row="1"
-                               Text="Откройте документ на вкладке 'Операции'"
-                               FontSize="18"
-                               FontWeight="SemiBold"
-                               Foreground="Gray"
-                               TextWrapping="Wrap"
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center"
-                               Visibility="Collapsed" />
-                    <GroupBox x:Name="DocEditGroup" Grid.Row="2" Header="Редактирование (DRAFT)" Margin="0,8,0,0">
+                    <GroupBox x:Name="DocEditGroup" Grid.Row="1" Header="Редактирование (DRAFT)" Margin="0,0,0,8">
                         <StackPanel Margin="8">
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                                 <TextBlock Text="Штрихкод" VerticalAlignment="Center" />
@@ -176,26 +152,37 @@
                             </StackPanel>
                         </StackPanel>
                     </GroupBox>
+                    <DataGrid x:Name="DocLinesGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
+                              SelectionChanged="DocLines_SelectionChanged"
+                              KeyDown="DocLinesGrid_KeyDown">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
+                            <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="160" />
+                            <DataGridTextColumn Header="Кол-во" Binding="{Binding Qty}" Width="100" />
+                            <DataGridTextColumn Header="Откуда" Binding="{Binding FromLocation}" Width="140" />
+                            <DataGridTextColumn Header="Куда" Binding="{Binding ToLocation}" Width="140" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <TextBlock x:Name="DocEmptyText"
+                               Grid.Row="2"
+                               Text="Откройте документ на вкладке 'Операции'"
+                               FontSize="18"
+                               FontWeight="SemiBold"
+                               Foreground="Gray"
+                               TextWrapping="Wrap"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Visibility="Collapsed" />
                 </Grid>
             </TabItem>
             <TabItem Header="Товары">
                 <Grid>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <DataGrid x:Name="ItemsGrid" AutoGenerateColumns="False" IsReadOnly="True">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
-                            <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="180" />
-                            <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="140" />
-                            <DataGridTextColumn Header="Ед. измерения" Binding="{Binding Uom}" Width="140" />
-                        </DataGrid.Columns>
-                    </DataGrid>
-                    <TextBlock Grid.Row="1" Margin="0,6,0,0" Foreground="Gray"
-                               Text="Подсказка: JSONL использует Штрихкод/GTIN." />
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,0">
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
                         <TextBlock Text="Наименование" VerticalAlignment="Center" />
                         <TextBox x:Name="ItemNameBox" Width="160" Margin="6,0,12,0" />
                         <TextBlock Text="Штрихкод" VerticalAlignment="Center" />
@@ -205,55 +192,75 @@
                         <TextBlock Text="Ед. измерения" VerticalAlignment="Center" />
                         <ComboBox x:Name="ItemUomCombo" Width="140" Margin="6,0,12,0" DisplayMemberPath="Name" />
                         <Button Content="Добавить" Click="AddItem_Click" />
+                        <Button x:Name="ItemSaveButton" Content="Сохранить" Click="UpdateItem_Click" Margin="8,0,0,0" />
+                        <Button x:Name="ItemDeleteButton" Content="Удалить" Click="DeleteItem_Click" Margin="8,0,0,0" />
                     </StackPanel>
+                    <TextBlock Grid.Row="1" Margin="0,0,0,8" Foreground="Gray"
+                               Text="Подсказка: JSONL использует Штрихкод/GTIN." />
+                    <DataGrid x:Name="ItemsGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
+                              SelectionChanged="ItemsGrid_SelectionChanged">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
+                            <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="180" />
+                            <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="140" />
+                            <DataGridTextColumn Header="Ед. измерения" Binding="{Binding Uom}" Width="140" />
+                        </DataGrid.Columns>
+                    </DataGrid>
                 </Grid>
             </TabItem>
             <TabItem Header="Места хранения">
                 <Grid>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <DataGrid x:Name="LocationsGrid" AutoGenerateColumns="False" IsReadOnly="True">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Код" Binding="{Binding Code}" Width="160" />
-                            <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
-                        </DataGrid.Columns>
-                    </DataGrid>
-                    <TextBlock Grid.Row="1" Margin="0,6,0,0" Foreground="Gray"
-                               Text="Подсказка: JSONL использует код места хранения." />
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,0">
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
                         <TextBlock Text="Код" VerticalAlignment="Center" />
                         <TextBox x:Name="LocationCodeBox" Width="140" Margin="6,0,12,0" />
                         <TextBlock Text="Наименование" VerticalAlignment="Center" />
                         <TextBox x:Name="LocationNameBox" Width="200" Margin="6,0,12,0" />
                         <Button Content="Добавить" Click="AddLocation_Click" />
+                        <Button x:Name="LocationSaveButton" Content="Сохранить" Click="UpdateLocation_Click" Margin="8,0,0,0" />
+                        <Button x:Name="LocationDeleteButton" Content="Удалить" Click="DeleteLocation_Click" Margin="8,0,0,0" />
                     </StackPanel>
+                    <TextBlock Grid.Row="1" Margin="0,0,0,8" Foreground="Gray"
+                               Text="Подсказка: JSONL использует код места хранения." />
+                    <DataGrid x:Name="LocationsGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
+                              SelectionChanged="LocationsGrid_SelectionChanged">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Код" Binding="{Binding Code}" Width="160" />
+                            <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
                 </Grid>
             </TabItem>
             <TabItem Header="Контрагенты">
                 <Grid>
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <DataGrid x:Name="PartnersGrid" AutoGenerateColumns="False" IsReadOnly="True">
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Наименование" VerticalAlignment="Center" />
+                        <TextBox x:Name="PartnerNameBox" Width="220" Margin="6,0,12,0" />
+                        <TextBlock Text="ИНН" VerticalAlignment="Center" />
+                        <TextBox x:Name="PartnerCodeBox" Width="160" Margin="6,0,12,0" />
+                        <Button Content="Добавить" Click="AddPartner_Click" />
+                        <Button x:Name="PartnerSaveButton" Content="Сохранить" Click="UpdatePartner_Click" Margin="8,0,0,0" />
+                        <Button x:Name="PartnerDeleteButton" Content="Удалить" Click="DeletePartner_Click" Margin="8,0,0,0" />
+                    </StackPanel>
+                    <DataGrid x:Name="PartnersGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                              SelectionChanged="PartnersGrid_SelectionChanged">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ИНН" Binding="{Binding Code}" Width="160" />
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt}" Width="160" />
                         </DataGrid.Columns>
                     </DataGrid>
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,0">
-                        <TextBlock Text="Наименование" VerticalAlignment="Center" />
-                        <TextBox x:Name="PartnerNameBox" Width="220" Margin="6,0,12,0" />
-                        <TextBlock Text="ИНН" VerticalAlignment="Center" />
-                        <TextBox x:Name="PartnerCodeBox" Width="160" Margin="6,0,12,0" />
-                        <Button Content="Добавить" Click="AddPartner_Click" />
-                    </StackPanel>
                 </Grid>
             </TabItem>
-        </TabControl>
-    </Grid>
+            </TabControl>
+        </Border>
+    </DockPanel>
 </Window>

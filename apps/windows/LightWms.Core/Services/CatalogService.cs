@@ -112,4 +112,129 @@ public sealed class CatalogService
 
         _data.UpdateItemBarcode(itemId, barcode.Trim());
     }
+
+    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? uom)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Наименование обязательно.", nameof(name));
+        }
+
+        var existing = _data.FindItemById(itemId);
+        if (existing == null)
+        {
+            throw new InvalidOperationException("Товар не найден.");
+        }
+
+        var item = new Item
+        {
+            Id = itemId,
+            Name = name.Trim(),
+            Barcode = string.IsNullOrWhiteSpace(barcode) ? null : barcode.Trim(),
+            Gtin = string.IsNullOrWhiteSpace(gtin) ? null : gtin.Trim(),
+            Uom = string.IsNullOrWhiteSpace(uom) ? null : uom.Trim()
+        };
+
+        _data.UpdateItem(item);
+    }
+
+    public void DeleteItem(long itemId)
+    {
+        var existing = _data.FindItemById(itemId);
+        if (existing == null)
+        {
+            throw new InvalidOperationException("Товар не найден.");
+        }
+
+        if (_data.IsItemUsed(itemId))
+        {
+            throw new InvalidOperationException("Нельзя удалить товар, который используется в документах или остатках.");
+        }
+
+        _data.DeleteItem(itemId);
+    }
+
+    public void UpdateLocation(long locationId, string code, string name)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            throw new ArgumentException("Код обязателен.", nameof(code));
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Наименование обязательно.", nameof(name));
+        }
+
+        var existing = _data.FindLocationById(locationId);
+        if (existing == null)
+        {
+            throw new InvalidOperationException("Место хранения не найдено.");
+        }
+
+        var location = new Location
+        {
+            Id = locationId,
+            Code = code.Trim(),
+            Name = name.Trim()
+        };
+
+        _data.UpdateLocation(location);
+    }
+
+    public void DeleteLocation(long locationId)
+    {
+        var existing = _data.FindLocationById(locationId);
+        if (existing == null)
+        {
+            throw new InvalidOperationException("Место хранения не найдено.");
+        }
+
+        if (_data.IsLocationUsed(locationId))
+        {
+            throw new InvalidOperationException("Нельзя удалить место хранения, которое используется в документах или остатках.");
+        }
+
+        _data.DeleteLocation(locationId);
+    }
+
+    public void UpdatePartner(long partnerId, string name, string? code)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Наименование обязательно.", nameof(name));
+        }
+
+        var existing = _data.GetPartner(partnerId);
+        if (existing == null)
+        {
+            throw new InvalidOperationException("Контрагент не найден.");
+        }
+
+        var partner = new Partner
+        {
+            Id = partnerId,
+            Name = name.Trim(),
+            Code = string.IsNullOrWhiteSpace(code) ? null : code.Trim(),
+            CreatedAt = existing.CreatedAt
+        };
+
+        _data.UpdatePartner(partner);
+    }
+
+    public void DeletePartner(long partnerId)
+    {
+        var existing = _data.GetPartner(partnerId);
+        if (existing == null)
+        {
+            throw new InvalidOperationException("Контрагент не найден.");
+        }
+
+        if (_data.IsPartnerUsed(partnerId))
+        {
+            throw new InvalidOperationException("Нельзя удалить контрагента, который используется в документах.");
+        }
+
+        _data.DeletePartner(partnerId);
+    }
 }

@@ -12,10 +12,17 @@ public interface IDataStore
     IReadOnlyList<Item> GetItems(string? search);
     long AddItem(Item item);
     void UpdateItemBarcode(long itemId, string barcode);
+    void UpdateItem(Item item);
+    void DeleteItem(long itemId);
+    bool IsItemUsed(long itemId);
 
     Location? FindLocationByCode(string code);
+    Location? FindLocationById(long id);
     IReadOnlyList<Location> GetLocations();
     long AddLocation(Location location);
+    void UpdateLocation(Location location);
+    void DeleteLocation(long locationId);
+    bool IsLocationUsed(long locationId);
 
     IReadOnlyList<Uom> GetUoms();
     long AddUom(Uom uom);
@@ -23,6 +30,9 @@ public interface IDataStore
     Partner? GetPartner(long id);
     IReadOnlyList<Partner> GetPartners();
     long AddPartner(Partner partner);
+    void UpdatePartner(Partner partner);
+    void DeletePartner(long partnerId);
+    bool IsPartnerUsed(long partnerId);
 
     Doc? FindDocByRef(string docRef, DocType type);
     Doc? GetDoc(long id);
