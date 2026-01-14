@@ -13,6 +13,7 @@ public partial class MainWindow : Window
     private readonly AppServices _services;
     private readonly ObservableCollection<Item> _items = new();
     private readonly ObservableCollection<Location> _locations = new();
+    private readonly ObservableCollection<Uom> _uoms = new();
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<DocLineView> _docLines = new();
@@ -27,6 +28,7 @@ public partial class MainWindow : Window
 
         ItemsGrid.ItemsSource = _items;
         LocationsGrid.ItemsSource = _locations;
+        ItemUomCombo.ItemsSource = _uoms;
         PartnersGrid.ItemsSource = _partners;
         DocsGrid.ItemsSource = _docs;
         DocLinesGrid.ItemsSource = _docLines;
@@ -43,6 +45,7 @@ public partial class MainWindow : Window
     private void LoadAll()
     {
         LoadItems();
+        LoadUoms();
         LoadLocations();
         LoadPartners();
         LoadDocs();
@@ -55,6 +58,15 @@ public partial class MainWindow : Window
         foreach (var item in _services.Catalog.GetItems(null))
         {
             _items.Add(item);
+        }
+    }
+
+    private void LoadUoms()
+    {
+        _uoms.Clear();
+        foreach (var uom in _services.Catalog.GetUoms())
+        {
+            _uoms.Add(uom);
         }
     }
 
@@ -215,17 +227,18 @@ public partial class MainWindow : Window
     {
         if (string.IsNullOrWhiteSpace(ItemNameBox.Text))
         {
-            MessageBox.Show("Введите имя товара.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Введите наименование товара.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         try
         {
-            _services.Catalog.CreateItem(ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, ItemUomBox.Text);
+            var uom = (ItemUomCombo.SelectedItem as Uom)?.Name;
+            _services.Catalog.CreateItem(ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, uom);
             ItemNameBox.Text = string.Empty;
             ItemBarcodeBox.Text = string.Empty;
             ItemGtinBox.Text = string.Empty;
-            ItemUomBox.Text = string.Empty;
+            ItemUomCombo.SelectedItem = null;
             LoadItems();
         }
         catch (ArgumentException ex)
@@ -242,7 +255,7 @@ public partial class MainWindow : Window
     {
         if (string.IsNullOrWhiteSpace(LocationCodeBox.Text) || string.IsNullOrWhiteSpace(LocationNameBox.Text))
         {
-            MessageBox.Show("Введите код и имя локации.", "Локации", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Введите код и наименование локации.", "Локации", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -267,7 +280,7 @@ public partial class MainWindow : Window
     {
         if (string.IsNullOrWhiteSpace(PartnerNameBox.Text))
         {
-            MessageBox.Show("Введите имя контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Введите наименование контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -286,6 +299,14 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private void UomMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new UomWindow(_services, () => LoadUoms());
+        window.Owner = this;
+        window.ShowDialog();
+        LoadUoms();
     }
 
     private void ImportBrowse_Click(object sender, RoutedEventArgs e)
@@ -520,7 +541,7 @@ public partial class MainWindow : Window
     {
         var createdAt = doc.CreatedAt.ToString("g");
         var closedAt = doc.ClosedAt.HasValue ? doc.ClosedAt.Value.ToString("g") : "—";
-        return $"Ref: {doc.DocRef} | Type: {DocTypeMapper.ToOpString(doc.Type)} | Status: {DocTypeMapper.StatusToString(doc.Status)} | CreatedAt: {createdAt} | ClosedAt: {closedAt}";
+        return $"Номер: {doc.DocRef} | Тип: {DocTypeMapper.ToOpString(doc.Type)} | Статус: {DocTypeMapper.StatusToString(doc.Status)} | Создан: {createdAt} | Закрыт: {closedAt}";
     }
 
     private static bool TryParseQty(string input, out double qty)

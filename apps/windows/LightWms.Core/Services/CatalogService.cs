@@ -22,6 +22,11 @@ public sealed class CatalogService
         return _data.GetLocations();
     }
 
+    public IReadOnlyList<Uom> GetUoms()
+    {
+        return _data.GetUoms();
+    }
+
     public IReadOnlyList<Partner> GetPartners()
     {
         return _data.GetPartners();
@@ -31,7 +36,7 @@ public sealed class CatalogService
     {
         if (string.IsNullOrWhiteSpace(name))
         {
-            throw new ArgumentException("Name is required.", nameof(name));
+            throw new ArgumentException("Наименование обязательно.", nameof(name));
         }
 
         var item = new Item
@@ -49,12 +54,12 @@ public sealed class CatalogService
     {
         if (string.IsNullOrWhiteSpace(code))
         {
-            throw new ArgumentException("Code is required.", nameof(code));
+            throw new ArgumentException("Код обязателен.", nameof(code));
         }
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            throw new ArgumentException("Name is required.", nameof(name));
+            throw new ArgumentException("Наименование обязательно.", nameof(name));
         }
 
         var location = new Location
@@ -66,11 +71,26 @@ public sealed class CatalogService
         return _data.AddLocation(location);
     }
 
+    public long CreateUom(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Единица измерения обязательна.", nameof(name));
+        }
+
+        var uom = new Uom
+        {
+            Name = name.Trim()
+        };
+
+        return _data.AddUom(uom);
+    }
+
     public long CreatePartner(string name, string? code)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
-            throw new ArgumentException("Name is required.", nameof(name));
+            throw new ArgumentException("Наименование обязательно.", nameof(name));
         }
 
         var partner = new Partner
@@ -87,7 +107,7 @@ public sealed class CatalogService
     {
         if (string.IsNullOrWhiteSpace(barcode))
         {
-            throw new ArgumentException("Barcode is required.", nameof(barcode));
+            throw new ArgumentException("Штрихкод обязателен.", nameof(barcode));
         }
 
         _data.UpdateItemBarcode(itemId, barcode.Trim());

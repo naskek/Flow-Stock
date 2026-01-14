@@ -11,6 +11,7 @@ public partial class ImportErrorsWindow : Window
     private readonly Action? _onDataChanged;
     private readonly ObservableCollection<ImportErrorView> _errors = new();
     private readonly ObservableCollection<Item> _items = new();
+    private readonly ObservableCollection<Uom> _uoms = new();
     private ImportErrorView? _selectedError;
 
     public ImportErrorsWindow(AppServices services, Action? onDataChanged)
@@ -21,9 +22,11 @@ public partial class ImportErrorsWindow : Window
 
         ErrorsGrid.ItemsSource = _errors;
         ItemsComboBox.ItemsSource = _items;
+        NewItemUomCombo.ItemsSource = _uoms;
 
         LoadErrors();
         LoadItems();
+        LoadUoms();
     }
 
     private void LoadErrors()
@@ -48,6 +51,15 @@ public partial class ImportErrorsWindow : Window
         }
     }
 
+    private void LoadUoms()
+    {
+        _uoms.Clear();
+        foreach (var uom in _services.Catalog.GetUoms())
+        {
+            _uoms.Add(uom);
+        }
+    }
+
     private void UpdateSelection()
     {
         SelectedBarcodeText.Text = _selectedError?.Barcode ?? string.Empty;
@@ -63,7 +75,7 @@ public partial class ImportErrorsWindow : Window
     {
         if (_selectedError == null || string.IsNullOrWhiteSpace(_selectedError.Barcode))
         {
-            MessageBox.Show("Выберите ошибку с barcode.", "Ошибки импорта", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите ошибку со штрихкодом.", "Ошибки импорта", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -75,7 +87,7 @@ public partial class ImportErrorsWindow : Window
 
         if (!string.IsNullOrWhiteSpace(item.Barcode) && item.Barcode != _selectedError.Barcode)
         {
-            MessageBox.Show("У выбранного товара уже есть другой barcode.", "Ошибки импорта", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("У выбранного товара уже есть другой штрихкод.", "Ошибки импорта", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         try
@@ -93,16 +105,17 @@ public partial class ImportErrorsWindow : Window
     {
         if (_selectedError == null || string.IsNullOrWhiteSpace(_selectedError.Barcode))
         {
-            MessageBox.Show("Выберите ошибку с barcode.", "Ошибки импорта", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите ошибку со штрихкодом.", "Ошибки импорта", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         try
         {
-            _services.Catalog.CreateItem(NewItemNameBox.Text, _selectedError.Barcode, NewItemGtinBox.Text, NewItemUomBox.Text);
+            var uom = (NewItemUomCombo.SelectedItem as Uom)?.Name;
+            _services.Catalog.CreateItem(NewItemNameBox.Text, _selectedError.Barcode, NewItemGtinBox.Text, uom);
             NewItemNameBox.Text = string.Empty;
             NewItemGtinBox.Text = string.Empty;
-            NewItemUomBox.Text = string.Empty;
+            NewItemUomCombo.SelectedItem = null;
             LoadItems();
         }
         catch (ArgumentException ex)
@@ -126,7 +139,7 @@ public partial class ImportErrorsWindow : Window
         var applied = _services.Import.ReapplyError(_selectedError.Id);
         if (!applied)
         {
-            MessageBox.Show("Не удалось переприменить. Проверьте, что barcode привязан к товару.", "Ошибки импорта", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("Не удалось переприменить. Проверьте, что штрихкод привязан к товару.", "Ошибки импорта", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -138,6 +151,7 @@ public partial class ImportErrorsWindow : Window
     {
         LoadErrors();
         LoadItems();
+        LoadUoms();
     }
 
     private void Close_Click(object sender, RoutedEventArgs e)

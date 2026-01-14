@@ -17,6 +17,9 @@ public interface IDataStore
     IReadOnlyList<Location> GetLocations();
     long AddLocation(Location location);
 
+    IReadOnlyList<Uom> GetUoms();
+    long AddUom(Uom uom);
+
     Partner? GetPartner(long id);
     IReadOnlyList<Partner> GetPartners();
     long AddPartner(Partner partner);

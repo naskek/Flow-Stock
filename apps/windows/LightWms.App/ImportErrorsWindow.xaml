@@ -13,14 +13,14 @@
         </Grid.RowDefinitions>
         <DataGrid x:Name="ErrorsGrid" AutoGenerateColumns="False" IsReadOnly="True" SelectionChanged="ErrorsGrid_SelectionChanged">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Event" Binding="{Binding EventId}" Width="200" />
-                <DataGridTextColumn Header="Barcode" Binding="{Binding Barcode}" Width="160" />
-                <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="140" />
-                <DataGridTextColumn Header="Created" Binding="{Binding CreatedAt}" Width="160" />
+                <DataGridTextColumn Header="Событие" Binding="{Binding EventId}" Width="200" />
+                <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="160" />
+                <DataGridTextColumn Header="Причина" Binding="{Binding Reason}" Width="140" />
+                <DataGridTextColumn Header="Создано" Binding="{Binding CreatedAt}" Width="160" />
             </DataGrid.Columns>
         </DataGrid>
         <StackPanel Grid.Column="1" Margin="12,0,0,0">
-            <TextBlock Text="Barcode" FontWeight="Bold" />
+            <TextBlock Text="Штрихкод" FontWeight="Bold" />
             <TextBlock x:Name="SelectedBarcodeText" Margin="0,0,0,8" />
 
             <TextBlock Text="Привязать к товару" FontWeight="Bold" />
@@ -28,12 +28,12 @@
             <Button Content="Привязать" Click="BindBarcode_Click" Margin="0,6,0,12" Width="120" />
 
             <TextBlock Text="Новый товар" FontWeight="Bold" />
-            <TextBlock Text="Name" />
+            <TextBlock Text="Наименование" />
             <TextBox x:Name="NewItemNameBox" Width="240" />
             <TextBlock Text="GTIN" Margin="0,6,0,0" />
             <TextBox x:Name="NewItemGtinBox" Width="240" />
-            <TextBlock Text="UOM" Margin="0,6,0,0" />
-            <TextBox x:Name="NewItemUomBox" Width="120" />
+            <TextBlock Text="Ед. измерения" Margin="0,6,0,0" />
+            <ComboBox x:Name="NewItemUomCombo" Width="160" DisplayMemberPath="Name" />
             <Button Content="Создать" Click="CreateItem_Click" Margin="0,6,0,12" Width="120" />
 
             <Button Content="Переприменить" Click="Reapply_Click" Width="160" />

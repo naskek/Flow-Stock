@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS items (
     gtin TEXT,
     uom TEXT
 );
+CREATE TABLE IF NOT EXISTS uoms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_uoms_name ON uoms(name);
 CREATE TABLE IF NOT EXISTS locations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT NOT NULL UNIQUE,
@@ -231,6 +236,36 @@ SELECT last_insert_rowid();
 ");
             command.Parameters.AddWithValue("@code", location.Code);
             command.Parameters.AddWithValue("@name", location.Name);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public IReadOnlyList<Uom> GetUoms()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT id, name FROM uoms ORDER BY name");
+            using var reader = command.ExecuteReader();
+            var uoms = new List<Uom>();
+            while (reader.Read())
+            {
+                uoms.Add(ReadUom(reader));
+            }
+
+            return uoms;
+        });
+    }
+
+    public long AddUom(Uom uom)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO uoms(name)
+VALUES(@name);
+SELECT last_insert_rowid();
+");
+            command.Parameters.AddWithValue("@name", uom.Name);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -649,6 +684,15 @@ SELECT last_insert_rowid();
             Id = reader.GetInt64(0),
             Code = reader.GetString(1),
             Name = reader.GetString(2)
+        };
+    }
+
+    private static Uom ReadUom(SqliteDataReader reader)
+    {
+        return new Uom
+        {
+            Id = reader.GetInt64(0),
+            Name = reader.GetString(1)
         };
     }
 
