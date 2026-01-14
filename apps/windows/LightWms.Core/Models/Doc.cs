@@ -11,8 +11,13 @@ public sealed class Doc
     public long? PartnerId { get; init; }
     public string? OrderRef { get; init; }
     public string? ShippingRef { get; init; }
+    public string? Comment { get; init; }
     public string? PartnerName { get; init; }
     public string? PartnerCode { get; init; }
+
+    public string TypeDisplay => DocTypeMapper.ToDisplayName(Type);
+
+    public string StatusDisplay => DocTypeMapper.StatusToDisplayName(Status);
 
     public string PartnerDisplay
     {

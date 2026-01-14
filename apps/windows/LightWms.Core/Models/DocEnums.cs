@@ -62,4 +62,27 @@ public static class DocTypeMapper
             _ => "UNKNOWN"
         };
     }
+
+    public static string ToDisplayName(DocType type)
+    {
+        return type switch
+        {
+            DocType.Inbound => "Приемка",
+            DocType.WriteOff => "Списание",
+            DocType.Move => "Перемещение",
+            DocType.Inventory => "Инвентаризация",
+            DocType.Outbound => "Отгрузка",
+            _ => "Неизвестно"
+        };
+    }
+
+    public static string StatusToDisplayName(DocStatus status)
+    {
+        return status switch
+        {
+            DocStatus.Draft => "Черновик",
+            DocStatus.Closed => "Закрыт",
+            _ => "Неизвестно"
+        };
+    }
 }

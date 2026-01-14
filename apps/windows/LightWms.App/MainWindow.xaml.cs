@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Windows;
+using System.Windows.Input;
 using LightWms.Core.Models;
 using Microsoft.Win32;
 
@@ -20,6 +22,12 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<StockRow> _stock = new();
     private Doc? _selectedDoc;
     private DocLineView? _selectedDocLine;
+    private const int TabStatusIndex = 0;
+    private const int TabDocsIndex = 1;
+    private const int TabDocIndex = 2;
+    private const int TabItemsIndex = 3;
+    private const int TabLocationsIndex = 4;
+    private const int TabPartnersIndex = 5;
 
     public MainWindow(AppServices services)
     {
@@ -50,6 +58,34 @@ public partial class MainWindow : Window
         LoadPartners();
         LoadDocs();
         LoadStock(null);
+    }
+
+    private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (Keyboard.Modifiers != ModifierKeys.Control)
+        {
+            return;
+        }
+
+        switch (e.Key)
+        {
+            case Key.N:
+                e.Handled = true;
+                ShowNewDocDialog();
+                break;
+            case Key.O:
+                e.Handled = true;
+                OpenSelectedDoc();
+                break;
+            case Key.I:
+                e.Handled = true;
+                RunImportDialog();
+                break;
+            case Key.Enter:
+                e.Handled = true;
+                TryCloseCurrentDoc();
+                break;
+        }
     }
 
     private void LoadItems()
@@ -148,19 +184,48 @@ public partial class MainWindow : Window
 
     private void DocsOpen_Click(object sender, RoutedEventArgs e)
     {
+        OpenSelectedDoc();
+    }
+
+    private void OpenSelectedDoc()
+    {
         if (DocsGrid.SelectedItem is not Doc doc)
         {
             MessageBox.Show("Выберите документ.", "Документы", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
+        OpenDoc(doc);
+    }
+
+    private void OpenDoc(Doc doc)
+    {
         _selectedDoc = doc;
         UpdateDocView();
         LoadDocLines(doc.Id);
-        MainTabs.SelectedIndex = 2;
+        MainTabs.SelectedIndex = TabDocIndex;
+    }
+
+    private void DocsGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        OpenSelectedDoc();
+    }
+
+    private void DocsGrid_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            OpenSelectedDoc();
+        }
     }
 
     private void DocClose_Click(object sender, RoutedEventArgs e)
+    {
+        TryCloseCurrentDoc();
+    }
+
+    private void TryCloseCurrentDoc()
     {
         if (_selectedDoc == null)
         {
@@ -301,15 +366,35 @@ public partial class MainWindow : Window
         }
     }
 
-    private void UomMenu_Click(object sender, RoutedEventArgs e)
+    private void NewDocMenu_Click(object sender, RoutedEventArgs e)
     {
-        var window = new UomWindow(_services, () => LoadUoms());
-        window.Owner = this;
-        window.ShowDialog();
-        LoadUoms();
+        ShowNewDocDialog();
     }
 
-    private void ImportBrowse_Click(object sender, RoutedEventArgs e)
+    private void ShowNewDocDialog()
+    {
+        var window = new NewDocWindow(_services);
+        window.Owner = this;
+        if (window.ShowDialog() != true || !window.CreatedDocId.HasValue)
+        {
+            return;
+        }
+
+        LoadDocs();
+        var created = _docs.FirstOrDefault(d => d.Id == window.CreatedDocId.Value)
+                      ?? _services.Documents.GetDoc(window.CreatedDocId.Value);
+        if (created != null)
+        {
+            OpenDoc(created);
+        }
+    }
+
+    private void ImportMenu_Click(object sender, RoutedEventArgs e)
+    {
+        RunImportDialog();
+    }
+
+    private void RunImportDialog()
     {
         var dialog = new OpenFileDialog
         {
@@ -318,13 +403,12 @@ public partial class MainWindow : Window
 
         if (dialog.ShowDialog() == true)
         {
-            ImportFilePathBox.Text = dialog.FileName;
+            RunImport(dialog.FileName);
         }
     }
 
-    private void ImportExecute_Click(object sender, RoutedEventArgs e)
+    private void RunImport(string path)
     {
-        var path = ImportFilePathBox.Text;
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
             MessageBox.Show("Файл не найден.", "Импорт", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -332,13 +416,99 @@ public partial class MainWindow : Window
         }
 
         var result = _services.Import.ImportJsonl(path);
-        ImportStatsText.Text = $"Статистика: импортировано={result.Imported}, дубли={result.Duplicates}, ошибки={result.Errors}";
+        MessageBox.Show(
+            $"Импорт завершен.\nИмпортировано: {result.Imported}\nДубли: {result.Duplicates}\nОшибки: {result.Errors}",
+            "Импорт",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
 
         LoadDocs();
     }
 
+    private void ViewStatus_Click(object sender, RoutedEventArgs e)
+    {
+        SelectTab(TabStatusIndex);
+    }
+
+    private void ViewDocs_Click(object sender, RoutedEventArgs e)
+    {
+        SelectTab(TabDocsIndex);
+    }
+
+    private void ViewDoc_Click(object sender, RoutedEventArgs e)
+    {
+        SelectTab(TabDocIndex);
+    }
+
+    private void ViewItems_Click(object sender, RoutedEventArgs e)
+    {
+        SelectTab(TabItemsIndex);
+    }
+
+    private void ViewLocations_Click(object sender, RoutedEventArgs e)
+    {
+        SelectTab(TabLocationsIndex);
+    }
+
+    private void ViewPartners_Click(object sender, RoutedEventArgs e)
+    {
+        SelectTab(TabPartnersIndex);
+    }
+
+    private void OpenDataFolder_Click(object sender, RoutedEventArgs e)
+    {
+        var dataDir = Path.GetDirectoryName(_services.DatabasePath);
+        if (string.IsNullOrWhiteSpace(dataDir) || !Directory.Exists(dataDir))
+        {
+            MessageBox.Show("Папка данных не найдена.", "Сервис", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = dataDir,
+            UseShellExecute = true
+        });
+    }
+
+    private void OpenLogsFolder_Click(object sender, RoutedEventArgs e)
+    {
+        var dataDir = Path.GetDirectoryName(_services.DatabasePath);
+        var logsDir = string.IsNullOrWhiteSpace(dataDir) ? null : Path.Combine(dataDir, "logs");
+        if (string.IsNullOrWhiteSpace(logsDir) || !Directory.Exists(logsDir))
+        {
+            MessageBox.Show("Папка логов не найдена.", "Сервис", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = logsDir,
+            UseShellExecute = true
+        });
+    }
+
+    private void SelectTab(int index)
+    {
+        if (index < 0 || index >= MainTabs.Items.Count)
+        {
+            return;
+        }
+
+        MainTabs.SelectedIndex = index;
+    }
+
+    private void UomMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new UomWindow(_services, () => LoadUoms());
+        window.Owner = this;
+        window.ShowDialog();
+        LoadUoms();
+    }
+
     private void ImportErrors_Click(object sender, RoutedEventArgs e)
     {
+        SelectTab(TabDocsIndex);
         var window = new ImportErrorsWindow(_services, () =>
         {
             LoadDocs();
@@ -360,6 +530,24 @@ public partial class MainWindow : Window
         DocLineQtyBox.Text = _selectedDocLine.Qty.ToString("0.###", CultureInfo.CurrentCulture);
     }
 
+    private void DocLinesGrid_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Delete)
+        {
+            e.Handled = true;
+            DocDeleteLine_Click(sender, new RoutedEventArgs());
+        }
+    }
+
+    private void DocBarcodeBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            DocAddLine_Click(sender, new RoutedEventArgs());
+        }
+    }
+
     private void DocAddLine_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureDraftDocSelected())
@@ -367,9 +555,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (DocItemCombo.SelectedItem is not Item item)
+        if (!TryResolveDocItem(out var item))
         {
-            MessageBox.Show("Выберите товар.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -397,9 +584,11 @@ public partial class MainWindow : Window
 
         try
         {
-            _services.Documents.AddDocLine(_selectedDoc!.Id, item.Id, qty, fromLocation?.Id, toLocation?.Id);
+            _services.Documents.AddDocLine(_selectedDoc!.Id, item!.Id, qty, fromLocation?.Id, toLocation?.Id);
             DocItemQtyBox.Text = string.Empty;
+            DocBarcodeBox.Text = string.Empty;
             LoadDocLines(_selectedDoc.Id);
+            DocBarcodeBox.Focus();
         }
         catch (Exception ex)
         {
@@ -535,18 +724,52 @@ public partial class MainWindow : Window
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _selectedDoc.PartnerId);
         DocOrderRefBox.Text = _selectedDoc.OrderRef ?? string.Empty;
         DocShippingRefBox.Text = _selectedDoc.ShippingRef ?? string.Empty;
+
+        if (_selectedDoc.Status == DocStatus.Draft)
+        {
+            DocBarcodeBox.Focus();
+            DocBarcodeBox.SelectAll();
+        }
     }
 
     private static string FormatDocHeader(Doc doc)
     {
         var createdAt = doc.CreatedAt.ToString("g");
         var closedAt = doc.ClosedAt.HasValue ? doc.ClosedAt.Value.ToString("g") : "—";
-        return $"Номер: {doc.DocRef} | Тип: {DocTypeMapper.ToOpString(doc.Type)} | Статус: {DocTypeMapper.StatusToString(doc.Status)} | Создан: {createdAt} | Закрыт: {closedAt}";
+        return $"Номер: {doc.DocRef} | Тип: {DocTypeMapper.ToDisplayName(doc.Type)} | Статус: {DocTypeMapper.StatusToDisplayName(doc.Status)} | Создан: {createdAt} | Закрыт: {closedAt}";
     }
 
     private static bool TryParseQty(string input, out double qty)
     {
         return double.TryParse(input, NumberStyles.Float, CultureInfo.CurrentCulture, out qty) && qty > 0;
+    }
+
+    private bool TryResolveDocItem(out Item? item)
+    {
+        item = null;
+        var barcode = DocBarcodeBox.Text?.Trim();
+        if (!string.IsNullOrWhiteSpace(barcode))
+        {
+            item = _items.FirstOrDefault(i => string.Equals(i.Barcode, barcode, StringComparison.OrdinalIgnoreCase))
+                   ?? _items.FirstOrDefault(i => string.Equals(i.Gtin, barcode, StringComparison.OrdinalIgnoreCase));
+            if (item == null)
+            {
+                MessageBox.Show("Товар со штрихкодом/GTIN не найден.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+
+            DocItemCombo.SelectedItem = item;
+            return true;
+        }
+
+        if (DocItemCombo.SelectedItem is Item selected)
+        {
+            item = selected;
+            return true;
+        }
+
+        MessageBox.Show("Выберите товар или укажите штрихкод.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return false;
     }
 
     private bool EnsureDraftDocSelected()
@@ -573,33 +796,33 @@ public partial class MainWindow : Window
             case DocType.Inbound:
                 if (toLocation == null)
                 {
-                    MessageBox.Show("Для приемки выберите локацию получателя (to).", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("Для приемки выберите локацию получателя.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 return true;
             case DocType.WriteOff:
                 if (fromLocation == null)
                 {
-                    MessageBox.Show("Для списания выберите локацию источника (from).", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("Для списания выберите локацию источника.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 return true;
             case DocType.Outbound:
                 if (fromLocation == null)
                 {
-                    MessageBox.Show("Для отгрузки выберите локацию источника (from).", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("Для отгрузки выберите локацию источника.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 return true;
             case DocType.Move:
                 if (fromLocation == null || toLocation == null)
                 {
-                    MessageBox.Show("Для перемещения выберите обе локации.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("Для перемещения выберите локации откуда/куда.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 if (fromLocation.Id == toLocation.Id)
                 {
-                    MessageBox.Show("Для перемещения локации должны быть разными.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("Для перемещения локации откуда/куда должны быть разными.", "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 return true;
