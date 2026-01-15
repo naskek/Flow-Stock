@@ -100,7 +100,6 @@ CREATE TABLE IF NOT EXISTS docs (
     FOREIGN KEY (order_id) REFERENCES orders(id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_docs_ref_type ON docs(doc_ref, type);
-CREATE INDEX IF NOT EXISTS ix_docs_order ON docs(order_id);
 CREATE TABLE IF NOT EXISTS doc_lines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     doc_id INTEGER NOT NULL,
@@ -135,11 +134,18 @@ CREATE TABLE IF NOT EXISTS import_errors (
 ";
         command.ExecuteNonQuery();
 
+        EnsureColumn(connection, "items", "gtin", "TEXT");
+        EnsureColumn(connection, "items", "uom", "TEXT");
+        EnsureColumn(connection, "partners", "created_at", "TEXT");
         EnsureColumn(connection, "docs", "partner_id", "INTEGER");
         EnsureColumn(connection, "docs", "order_id", "INTEGER");
         EnsureColumn(connection, "docs", "order_ref", "TEXT");
         EnsureColumn(connection, "docs", "shipping_ref", "TEXT");
         EnsureColumn(connection, "docs", "comment", "TEXT");
+
+        EnsureIndex(connection, "ix_docs_order", "docs(order_id)");
+
+        BackfillPartnerCreatedAt(connection);
     }
 
     public void ExecuteInTransaction(Action<IDataStore> work)
@@ -559,6 +565,40 @@ WHERE id = @id;
             }
 
             return docs;
+        });
+    }
+
+    public int GetMaxDocRefSequence(DocType type, string prefix)
+    {
+        if (string.IsNullOrWhiteSpace(prefix))
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT doc_ref FROM docs WHERE type = @type AND doc_ref LIKE @prefix");
+            command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(type));
+            command.Parameters.AddWithValue("@prefix", $"{prefix}%");
+            using var reader = command.ExecuteReader();
+
+            var max = 0;
+            while (reader.Read())
+            {
+                var docRef = reader.GetString(0);
+                if (!docRef.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var suffix = docRef.Substring(prefix.Length);
+                if (int.TryParse(suffix, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) && value > max)
+                {
+                    max = value;
+                }
+            }
+
+            return max;
         });
     }
 
@@ -1145,7 +1185,7 @@ SELECT last_insert_rowid();
             Id = reader.GetInt64(0),
             Name = reader.GetString(1),
             Code = reader.IsDBNull(2) ? null : reader.GetString(2),
-            CreatedAt = FromDbDate(reader.GetString(3)) ?? DateTime.MinValue
+            CreatedAt = FromDbDate(reader.IsDBNull(3) ? null : reader.GetString(3)) ?? DateTime.MinValue
         };
     }
 
@@ -1301,6 +1341,21 @@ SELECT last_insert_rowid();
         }
 
         return false;
+    }
+
+    private static void EnsureIndex(SqliteConnection connection, string indexName, string indexDefinition)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"CREATE INDEX IF NOT EXISTS {indexName} ON {indexDefinition};";
+        command.ExecuteNonQuery();
+    }
+
+    private static void BackfillPartnerCreatedAt(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE partners SET created_at = @created_at WHERE created_at IS NULL OR created_at = '';";
+        command.Parameters.AddWithValue("@created_at", ToDbDate(DateTime.Now));
+        command.ExecuteNonQuery();
     }
 
     private static string BuildItemsQuery(string? search)

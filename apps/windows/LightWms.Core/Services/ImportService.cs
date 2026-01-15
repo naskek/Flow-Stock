@@ -164,12 +164,16 @@ public sealed class ImportService
                 return;
             }
 
-            var doc = store.FindDocByRef(importEvent.DocRef, importEvent.Type);
+            var docRef = string.IsNullOrWhiteSpace(importEvent.DocRef)
+                ? DocRefGenerator.Generate(store, importEvent.Type, importEvent.Timestamp.Date)
+                : importEvent.DocRef;
+
+            var doc = store.FindDocByRef(docRef, importEvent.Type);
             if (doc == null)
             {
                 var docId = store.AddDoc(new Doc
                 {
-                    DocRef = importEvent.DocRef,
+                    DocRef = docRef,
                     Type = importEvent.Type,
                     Status = DocStatus.Draft,
                     CreatedAt = importEvent.Timestamp,
@@ -278,7 +282,6 @@ public sealed class ImportService
 
         if (string.IsNullOrWhiteSpace(dto.EventId) ||
             string.IsNullOrWhiteSpace(dto.Op) ||
-            string.IsNullOrWhiteSpace(dto.DocRef) ||
             string.IsNullOrWhiteSpace(dto.Barcode) ||
             dto.Qty == null)
         {
@@ -301,7 +304,7 @@ public sealed class ImportService
             Timestamp = timestamp,
             DeviceId = dto.DeviceId?.Trim() ?? string.Empty,
             Type = docType.Value,
-            DocRef = dto.DocRef.Trim(),
+            DocRef = dto.DocRef?.Trim() ?? string.Empty,
             Barcode = dto.Barcode.Trim(),
             Qty = dto.Qty.Value,
             FromLocation = NormalizeLocationCode(dto.From),

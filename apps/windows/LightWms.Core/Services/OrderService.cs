@@ -154,68 +154,6 @@ public sealed class OrderService
         });
     }
 
-    public long CreateOutboundFromStock(long orderId)
-    {
-        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
-        var lines = GetOrderLineViews(orderId);
-        var linesToShip = lines.Where(line => line.CanShipNow > QtyTolerance).ToList();
-        if (linesToShip.Count == 0)
-        {
-            throw new InvalidOperationException("Нет доступных позиций для отгрузки.");
-        }
-
-        var location = _data.FindLocationByCode("01") ?? _data.GetLocations().FirstOrDefault();
-        if (location == null)
-        {
-            throw new InvalidOperationException("Не задано место хранения для отгрузки.");
-        }
-
-        var docRef = BuildOutboundRef(order.OrderRef);
-        long docId = 0;
-
-        _data.ExecuteInTransaction(store =>
-        {
-            var uniqueRef = EnsureUniqueDocRef(store, docRef);
-            docId = store.AddDoc(new Doc
-            {
-                DocRef = uniqueRef,
-                Type = DocType.Outbound,
-                Status = DocStatus.Draft,
-                CreatedAt = DateTime.Now,
-                ClosedAt = null,
-                PartnerId = order.PartnerId,
-                OrderId = order.Id,
-                OrderRef = order.OrderRef
-            });
-
-            foreach (var line in linesToShip)
-            {
-                store.AddDocLine(new DocLine
-                {
-                    DocId = docId,
-                    ItemId = line.ItemId,
-                    Qty = line.CanShipNow,
-                    FromLocationId = location.Id,
-                    ToLocationId = null
-                });
-            }
-
-            if (order.Status == OrderStatus.Accepted)
-            {
-                store.UpdateOrderStatus(order.Id, OrderStatus.InProgress);
-            }
-        });
-
-        return docId;
-    }
-
-    public IReadOnlyList<Doc> GetOutboundDocs(long orderId)
-    {
-        return _data.GetDocsByOrder(orderId)
-            .Where(doc => doc.Type == DocType.Outbound)
-            .ToList();
-    }
-
     private void ApplyLineMetrics(long orderId, IReadOnlyList<OrderLineView> lines)
     {
         var availableByItem = _data.GetLedgerTotalsByItem();
@@ -306,24 +244,5 @@ public sealed class OrderService
             PartnerName = order.PartnerName,
             PartnerCode = order.PartnerCode
         };
-    }
-
-    private string BuildOutboundRef(string orderRef)
-    {
-        var safeRef = string.IsNullOrWhiteSpace(orderRef) ? "ORDER" : orderRef.Trim();
-        return $"OUT-{safeRef}-{DateTime.Now:yyyyMMdd-HHmm}";
-    }
-
-    private string EnsureUniqueDocRef(IDataStore store, string docRef)
-    {
-        var candidate = docRef;
-        var suffix = 1;
-        while (store.FindDocByRef(candidate, DocType.Outbound) != null)
-        {
-            candidate = $"{docRef}-{suffix}";
-            suffix++;
-        }
-
-        return candidate;
     }
 }

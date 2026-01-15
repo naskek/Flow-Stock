@@ -23,6 +23,11 @@ public sealed class DocumentService
         return _data.GetDocsByOrder(orderId);
     }
 
+    public string GenerateDocRef(DocType type, DateTime date)
+    {
+        return DocRefGenerator.Generate(_data, type, date.Date);
+    }
+
     public long CreateDoc(DocType type, string docRef, string? comment, long? partnerId, string? orderRef, string? shippingRef, long? orderId = null)
     {
         if (string.IsNullOrWhiteSpace(docRef))

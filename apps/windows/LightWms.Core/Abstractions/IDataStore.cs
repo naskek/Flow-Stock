@@ -38,6 +38,7 @@ public interface IDataStore
     Doc? GetDoc(long id);
     IReadOnlyList<Doc> GetDocs();
     IReadOnlyList<Doc> GetDocsByOrder(long orderId);
+    int GetMaxDocRefSequence(DocType type, string prefix);
     long AddDoc(Doc doc);
     IReadOnlyList<DocLine> GetDocLines(long docId);
     IReadOnlyList<DocLineView> GetDocLineViews(long docId);
