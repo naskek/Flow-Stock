@@ -9,6 +9,7 @@ public sealed class AppServices
 {
     public IDataStore DataStore { get; }
     public CatalogService Catalog { get; }
+    public ItemPackagingService Packagings { get; }
     public DocumentService Documents { get; }
     public OrderService Orders { get; }
     public ImportService Import { get; }
@@ -40,6 +41,7 @@ public sealed class AppServices
     {
         DataStore = dataStore;
         Catalog = new CatalogService(dataStore);
+        Packagings = new ItemPackagingService(dataStore);
         Documents = new DocumentService(dataStore);
         Orders = new OrderService(dataStore);
         Import = new ImportService(dataStore);

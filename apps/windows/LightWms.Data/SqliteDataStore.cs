@@ -44,13 +44,27 @@ CREATE TABLE IF NOT EXISTS items (
     name TEXT NOT NULL,
     barcode TEXT UNIQUE,
     gtin TEXT,
-    uom TEXT
+    uom TEXT,
+    base_uom TEXT NOT NULL DEFAULT 'шт',
+    default_packaging_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS uoms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_uoms_name ON uoms(name);
+CREATE TABLE IF NOT EXISTS item_packaging (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    factor_to_base REAL NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (item_id) REFERENCES items(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_item_packaging_item_code ON item_packaging(item_id, code);
+CREATE INDEX IF NOT EXISTS ix_item_packaging_item ON item_packaging(item_id);
 CREATE TABLE IF NOT EXISTS locations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT NOT NULL UNIQUE,
@@ -105,6 +119,8 @@ CREATE TABLE IF NOT EXISTS doc_lines (
     doc_id INTEGER NOT NULL,
     item_id INTEGER NOT NULL,
     qty REAL NOT NULL,
+    qty_input REAL,
+    uom_code TEXT,
     from_location_id INTEGER,
     to_location_id INTEGER
 );
@@ -136,15 +152,22 @@ CREATE TABLE IF NOT EXISTS import_errors (
 
         EnsureColumn(connection, "items", "gtin", "TEXT");
         EnsureColumn(connection, "items", "uom", "TEXT");
+        EnsureColumn(connection, "items", "base_uom", "TEXT NOT NULL DEFAULT 'шт'");
+        EnsureColumn(connection, "items", "default_packaging_id", "INTEGER");
         EnsureColumn(connection, "partners", "created_at", "TEXT");
         EnsureColumn(connection, "docs", "partner_id", "INTEGER");
         EnsureColumn(connection, "docs", "order_id", "INTEGER");
         EnsureColumn(connection, "docs", "order_ref", "TEXT");
         EnsureColumn(connection, "docs", "shipping_ref", "TEXT");
         EnsureColumn(connection, "docs", "comment", "TEXT");
+        EnsureColumn(connection, "doc_lines", "qty_input", "REAL");
+        EnsureColumn(connection, "doc_lines", "uom_code", "TEXT");
 
         EnsureIndex(connection, "ix_docs_order", "docs(order_id)");
+        EnsureIndex(connection, "ix_item_packaging_item_code", "item_packaging(item_id, code)");
+        EnsureIndex(connection, "ix_item_packaging_item", "item_packaging(item_id)");
 
+        BackfillBaseUom(connection);
         BackfillPartnerCreatedAt(connection);
     }
 
@@ -164,7 +187,7 @@ CREATE TABLE IF NOT EXISTS import_errors (
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, name, barcode, gtin, uom FROM items WHERE barcode = @barcode");
+            using var command = CreateCommand(connection, "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items WHERE barcode = @barcode");
             command.Parameters.AddWithValue("@barcode", barcode);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -175,7 +198,7 @@ CREATE TABLE IF NOT EXISTS import_errors (
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, name, barcode, gtin, uom FROM items WHERE id = @id");
+            using var command = CreateCommand(connection, "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items WHERE id = @id");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -208,14 +231,15 @@ CREATE TABLE IF NOT EXISTS import_errors (
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO items(name, barcode, gtin, uom)
-VALUES(@name, @barcode, @gtin, @uom);
+INSERT INTO items(name, barcode, gtin, base_uom, default_packaging_id)
+VALUES(@name, @barcode, @gtin, @base_uom, @default_packaging_id);
 SELECT last_insert_rowid();
 ");
             command.Parameters.AddWithValue("@name", item.Name);
             command.Parameters.AddWithValue("@barcode", (object?)item.Barcode ?? DBNull.Value);
             command.Parameters.AddWithValue("@gtin", (object?)item.Gtin ?? DBNull.Value);
-            command.Parameters.AddWithValue("@uom", (object?)item.Uom ?? DBNull.Value);
+            command.Parameters.AddWithValue("@base_uom", item.BaseUom);
+            command.Parameters.AddWithValue("@default_packaging_id", item.DefaultPackagingId.HasValue ? item.DefaultPackagingId.Value : DBNull.Value);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -241,13 +265,15 @@ UPDATE items
 SET name = @name,
     barcode = @barcode,
     gtin = @gtin,
-    uom = @uom
+    base_uom = @base_uom,
+    default_packaging_id = @default_packaging_id
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
             command.Parameters.AddWithValue("@barcode", (object?)item.Barcode ?? DBNull.Value);
             command.Parameters.AddWithValue("@gtin", (object?)item.Gtin ?? DBNull.Value);
-            command.Parameters.AddWithValue("@uom", (object?)item.Uom ?? DBNull.Value);
+            command.Parameters.AddWithValue("@base_uom", item.BaseUom);
+            command.Parameters.AddWithValue("@default_packaging_id", item.DefaultPackagingId.HasValue ? item.DefaultPackagingId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@id", item.Id);
             command.ExecuteNonQuery();
             return 0;
@@ -286,6 +312,128 @@ WHERE id = @id;
             using var ledgerCommand = CreateCommand(connection, "SELECT 1 FROM ledger WHERE item_id = @id LIMIT 1");
             ledgerCommand.Parameters.AddWithValue("@id", itemId);
             return ledgerCommand.ExecuteScalar() != null;
+        });
+    }
+
+    public void UpdateItemDefaultPackaging(long itemId, long? packagingId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE items SET default_packaging_id = @packaging_id WHERE id = @id");
+            command.Parameters.AddWithValue("@packaging_id", packagingId.HasValue ? packagingId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@id", itemId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public IReadOnlyList<ItemPackaging> GetItemPackagings(long itemId, bool includeInactive)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = @"
+SELECT id, item_id, code, name, factor_to_base, is_active, sort_order
+FROM item_packaging
+WHERE item_id = @item_id";
+            if (!includeInactive)
+            {
+                sql += " AND is_active = 1";
+            }
+            sql += " ORDER BY sort_order, name;";
+
+            using var command = CreateCommand(connection, sql);
+            command.Parameters.AddWithValue("@item_id", itemId);
+            using var reader = command.ExecuteReader();
+            var list = new List<ItemPackaging>();
+            while (reader.Read())
+            {
+                list.Add(ReadItemPackaging(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public ItemPackaging? GetItemPackaging(long packagingId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, item_id, code, name, factor_to_base, is_active, sort_order
+FROM item_packaging
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@id", packagingId);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadItemPackaging(reader) : null;
+        });
+    }
+
+    public ItemPackaging? FindItemPackagingByCode(long itemId, string code)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT id, item_id, code, name, factor_to_base, is_active, sort_order
+FROM item_packaging
+WHERE item_id = @item_id AND code = @code;");
+            command.Parameters.AddWithValue("@item_id", itemId);
+            command.Parameters.AddWithValue("@code", code);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadItemPackaging(reader) : null;
+        });
+    }
+
+    public long AddItemPackaging(ItemPackaging packaging)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO item_packaging(item_id, code, name, factor_to_base, is_active, sort_order)
+VALUES(@item_id, @code, @name, @factor_to_base, @is_active, @sort_order);
+SELECT last_insert_rowid();
+");
+            command.Parameters.AddWithValue("@item_id", packaging.ItemId);
+            command.Parameters.AddWithValue("@code", packaging.Code);
+            command.Parameters.AddWithValue("@name", packaging.Name);
+            command.Parameters.AddWithValue("@factor_to_base", packaging.FactorToBase);
+            command.Parameters.AddWithValue("@is_active", packaging.IsActive ? 1 : 0);
+            command.Parameters.AddWithValue("@sort_order", packaging.SortOrder);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateItemPackaging(ItemPackaging packaging)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE item_packaging
+SET code = @code,
+    name = @name,
+    factor_to_base = @factor_to_base,
+    is_active = @is_active,
+    sort_order = @sort_order
+WHERE id = @id;
+");
+            command.Parameters.AddWithValue("@code", packaging.Code);
+            command.Parameters.AddWithValue("@name", packaging.Name);
+            command.Parameters.AddWithValue("@factor_to_base", packaging.FactorToBase);
+            command.Parameters.AddWithValue("@is_active", packaging.IsActive ? 1 : 0);
+            command.Parameters.AddWithValue("@sort_order", packaging.SortOrder);
+            command.Parameters.AddWithValue("@id", packaging.Id);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void DeactivateItemPackaging(long packagingId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE item_packaging SET is_active = 0 WHERE id = @id");
+            command.Parameters.AddWithValue("@id", packagingId);
+            command.ExecuteNonQuery();
+            return 0;
         });
     }
 
@@ -629,7 +777,7 @@ SELECT last_insert_rowid();
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, doc_id, item_id, qty, from_location_id, to_location_id FROM doc_lines WHERE doc_id = @doc_id ORDER BY id");
+            using var command = CreateCommand(connection, "SELECT id, doc_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id FROM doc_lines WHERE doc_id = @doc_id ORDER BY id");
             command.Parameters.AddWithValue("@doc_id", docId);
             using var reader = command.ExecuteReader();
             var lines = new List<DocLine>();
@@ -647,7 +795,7 @@ SELECT last_insert_rowid();
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT dl.id, i.name, i.barcode, dl.qty, lf.code, lt.code
+SELECT dl.id, dl.item_id, i.name, i.barcode, dl.qty, dl.qty_input, dl.uom_code, i.base_uom, lf.code, lt.code
 FROM doc_lines dl
 INNER JOIN items i ON i.id = dl.item_id
 LEFT JOIN locations lf ON lf.id = dl.from_location_id
@@ -663,11 +811,15 @@ ORDER BY dl.id;
                 lines.Add(new DocLineView
                 {
                     Id = reader.GetInt64(0),
-                    ItemName = reader.GetString(1),
-                    Barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
-                    Qty = reader.GetDouble(3),
-                    FromLocation = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    ToLocation = reader.IsDBNull(5) ? null : reader.GetString(5)
+                    ItemId = reader.GetInt64(1),
+                    ItemName = reader.GetString(2),
+                    Barcode = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    Qty = reader.GetDouble(4),
+                    QtyInput = reader.IsDBNull(5) ? null : reader.GetDouble(5),
+                    UomCode = reader.IsDBNull(6) ? null : reader.GetString(6),
+                    BaseUom = reader.IsDBNull(7) ? "шт" : reader.GetString(7),
+                    FromLocation = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    ToLocation = reader.IsDBNull(9) ? null : reader.GetString(9)
                 });
             }
 
@@ -680,25 +832,29 @@ ORDER BY dl.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO doc_lines(doc_id, item_id, qty, from_location_id, to_location_id)
-VALUES(@doc_id, @item_id, @qty, @from_location_id, @to_location_id);
+INSERT INTO doc_lines(doc_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id)
+VALUES(@doc_id, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id);
 SELECT last_insert_rowid();
 ");
             command.Parameters.AddWithValue("@doc_id", line.DocId);
             command.Parameters.AddWithValue("@item_id", line.ItemId);
             command.Parameters.AddWithValue("@qty", line.Qty);
+            command.Parameters.AddWithValue("@qty_input", line.QtyInput.HasValue ? line.QtyInput.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@uom_code", string.IsNullOrWhiteSpace(line.UomCode) ? DBNull.Value : line.UomCode);
             command.Parameters.AddWithValue("@from_location_id", (object?)line.FromLocationId ?? DBNull.Value);
             command.Parameters.AddWithValue("@to_location_id", (object?)line.ToLocationId ?? DBNull.Value);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
 
-    public void UpdateDocLineQty(long docLineId, double qty)
+    public void UpdateDocLineQty(long docLineId, double qty, double? qtyInput, string? uomCode)
     {
         WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "UPDATE doc_lines SET qty = @qty WHERE id = @id");
+            using var command = CreateCommand(connection, "UPDATE doc_lines SET qty = @qty, qty_input = @qty_input, uom_code = @uom_code WHERE id = @id");
             command.Parameters.AddWithValue("@qty", qty);
+            command.Parameters.AddWithValue("@qty_input", qtyInput.HasValue ? qtyInput.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@uom_code", string.IsNullOrWhiteSpace(uomCode) ? DBNull.Value : uomCode);
             command.Parameters.AddWithValue("@id", docLineId);
             command.ExecuteNonQuery();
             return 0;
@@ -1013,10 +1169,12 @@ VALUES(@ts, @doc_id, @item_id, @location_id, @qty_delta);
             {
                 rows.Add(new StockRow
                 {
-                    ItemName = reader.GetString(0),
-                    Barcode = reader.IsDBNull(1) ? null : reader.GetString(1),
-                    LocationCode = reader.GetString(2),
-                    Qty = reader.GetDouble(3)
+                    ItemId = reader.GetInt64(0),
+                    ItemName = reader.GetString(1),
+                    Barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
+                    LocationCode = reader.GetString(3),
+                    Qty = reader.GetDouble(4),
+                    BaseUom = reader.IsDBNull(5) ? "шт" : reader.GetString(5)
                 });
             }
 
@@ -1149,13 +1307,29 @@ SELECT last_insert_rowid();
 
     private static Item ReadItem(SqliteDataReader reader)
     {
+        var baseUom = reader.IsDBNull(4) ? null : reader.GetString(4);
         return new Item
         {
             Id = reader.GetInt64(0),
             Name = reader.GetString(1),
             Barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
             Gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
-            Uom = reader.IsDBNull(4) ? null : reader.GetString(4)
+            BaseUom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom,
+            DefaultPackagingId = reader.IsDBNull(5) ? null : reader.GetInt64(5)
+        };
+    }
+
+    private static ItemPackaging ReadItemPackaging(SqliteDataReader reader)
+    {
+        return new ItemPackaging
+        {
+            Id = reader.GetInt64(0),
+            ItemId = reader.GetInt64(1),
+            Code = reader.GetString(2),
+            Name = reader.GetString(3),
+            FactorToBase = reader.GetDouble(4),
+            IsActive = reader.GetInt64(5) == 1,
+            SortOrder = reader.GetInt32(6)
         };
     }
 
@@ -1263,8 +1437,10 @@ SELECT last_insert_rowid();
             DocId = reader.GetInt64(1),
             ItemId = reader.GetInt64(2),
             Qty = reader.GetDouble(3),
-            FromLocationId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
-            ToLocationId = reader.IsDBNull(5) ? null : reader.GetInt64(5)
+            QtyInput = reader.IsDBNull(4) ? null : reader.GetDouble(4),
+            UomCode = reader.IsDBNull(5) ? null : reader.GetString(5),
+            FromLocationId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
+            ToLocationId = reader.IsDBNull(7) ? null : reader.GetInt64(7)
         };
     }
 
@@ -1358,20 +1534,27 @@ SELECT last_insert_rowid();
         command.ExecuteNonQuery();
     }
 
+    private static void BackfillBaseUom(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE items SET base_uom = COALESCE(NULLIF(base_uom, ''), NULLIF(uom, ''), 'шт') WHERE base_uom IS NULL OR base_uom = '';";
+        command.ExecuteNonQuery();
+    }
+
     private static string BuildItemsQuery(string? search)
     {
         if (string.IsNullOrWhiteSpace(search))
         {
-            return "SELECT id, name, barcode, gtin, uom FROM items ORDER BY name";
+            return "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items ORDER BY name";
         }
 
-        return "SELECT id, name, barcode, gtin, uom FROM items WHERE name LIKE @search OR barcode LIKE @search ORDER BY name";
+        return "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items WHERE name LIKE @search OR barcode LIKE @search ORDER BY name";
     }
 
     private static string BuildStockQuery(string? search)
     {
         var baseQuery = @"
-SELECT i.name, i.barcode, l.code, SUM(led.qty_delta) AS qty
+SELECT i.id, i.name, i.barcode, l.code, SUM(led.qty_delta) AS qty, i.base_uom
 FROM ledger led
 INNER JOIN items i ON i.id = led.item_id
 INNER JOIN locations l ON l.id = led.location_id
@@ -1382,7 +1565,7 @@ INNER JOIN locations l ON l.id = led.location_id
             baseQuery += "WHERE i.name LIKE @search OR i.barcode LIKE @search OR l.code LIKE @search\n";
         }
 
-        baseQuery += "GROUP BY i.id, l.id HAVING qty != 0 ORDER BY i.name, l.code";
+        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, l.id HAVING qty != 0 ORDER BY i.name, l.code";
         return baseQuery;
     }
 

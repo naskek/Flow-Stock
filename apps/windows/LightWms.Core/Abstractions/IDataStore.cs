@@ -15,6 +15,14 @@ public interface IDataStore
     void UpdateItem(Item item);
     void DeleteItem(long itemId);
     bool IsItemUsed(long itemId);
+    void UpdateItemDefaultPackaging(long itemId, long? packagingId);
+
+    IReadOnlyList<ItemPackaging> GetItemPackagings(long itemId, bool includeInactive);
+    ItemPackaging? GetItemPackaging(long packagingId);
+    ItemPackaging? FindItemPackagingByCode(long itemId, string code);
+    long AddItemPackaging(ItemPackaging packaging);
+    void UpdateItemPackaging(ItemPackaging packaging);
+    void DeactivateItemPackaging(long packagingId);
 
     Location? FindLocationByCode(string code);
     Location? FindLocationById(long id);
@@ -43,7 +51,7 @@ public interface IDataStore
     IReadOnlyList<DocLine> GetDocLines(long docId);
     IReadOnlyList<DocLineView> GetDocLineViews(long docId);
     long AddDocLine(DocLine line);
-    void UpdateDocLineQty(long docLineId, double qty);
+    void UpdateDocLineQty(long docLineId, double qty, double? qtyInput, string? uomCode);
     void DeleteDocLine(long docLineId);
     void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef);
     void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt);
