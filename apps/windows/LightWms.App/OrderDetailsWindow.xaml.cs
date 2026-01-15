@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.Globalization;
 using System.Linq;
 using System.Windows;
 using LightWms.Core.Models;
@@ -9,7 +8,6 @@ namespace LightWms.App;
 public partial class OrderDetailsWindow : Window
 {
     private readonly AppServices _services;
-    private readonly ObservableCollection<Item> _items = new();
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly ObservableCollection<OrderLineView> _lines = new();
     private readonly List<OrderStatusOption> _statusOptions = new()
@@ -33,7 +31,7 @@ public partial class OrderDetailsWindow : Window
         _services = services;
         InitializeComponent();
         InitializeData();
-        LoadCatalog();
+        LoadPartners();
         PrepareNewOrder();
     }
 
@@ -43,25 +41,18 @@ public partial class OrderDetailsWindow : Window
         _orderId = orderId;
         InitializeComponent();
         InitializeData();
-        LoadCatalog();
+        LoadPartners();
         LoadOrder();
     }
 
     private void InitializeData()
     {
         OrderLinesGrid.ItemsSource = _lines;
-        LineItemCombo.ItemsSource = _items;
         PartnerCombo.ItemsSource = _partners;
     }
 
-    private void LoadCatalog()
+    private void LoadPartners()
     {
-        _items.Clear();
-        foreach (var item in _services.Catalog.GetItems(null))
-        {
-            _items.Add(item);
-        }
-
         _partners.Clear();
         foreach (var partner in _services.Catalog.GetPartners())
         {
@@ -158,18 +149,26 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        if (LineItemCombo.SelectedItem is not Item item)
+        var picker = new ItemPickerWindow(_services)
         {
-            MessageBox.Show("Выберите товар.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Owner = this
+        };
+
+        if (picker.ShowDialog() != true || picker.SelectedItem is not Item item)
+        {
             return;
         }
 
-        if (!TryParseQty(LineQtyBox.Text, out var qty))
+        var qtyDialog = new QuantityDialog(1)
         {
-            MessageBox.Show("Количество должно быть больше 0.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Owner = this
+        };
+        if (qtyDialog.ShowDialog() != true)
+        {
             return;
         }
 
+        var qty = qtyDialog.Qty;
         var existing = _lines.FirstOrDefault(l => l.ItemId == item.Id);
         if (existing != null)
         {
@@ -185,7 +184,6 @@ public partial class OrderDetailsWindow : Window
             });
         }
 
-        LineQtyBox.Text = string.Empty;
         RefreshLineMetrics();
     }
 
@@ -295,8 +293,14 @@ public partial class OrderDetailsWindow : Window
             line.Shortage = shortage;
         }
 
+        UpdateEmptyState();
         UpdateOutboundButtons();
         OrderLinesGrid.Items.Refresh();
+    }
+
+    private void UpdateEmptyState()
+    {
+        OrderLinesEmptyText.Visibility = _lines.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void UpdateOutboundButtons()
@@ -329,8 +333,7 @@ public partial class OrderDetailsWindow : Window
         DueDatePicker.IsEnabled = enabled;
         StatusCombo.IsEnabled = enabled;
         CommentBox.IsEnabled = enabled;
-        LineItemCombo.IsEnabled = enabled;
-        LineQtyBox.IsEnabled = enabled;
+        AddItemButton.IsEnabled = enabled;
         DeleteLineButton.IsEnabled = enabled && _selectedLine != null;
         SaveButton.IsEnabled = enabled;
         UpdateOutboundButtons();
@@ -370,11 +373,6 @@ public partial class OrderDetailsWindow : Window
         }
 
         return true;
-    }
-
-    private static bool TryParseQty(string input, out double qty)
-    {
-        return double.TryParse(input, NumberStyles.Float, CultureInfo.CurrentCulture, out qty) && qty > 0;
     }
 
     private sealed class OrderStatusOption
