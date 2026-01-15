@@ -55,7 +55,8 @@
                             <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
                             <DataGridTextColumn Header="Штрихкод" Binding="{Binding Barcode}" Width="160" />
                             <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="140" />
-                            <DataGridTextColumn Header="Кол-во" Binding="{Binding Qty}" Width="100" />
+                            <DataGridTextColumn Header="Упаковки" Binding="{Binding PackagingDisplay}" Width="220" />
+                            <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="140" />
                         </DataGrid.Columns>
                     </DataGrid>
                     <TextBlock x:Name="StockEmptyText"

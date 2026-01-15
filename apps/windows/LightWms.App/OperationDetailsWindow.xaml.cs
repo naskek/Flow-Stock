@@ -12,10 +12,10 @@ public partial class OperationDetailsWindow : Window
     private readonly AppServices _services;
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Partner> _partners = new();
-    private readonly ObservableCollection<DocLineView> _docLines = new();
+    private readonly ObservableCollection<DocLineDisplay> _docLines = new();
     private readonly long _docId;
     private Doc? _doc;
-    private DocLineView? _selectedDocLine;
+    private DocLineDisplay? _selectedDocLine;
 
     public OperationDetailsWindow(AppServices services, long docId)
     {
@@ -76,7 +76,19 @@ public partial class OperationDetailsWindow : Window
         _docLines.Clear();
         foreach (var line in _services.Documents.GetDocLines(_docId))
         {
-            _docLines.Add(line);
+            _docLines.Add(new DocLineDisplay
+            {
+                Id = line.Id,
+                ItemId = line.ItemId,
+                ItemName = line.ItemName,
+                QtyBase = line.Qty,
+                QtyInput = line.QtyInput,
+                UomCode = line.UomCode,
+                BaseUom = line.BaseUom,
+                QtyDisplay = FormatDocLineQty(line),
+                FromLocation = line.FromLocation,
+                ToLocation = line.ToLocation
+            });
         }
 
         _selectedDocLine = null;
@@ -85,7 +97,7 @@ public partial class OperationDetailsWindow : Window
 
     private void DocLines_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        _selectedDocLine = DocLinesGrid.SelectedItem as DocLineView;
+        _selectedDocLine = DocLinesGrid.SelectedItem as DocLineDisplay;
         UpdateLineButtons();
     }
 
@@ -172,7 +184,9 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var qtyDialog = new QuantityDialog(1)
+        var packagings = _services.Packagings.GetPackagings(item.Id);
+        var defaultUomCode = ResolveDefaultUomCode(item, packagings);
+        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode)
         {
             Owner = this
         };
@@ -181,7 +195,9 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var qty = qtyDialog.Qty;
+        var qtyBase = qtyDialog.QtyBase;
+        var qtyInput = qtyDialog.QtyInput;
+        var uomCode = qtyDialog.UomCode;
         if (!TryGetLineLocations(out var fromLocation, out var toLocation))
         {
             return;
@@ -195,11 +211,16 @@ public partial class OperationDetailsWindow : Window
                                         && line.ToLocationId == toLocation?.Id);
             if (existing != null)
             {
-                _services.Documents.UpdateDocLineQty(_doc!.Id, existing.Id, existing.Qty + qty);
+                var sameUom = IsSameUom(existing.UomCode, uomCode);
+                var mergedInput = sameUom
+                    ? (existing.QtyInput ?? 0) + qtyInput
+                    : (double?)null;
+                var mergedCode = sameUom ? uomCode : null;
+                _services.Documents.UpdateDocLineQty(_doc!.Id, existing.Id, existing.Qty + qtyBase, mergedInput, mergedCode);
             }
             else
             {
-                _services.Documents.AddDocLine(_doc!.Id, item!.Id, qty, fromLocation?.Id, toLocation?.Id);
+                _services.Documents.AddDocLine(_doc!.Id, item!.Id, qtyBase, fromLocation?.Id, toLocation?.Id, qtyInput, uomCode);
             }
             LoadDocLines();
         }
@@ -246,7 +267,17 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var qtyDialog = new QuantityDialog(_selectedDocLine.Qty)
+        var item = _services.DataStore.FindItemById(_selectedDocLine.ItemId);
+        if (item == null)
+        {
+            MessageBox.Show("Товар не найден.", "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        var packagings = _services.Packagings.GetPackagings(item.Id);
+        var defaultQty = _selectedDocLine.QtyInput ?? _selectedDocLine.QtyBase;
+        var defaultUom = string.IsNullOrWhiteSpace(_selectedDocLine.UomCode) ? "BASE" : _selectedDocLine.UomCode;
+        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, defaultQty, defaultUom)
         {
             Owner = this
         };
@@ -257,7 +288,7 @@ public partial class OperationDetailsWindow : Window
 
         try
         {
-            _services.Documents.UpdateDocLineQty(_doc!.Id, _selectedDocLine.Id, qtyDialog.Qty);
+            _services.Documents.UpdateDocLineQty(_doc!.Id, _selectedDocLine.Id, qtyDialog.QtyBase, qtyDialog.QtyInput, qtyDialog.UomCode);
             LoadDocLines();
         }
         catch (Exception ex)
@@ -407,6 +438,60 @@ public partial class OperationDetailsWindow : Window
         DeleteLineButton.IsEnabled = isDraft && _selectedDocLine != null;
     }
 
+    private string FormatDocLineQty(DocLineView line)
+    {
+        var baseUom = string.IsNullOrWhiteSpace(line.BaseUom) ? "шт" : line.BaseUom;
+        var baseDisplay = $"{FormatQty(line.Qty)} {baseUom}";
+
+        if (line.QtyInput.HasValue && !string.IsNullOrWhiteSpace(line.UomCode) && !IsBaseUomCode(line.UomCode))
+        {
+            var packaging = _services.Packagings
+                .GetPackagings(line.ItemId)
+                .FirstOrDefault(p => string.Equals(p.Code, line.UomCode, StringComparison.OrdinalIgnoreCase));
+            if (packaging != null)
+            {
+                var inputDisplay = FormatQty(line.QtyInput.Value);
+                return $"{inputDisplay} × {packaging.Name} ({baseDisplay})";
+            }
+        }
+
+        return baseDisplay;
+    }
+
+    private static string ResolveDefaultUomCode(Item item, IReadOnlyList<ItemPackaging> packagings)
+    {
+        if (item.DefaultPackagingId.HasValue)
+        {
+            var packaging = packagings.FirstOrDefault(p => p.Id == item.DefaultPackagingId.Value);
+            if (packaging != null)
+            {
+                return packaging.Code;
+            }
+        }
+
+        return "BASE";
+    }
+
+    private static bool IsSameUom(string? left, string? right)
+    {
+        return string.Equals(NormalizeUomCode(left), NormalizeUomCode(right), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsBaseUomCode(string? code)
+    {
+        return string.Equals(NormalizeUomCode(code), "BASE", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeUomCode(string? code)
+    {
+        return string.IsNullOrWhiteSpace(code) ? "BASE" : code.Trim();
+    }
+
+    private static string FormatQty(double value)
+    {
+        return value.ToString("0.###", CultureInfo.CurrentCulture);
+    }
+
     private bool TryGetLineLocations(out Location? fromLocation, out Location? toLocation)
     {
         fromLocation = DocFromCombo.SelectedItem as Location;
@@ -486,5 +571,19 @@ public partial class OperationDetailsWindow : Window
             default:
                 return true;
         }
+    }
+
+    private sealed class DocLineDisplay
+    {
+        public long Id { get; init; }
+        public long ItemId { get; init; }
+        public string ItemName { get; init; } = string.Empty;
+        public double QtyBase { get; init; }
+        public double? QtyInput { get; init; }
+        public string? UomCode { get; init; }
+        public string BaseUom { get; init; } = "шт";
+        public string QtyDisplay { get; init; } = string.Empty;
+        public string? FromLocation { get; init; }
+        public string? ToLocation { get; init; }
     }
 }

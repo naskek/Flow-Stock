@@ -52,7 +52,7 @@
                   KeyDown="DocLinesGrid_KeyDown">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
-                <DataGridTextColumn Header="Кол-во" Binding="{Binding Qty}" Width="100" />
+                <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="180" />
                 <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="140" />
                 <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="140" />
             </DataGrid.Columns>

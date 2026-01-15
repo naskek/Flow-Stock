@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -18,7 +19,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<Order> _orders = new();
-    private readonly ObservableCollection<StockRow> _stock = new();
+    private readonly ObservableCollection<StockDisplayRow> _stock = new();
     private readonly ObservableCollection<PackagingOption> _itemPackagingOptions = new();
     private readonly List<DocTypeFilterOption> _docTypeFilters = new()
     {
@@ -245,7 +246,16 @@ public partial class MainWindow : Window
         _stock.Clear();
         foreach (var row in _services.Documents.GetStock(search))
         {
-            _stock.Add(row);
+            var packaging = _services.Packagings.FormatAsPackaging(row.ItemId, row.Qty);
+            var baseDisplay = $"{FormatQty(row.Qty)} {row.BaseUom}";
+            _stock.Add(new StockDisplayRow
+            {
+                ItemName = row.ItemName,
+                Barcode = row.Barcode,
+                LocationCode = row.LocationCode,
+                PackagingDisplay = packaging,
+                BaseDisplay = baseDisplay
+            });
         }
 
         UpdateStockEmptyState(search);
@@ -979,9 +989,23 @@ public partial class MainWindow : Window
         PartnersGrid.SelectedItem = null;
     }
 
+    private static string FormatQty(double value)
+    {
+        return value.ToString("0.###", CultureInfo.CurrentCulture);
+    }
+
     private sealed record DocTypeFilterOption(DocType? Type, string Name);
 
     private sealed record DocStatusFilterOption(DocStatus? Status, string Name);
+
+    private sealed record StockDisplayRow
+    {
+        public string ItemName { get; init; } = string.Empty;
+        public string? Barcode { get; init; }
+        public string LocationCode { get; init; } = string.Empty;
+        public string PackagingDisplay { get; init; } = string.Empty;
+        public string BaseDisplay { get; init; } = string.Empty;
+    }
 
     private sealed record PackagingOption(long? PackagingId, string Name);
 }
