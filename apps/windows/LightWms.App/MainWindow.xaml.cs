@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<StockRow> _stock = new();
+    private readonly ObservableCollection<PackagingOption> _itemPackagingOptions = new();
     private readonly List<DocTypeFilterOption> _docTypeFilters = new()
     {
         new DocTypeFilterOption(null, "Все"),
@@ -37,6 +38,7 @@ public partial class MainWindow : Window
     private Item? _selectedItem;
     private Location? _selectedLocation;
     private Partner? _selectedPartner;
+    private bool _suppressPackagingSelection;
     private const int TabStatusIndex = 0;
     private const int TabDocsIndex = 1;
     private const int TabOrdersIndex = 2;
@@ -52,6 +54,7 @@ public partial class MainWindow : Window
         ItemsGrid.ItemsSource = _items;
         LocationsGrid.ItemsSource = _locations;
         ItemUomCombo.ItemsSource = _uoms;
+        ItemDisplayUomCombo.ItemsSource = _itemPackagingOptions;
         PartnersGrid.ItemsSource = _partners;
         DocsGrid.ItemsSource = _docs;
         OrdersGrid.ItemsSource = _orders;
@@ -122,6 +125,43 @@ public partial class MainWindow : Window
         {
             _uoms.Add(uom);
         }
+    }
+
+    private void LoadItemPackagingOptions(Item? item)
+    {
+        _itemPackagingOptions.Clear();
+        ItemDisplayUomCombo.IsEnabled = item != null;
+        ItemPackagingButton.IsEnabled = item != null;
+
+        if (item == null)
+        {
+            ItemDisplayUomCombo.SelectedItem = null;
+            return;
+        }
+
+        _itemPackagingOptions.Add(new PackagingOption(null, $"В базе ({item.BaseUom})"));
+        foreach (var packaging in _services.Packagings.GetPackagings(item.Id))
+        {
+            _itemPackagingOptions.Add(new PackagingOption(packaging.Id, $"{packaging.Name} ({packaging.Code})"));
+        }
+
+        _suppressPackagingSelection = true;
+        ItemDisplayUomCombo.SelectedItem = _itemPackagingOptions.FirstOrDefault(option => option.PackagingId == item.DefaultPackagingId)
+                                           ?? _itemPackagingOptions.FirstOrDefault();
+        _suppressPackagingSelection = false;
+    }
+
+    private void ReloadItemsAndSelect(long itemId)
+    {
+        LoadItems();
+        var item = _items.FirstOrDefault(i => i.Id == itemId);
+        if (item == null)
+        {
+            return;
+        }
+
+        ItemsGrid.SelectedItem = item;
+        ItemsGrid.ScrollIntoView(item);
     }
 
     private void LoadLocations()
@@ -414,8 +454,8 @@ public partial class MainWindow : Window
 
         try
         {
-            var uom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.CreateItem(ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, uom);
+            var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
+            _services.Catalog.CreateItem(ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, baseUom);
             LoadItems();
             ClearItemForm();
         }
@@ -426,6 +466,46 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ItemPackaging_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedItem == null)
+        {
+            MessageBox.Show("Выберите товар.", "Товары", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var window = new ItemPackagingWindow(_services, _selectedItem.Id)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+        ReloadItemsAndSelect(_selectedItem.Id);
+    }
+
+    private void ItemDisplayUomCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_suppressPackagingSelection || _selectedItem == null)
+        {
+            return;
+        }
+
+        if (ItemDisplayUomCombo.SelectedItem is not PackagingOption option)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Packagings.SetDefaultPackaging(_selectedItem.Id, option.PackagingId);
+            ReloadItemsAndSelect(_selectedItem.Id);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
+            LoadItemPackagingOptions(_selectedItem);
         }
     }
 
@@ -484,13 +564,15 @@ public partial class MainWindow : Window
         ItemDeleteButton.IsEnabled = _selectedItem != null;
         if (_selectedItem == null)
         {
+            LoadItemPackagingOptions(null);
             return;
         }
 
         ItemNameBox.Text = _selectedItem.Name;
         ItemBarcodeBox.Text = _selectedItem.Barcode ?? string.Empty;
         ItemGtinBox.Text = _selectedItem.Gtin ?? string.Empty;
-        ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _selectedItem.Uom, StringComparison.OrdinalIgnoreCase));
+        ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _selectedItem.BaseUom, StringComparison.OrdinalIgnoreCase));
+        LoadItemPackagingOptions(_selectedItem);
     }
 
     private void UpdateItem_Click(object sender, RoutedEventArgs e)
@@ -503,10 +585,9 @@ public partial class MainWindow : Window
 
         try
         {
-            var uom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, uom);
-            LoadItems();
-            ClearItemForm();
+            var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
+            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, ItemBarcodeBox.Text, ItemGtinBox.Text, baseUom);
+            ReloadItemsAndSelect(_selectedItem.Id);
         }
         catch (ArgumentException ex)
         {
@@ -871,10 +952,11 @@ public partial class MainWindow : Window
         ItemNameBox.Text = string.Empty;
         ItemBarcodeBox.Text = string.Empty;
         ItemGtinBox.Text = string.Empty;
-        ItemUomCombo.SelectedItem = null;
+        ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, "шт", StringComparison.OrdinalIgnoreCase));
         ItemSaveButton.IsEnabled = false;
         ItemDeleteButton.IsEnabled = false;
         ItemsGrid.SelectedItem = null;
+        LoadItemPackagingOptions(null);
     }
 
     private void ClearLocationForm()
@@ -900,4 +982,6 @@ public partial class MainWindow : Window
     private sealed record DocTypeFilterOption(DocType? Type, string Name);
 
     private sealed record DocStatusFilterOption(DocStatus? Status, string Name);
+
+    private sealed record PackagingOption(long? PackagingId, string Name);
 }
