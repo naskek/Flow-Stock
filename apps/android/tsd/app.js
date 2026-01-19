@@ -373,13 +373,14 @@
     function renderLocationRows(rows) {
       return rows
         .map(function (row) {
+          var qtyText = String(row.qtyBase != null ? row.qtyBase : 0);
           return (
             '<div class="stock-location-row">' +
             '  <div class="stock-location-label">' +
             escapeHtml(formatLocationLabel(row.code, row.name)) +
             "</div>" +
             '  <div class="stock-location-qty">' +
-            escapeHtml(row.qtyBase) +
+            escapeHtml(qtyText) +
             " шт</div>" +
             "</div>"
           );
