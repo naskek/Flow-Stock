@@ -722,6 +722,26 @@
     });
   }
 
+  function findLocationByCode(code) {
+    var clean = String(code || "").trim().toLowerCase();
+    if (!clean) {
+      return Promise.resolve(null);
+    }
+    return init().then(function () {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(STORE_LOCATIONS, "readonly");
+        var index = tx.objectStore(STORE_LOCATIONS).index("codeLower");
+        var request = index.get(clean);
+        request.onsuccess = function () {
+          resolve(request.result || null);
+        };
+        request.onerror = function () {
+          reject(request.error);
+        };
+      });
+    });
+  }
+
   global.TsdStorage = {
     init: init,
     getSetting: getSetting,
@@ -742,6 +762,7 @@
     searchLocations: searchLocations,
     getPartnerById: getPartnerById,
     getLocationById: getLocationById,
+    findLocationByCode: findLocationByCode,
     getStockByItemId: getStockByItemId,
     getTotalStockByItemId: getTotalStockByItemId,
   };

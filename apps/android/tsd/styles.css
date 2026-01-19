@@ -291,6 +291,19 @@ body {
   font-size: 16px;
 }
 
+.input-error {
+  border-color: #d64541;
+  background: #fff4f4;
+}
+
+.field-error {
+  color: #d64541;
+  font-size: 14px;
+  min-height: 18px;
+  margin-top: -8px;
+  margin-bottom: 8px;
+}
+
 .form-grid {
   display: grid;
   gap: 16px;

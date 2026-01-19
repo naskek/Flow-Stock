@@ -683,12 +683,13 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="toInput" data-header="to" type="text" value="' +
+        '  <input class="form-input picker-fallback" id="toInput" data-header="to" data-location-field="to" type="text" value="' +
         escapeHtml(header.to || "") +
         "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '<div class="field-error" id="toError"></div>' +
         "</div>"
       );
     }
@@ -733,12 +734,13 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" type="text" value="' +
+        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" value="' +
         escapeHtml(header.from || "") +
         "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '<div class="field-error" id="fromError"></div>' +
         "</div>"
       );
     }
@@ -757,12 +759,13 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" type="text" value="' +
+        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" value="' +
         escapeHtml(header.from || "") +
         "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '<div class="field-error" id="fromError"></div>' +
         "</div>" +
         '<div class="form-field">' +
         '  <label class="form-label" for="toInput">Куда</label>' +
@@ -774,12 +777,13 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="toInput" data-header="to" type="text" value="' +
+        '  <input class="form-input picker-fallback" id="toInput" data-header="to" data-location-field="to" type="text" value="' +
         escapeHtml(header.to || "") +
         "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '<div class="field-error" id="toError"></div>' +
         "</div>"
       );
     }
@@ -800,12 +804,13 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" type="text" value="' +
+        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" value="' +
         escapeHtml(header.from || "") +
         "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '<div class="field-error" id="fromError"></div>' +
         "</div>" +
         '<div class="form-field">' +
         '  <label class="form-label" for="reasonSelect">Причина</label>' +
@@ -831,12 +836,13 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="locationInput" data-header="location" type="text" value="' +
+        '  <input class="form-input picker-fallback" id="locationInput" data-header="location" data-location-field="location" type="text" value="' +
         escapeHtml(header.location || "") +
         "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '<div class="field-error" id="locationError"></div>' +
         "</div>"
       );
     }
@@ -1315,18 +1321,6 @@
         partnerPickerRow.classList.toggle("is-hidden", !hasPartners);
         partnerInput.classList.toggle("is-hidden", hasPartners);
       }
-      if (toPickerRow && toInput) {
-        toPickerRow.classList.toggle("is-hidden", !hasLocations);
-        toInput.classList.toggle("is-hidden", hasLocations);
-      }
-      if (fromPickerRow && fromInput) {
-        fromPickerRow.classList.toggle("is-hidden", !hasLocations);
-        fromInput.classList.toggle("is-hidden", hasLocations);
-      }
-      if (locationPickerRow && locationInput) {
-        locationPickerRow.classList.toggle("is-hidden", !hasLocations);
-        locationInput.classList.toggle("is-hidden", hasLocations);
-      }
 
       if (partnerPickBtn) {
         partnerPickBtn.disabled = !hasPartners || doc.status !== "DRAFT";
@@ -1340,6 +1334,78 @@
       if (locationPickBtn) {
         locationPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
       }
+    }
+
+    var locationErrorTimers = {};
+    var locationFieldInputs = document.querySelectorAll("[data-location-field]");
+
+    function setLocationError(field, message) {
+      var errorEl = document.getElementById(field + "Error");
+      var inputEl = document.getElementById(field + "Input");
+      if (errorEl) {
+        errorEl.textContent = message || "";
+      }
+      if (inputEl) {
+        inputEl.classList.toggle("input-error", !!message);
+      }
+      if (locationErrorTimers[field]) {
+        clearTimeout(locationErrorTimers[field]);
+        locationErrorTimers[field] = null;
+      }
+      if (message) {
+        locationErrorTimers[field] = window.setTimeout(function () {
+          setLocationError(field, "");
+        }, 2000);
+      }
+    }
+
+    function focusFirstLocationOrBarcode() {
+      var candidateFields = [];
+      if (doc.op === "INBOUND") {
+        candidateFields = ["to"];
+      } else if (doc.op === "OUTBOUND") {
+        candidateFields = ["from"];
+      } else if (doc.op === "MOVE") {
+        candidateFields = ["from", "to"];
+      } else if (doc.op === "WRITE_OFF") {
+        candidateFields = ["from"];
+      } else if (doc.op === "INVENTORY") {
+        candidateFields = ["location"];
+      }
+      for (var i = 0; i < candidateFields.length; i += 1) {
+        var field = candidateFields[i];
+        if (!normalizeValue(doc.header[field])) {
+          var element = document.getElementById(field + "Input");
+          if (element) {
+            element.focus();
+            return;
+          }
+        }
+      }
+      focusBarcode();
+    }
+
+    function handleLocationEntry(field) {
+      if (doc.status !== "DRAFT") {
+        return;
+      }
+      var inputEl = document.getElementById(field + "Input");
+      var value = inputEl ? inputEl.value.trim() : "";
+      if (!value) {
+        setLocationError(field, "Введите код локации");
+        return;
+      }
+      TsdStorage.findLocationByCode(value)
+        .then(function (location) {
+          if (!location) {
+            setLocationError(field, "Локация не найдена: " + value);
+            return;
+          }
+          applyLocationSelection(field, location);
+        })
+        .catch(function () {
+          setLocationError(field, "Ошибка поиска локации");
+        });
     }
 
     function hydrateHeaderFromCatalog() {
@@ -1568,9 +1634,11 @@
     }
 
     function applyLocationSelection(field, location) {
+      setLocationError(field, "");
       doc.header[field] = location.code || "";
       doc.header[field + "_name"] = location.name || null;
       doc.header[field + "_id"] = location.locationId;
+      updateRecentSetting("recentLocationIds", location.locationId);
       saveDocState().then(refreshDocView);
     }
 
@@ -1684,6 +1752,22 @@
       }
     });
 
+    locationFieldInputs.forEach(function (input) {
+      var field = input.getAttribute("data-location-field");
+      if (!field) {
+        return;
+      }
+      input.addEventListener("input", function () {
+        setLocationError(field, "");
+      });
+      input.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          handleLocationEntry(field);
+        }
+      });
+    });
+
     TsdStorage.getDataStatus()
       .then(function (status) {
         dataStatus = status;
@@ -1694,7 +1778,7 @@
         applyCatalogState(null);
       });
 
-    focusBarcode();
+    focusFirstLocationOrBarcode();
   }
 
   function wireSettings() {
