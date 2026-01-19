@@ -1,8 +1,8 @@
-(function (global) {
+ (function (global) {
   "use strict";
 
   var DB_NAME = "tsd_app";
-  var DB_VERSION = 3;
+  var DB_VERSION = 4;
   var STORE_SETTINGS = "settings";
   var STORE_DOCS = "docs";
   var STORE_META = "meta";
@@ -12,6 +12,44 @@
   var STORE_LOCATIONS = "locations";
   var STORE_STOCK = "stock";
   var db = null;
+  var locationCache = null;
+
+  function invalidateLocationCache() {
+    locationCache = null;
+  }
+
+  function loadLocationMap() {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(STORE_LOCATIONS, "readonly");
+      var store = tx.objectStore(STORE_LOCATIONS);
+      var request = store.openCursor();
+      var map = {};
+      request.onsuccess = function (event) {
+        var cursor = event.target.result;
+        if (cursor) {
+          map[cursor.key] = cursor.value;
+          cursor.continue();
+          return;
+        }
+        resolve(map);
+      };
+      request.onerror = function () {
+        reject(request.error);
+      };
+    });
+  }
+
+  function getLocationMap() {
+    if (locationCache) {
+      return Promise.resolve(locationCache);
+    }
+    return init().then(function () {
+      return loadLocationMap().then(function (map) {
+        locationCache = map;
+        return map;
+      });
+    });
+  }
 
   function openDb() {
     return new Promise(function (resolve, reject) {
@@ -29,7 +67,27 @@
           database.createObjectStore(STORE_META, { keyPath: "key" });
         }
         if (!database.objectStoreNames.contains(STORE_ITEMS)) {
-          database.createObjectStore(STORE_ITEMS, { keyPath: "itemId" });
+          var itemsStore = database.createObjectStore(STORE_ITEMS, { keyPath: "itemId" });
+          if (!itemsStore.indexNames.contains("nameLower")) {
+            itemsStore.createIndex("nameLower", "nameLower", { unique: false });
+          }
+          if (!itemsStore.indexNames.contains("skuLower")) {
+            itemsStore.createIndex("skuLower", "skuLower", { unique: false });
+          }
+          if (!itemsStore.indexNames.contains("gtinLower")) {
+            itemsStore.createIndex("gtinLower", "gtinLower", { unique: false });
+          }
+        } else if (event.oldVersion < 4) {
+          var existingItemsStore = event.currentTarget.transaction.objectStore(STORE_ITEMS);
+          if (!existingItemsStore.indexNames.contains("nameLower")) {
+            existingItemsStore.createIndex("nameLower", "nameLower", { unique: false });
+          }
+          if (!existingItemsStore.indexNames.contains("skuLower")) {
+            existingItemsStore.createIndex("skuLower", "skuLower", { unique: false });
+          }
+          if (!existingItemsStore.indexNames.contains("gtinLower")) {
+            existingItemsStore.createIndex("gtinLower", "gtinLower", { unique: false });
+          }
         }
         if (!database.objectStoreNames.contains(STORE_ITEM_CODES)) {
           var itemCodesStore = database.createObjectStore(STORE_ITEM_CODES, { keyPath: "code" });
@@ -271,6 +329,7 @@
         var stockStore = tx.objectStore(STORE_STOCK);
 
         tx.oncomplete = function () {
+          invalidateLocationCache();
           resolve(true);
         };
         tx.onerror = function () {
@@ -291,7 +350,11 @@
             metaStore.put({ key: "schemaVersion", value: meta.schemaVersion || null });
 
             (json.items || []).forEach(function (item) {
-              itemsStore.put(item);
+              var itemRecord = Object.assign({}, item);
+              itemRecord.nameLower = String(itemRecord.name || "").toLowerCase();
+              itemRecord.skuLower = String(itemRecord.sku || "").toLowerCase();
+              itemRecord.gtinLower = String(itemRecord.gtin || "").toLowerCase();
+              itemsStore.put(itemRecord);
               var codes = [];
               if (Array.isArray(item.barcodes)) {
                 codes = codes.concat(item.barcodes);
@@ -402,6 +465,111 @@
           stock: results[5] || 0,
         },
       };
+    });
+  }
+
+  function getMetaExportedAt() {
+    return getMetaValue("dataExportedAt");
+  }
+
+  function searchItems(query, limit) {
+    var q = String(query || "").toLowerCase();
+    var max = typeof limit === "number" ? limit : 20;
+    return init().then(function () {
+      return new Promise(function (resolve, reject) {
+        var results = [];
+        var tx = db.transaction(STORE_ITEMS, "readonly");
+        var store = tx.objectStore(STORE_ITEMS);
+        var request = store.openCursor();
+        request.onsuccess = function (event) {
+          var cursor = event.target.result;
+          if (!cursor) {
+            resolve(results);
+            return;
+          }
+          var item = cursor.value || {};
+          var matches = !q;
+          if (!matches) {
+            var candidate =
+              (item.nameLower || String(item.name || "").toLowerCase()) +
+              "|" +
+              (item.skuLower || String(item.sku || "").toLowerCase()) +
+              "|" +
+              (item.gtinLower || String(item.gtin || "").toLowerCase());
+            matches = candidate.indexOf(q) !== -1;
+          }
+          if (matches) {
+            results.push({
+              itemId: item.itemId,
+              name: item.name,
+              sku: item.sku,
+              gtin: item.gtin,
+            });
+          }
+          if (results.length >= max) {
+            resolve(results.slice(0, max));
+            return;
+          }
+          cursor.continue();
+        };
+        request.onerror = function () {
+          reject(request.error);
+        };
+      });
+    });
+  }
+
+  function getStockByItemId(itemId) {
+    return init().then(function () {
+      return new Promise(function (resolve, reject) {
+        var entries = [];
+        var tx = db.transaction(STORE_STOCK, "readonly");
+        var index = tx.objectStore(STORE_STOCK).index("byItemId");
+        var range = IDBKeyRange.only(itemId);
+        var request = index.openCursor(range);
+        request.onsuccess = function (event) {
+          var cursor = event.target.result;
+          if (cursor) {
+            entries.push(cursor.value);
+            cursor.continue();
+            return;
+          }
+          getLocationMap()
+            .then(function (locations) {
+              var rows = entries.map(function (entry) {
+                var location = locations[entry.locationId] || {};
+                return {
+                  locationId: entry.locationId,
+                  code: location.code || "",
+                  name: location.name || "",
+                  qtyBase: typeof entry.qtyBase === "number" ? entry.qtyBase : 0,
+                };
+              });
+              rows.sort(function (a, b) {
+                var qtyDiff = b.qtyBase - a.qtyBase;
+                if (qtyDiff !== 0) {
+                  return qtyDiff;
+                }
+                return (a.code || "").localeCompare(b.code || "");
+              });
+              resolve(rows);
+            })
+            .catch(function (error) {
+              reject(error);
+            });
+        };
+        request.onerror = function () {
+          reject(request.error);
+        };
+      });
+    });
+  }
+
+  function getTotalStockByItemId(itemId) {
+    return getStockByItemId(itemId).then(function (rows) {
+      return rows.reduce(function (sum, row) {
+        return sum + (row.qtyBase || 0);
+      }, 0);
     });
   }
 
@@ -567,10 +735,14 @@
     listDocs: listDocs,
     importTsdData: importTsdData,
     getDataStatus: getDataStatus,
+    getMetaExportedAt: getMetaExportedAt,
+    searchItems: searchItems,
     findItemByCode: findItemByCode,
     searchPartners: searchPartners,
     searchLocations: searchLocations,
     getPartnerById: getPartnerById,
     getLocationById: getLocationById,
+    getStockByItemId: getStockByItemId,
+    getTotalStockByItemId: getTotalStockByItemId,
   };
 })(window);

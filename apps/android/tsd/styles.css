@@ -147,6 +147,101 @@ body {
   margin: 20px 0 12px;
 }
 
+.stock-status {
+  font-size: 16px;
+  color: #486581;
+  margin-bottom: 12px;
+}
+
+.stock-suggestions {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.stock-suggestion {
+  border: 2px solid #d9e7ee;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stock-suggestion:active {
+  transform: translateY(1px);
+}
+
+.stock-suggestion-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.stock-suggestion-meta {
+  font-size: 14px;
+  color: #486581;
+  margin-top: 4px;
+}
+
+.stock-message {
+  margin-bottom: 12px;
+  font-size: 16px;
+  color: #b23a2b;
+}
+
+.stock-details {
+  margin-bottom: 12px;
+}
+
+.stock-card {
+  border: 2px solid #d9e7ee;
+  border-radius: 16px;
+  padding: 16px;
+  background: #fff;
+  display: grid;
+  gap: 10px;
+}
+
+.stock-title {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.stock-subtitle {
+  font-size: 16px;
+  color: #486581;
+}
+
+.stock-total {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.stock-locations {
+  display: grid;
+  gap: 8px;
+}
+
+.stock-location-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 16px;
+}
+
+.stock-location-label {
+  color: #102a43;
+}
+
+.stock-location-qty {
+  font-weight: 700;
+}
+
+.stock-no-rows {
+  font-size: 16px;
+  color: #486581;
+}
+
 .screen-title {
   margin: 0 0 16px;
   font-size: 26px;
