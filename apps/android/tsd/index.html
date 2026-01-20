@@ -6,18 +6,23 @@
       name="viewport"
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
-    <title>TSD MVP</title>
+    <title>LightWMS MVP</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div id="root" class="app-shell">
       <header class="app-header">
-        <button id="backBtn" class="btn btn-ghost" type="button" aria-label="Назад">
-          Назад
+        <button id="backBtn" class="btn btn-ghost btn-icon-top" type="button" aria-label="Назад">
+          &larr;
         </button>
-        <div class="app-title">TSD</div>
-        <button id="settingsBtn" class="btn btn-ghost btn-gear" type="button">
-          ⚙ Настройки
+        <div class="app-title"></div>
+        <button
+          id="settingsBtn"
+          class="btn btn-ghost btn-gear btn-icon-top"
+          type="button"
+          aria-label="Настройки"
+        >
+          &#9881;
         </button>
       </header>
       <main id="app" class="app-content" role="main"></main>
@@ -36,3 +41,6 @@
     <script src="app.js"></script>
   </body>
 </html>
+
+
+

@@ -39,7 +39,7 @@ body {
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px 6px;
+  padding: 6px 8px 4px;
 }
 
 .app-title {
@@ -90,6 +90,22 @@ body {
 
 .btn-gear {
   justify-self: end;
+}
+
+.btn-icon-top {
+  min-width: 44px;
+  height: 44px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.btn-icon-top:active {
+  background: rgba(31, 111, 139, 0.1);
+  transform: scale(0.96);
 }
 
 .btn-outline {
@@ -377,44 +393,46 @@ body {
 .header-fields {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .field-row {
   display: grid;
-  grid-template-columns: 90px 1fr auto;
+  grid-template-columns: 86px 1fr auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .field-label {
   font-size: 13px;
   color: #486581;
+  width: 86px;
 }
 
 .field-value {
-  height: 36px;
+  height: 32px;
   padding: 6px 10px;
   border-radius: 12px;
   border: 2px solid #bfd7e3;
   background: #fff;
   display: flex;
   align-items: center;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .field-pick {
-  height: 36px;
+  height: 32px;
   padding: 6px 10px;
   border-radius: 12px;
   font-size: 13px;
 }
 
 .hint-compact {
-  margin-top: 4px;
+  margin-top: 2px;
   font-size: 12px;
   opacity: 0.75;
   line-height: 1.2;
