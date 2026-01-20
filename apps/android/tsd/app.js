@@ -4,13 +4,68 @@
   var app = document.getElementById("app");
   var backBtn = document.getElementById("backBtn");
   var settingsBtn = document.getElementById("settingsBtn");
+  var scanSink = document.getElementById("scanSink");
   var currentRoute = null;
+  var scanKeydownHandler = null;
 
   var STATUS_ORDER = {
     DRAFT: 0,
     READY: 1,
     EXPORTED: 2,
   };
+
+  var NAV_ORIGIN_KEY = "tsdNavOrigin";
+
+  function setNavOrigin(value) {
+    if (!window.sessionStorage) {
+      return;
+    }
+    try {
+      sessionStorage.setItem(NAV_ORIGIN_KEY, value);
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  function getNavOrigin() {
+    if (!window.sessionStorage) {
+      return null;
+    }
+    try {
+      return sessionStorage.getItem(NAV_ORIGIN_KEY);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function isManualOverlayOpen() {
+    return !!document.querySelector(".overlay");
+  }
+
+  function enterScanMode() {
+    var active = document.activeElement;
+    if (active && active.blur) {
+      active.blur();
+    }
+    if (scanSink) {
+      scanSink.value = "";
+      scanSink.focus();
+    }
+  }
+
+  function setScanHandler(handler) {
+    if (scanKeydownHandler) {
+      if (scanKeydownHandler.cleanup) {
+        scanKeydownHandler.cleanup();
+      }
+      document.removeEventListener("keydown", scanKeydownHandler, true);
+      scanKeydownHandler = null;
+    }
+    if (handler) {
+      scanKeydownHandler = handler;
+      document.addEventListener("keydown", scanKeydownHandler, true);
+    }
+  }
 
   var STATUS_LABELS = {
     DRAFT: "Черновик",
@@ -160,7 +215,7 @@
     }
 
     if (route.name === "home") {
-      backBtn.textContent = "Документы";
+      backBtn.textContent = "История операций";
       backBtn.classList.remove("is-hidden");
     } else {
       backBtn.textContent = "Назад";
@@ -173,6 +228,11 @@
   }
 
   function renderRoute() {
+    setScanHandler(null);
+    if (!window.location.hash || window.location.hash === "#") {
+      navigate("/home");
+      return;
+    }
     var route = getRoute();
     currentRoute = route;
     updateHeader(route);
@@ -252,8 +312,9 @@
       '    <button class="btn menu-btn" data-op="INBOUND">Приемка</button>' +
       '    <button class="btn menu-btn" data-op="OUTBOUND">Отгрузка</button>' +
       '    <button class="btn menu-btn" data-op="MOVE">Перемещение</button>' +
-      '    <button class="btn menu-btn" data-op="WRITE_OFF">Списание</button>' +
+    '    <button class="btn menu-btn" data-op="WRITE_OFF">Списание</button>' +
     '    <button class="btn menu-btn" data-op="INVENTORY">Инвентаризация</button>' +
+    '    <button class="btn menu-btn" data-route="docs">История операций</button>' +
     '    <button class="btn menu-btn" data-route="stock">Остатки</button>' +
       "  </div>" +
       "</section>"
@@ -302,7 +363,7 @@
     return (
       '<section class="screen">' +
       '  <div class="screen-card">' +
-      '    <div class="section-title">Список операций</div>' +
+      '    <div class="section-title">История операций</div>' +
       '    <div class="actions-row">' +
       '      <button class="btn primary-btn" id="newDocBtn">Новая операция</button>' +
       '      <button class="btn btn-outline" id="exportBtn">Экспорт JSONL</button>' +
@@ -675,12 +736,16 @@
       linesHtml +
       totalsHtml +
       "    </div>" +
+      '    <div id="docActionStatus" class="status"></div>' +
       '    <div class="actions-bar">' +
       '      <button class="btn btn-outline" id="undoBtn" ' +
       (doc.undoStack && doc.undoStack.length && isDraft ? "" : "disabled") +
       ">Undo</button>" +
       (isDraft
         ? '      <button class="btn primary-btn" id="finishBtn">Завершить</button>'
+        : "") +
+      (isDraft
+        ? '      <button class="btn btn-danger" id="deleteDraftBtn">🗑️ Удалить черновик</button>'
         : "") +
       (isReady
         ? '      <button class="btn btn-outline" id="revertBtn">Вернуть в черновик</button>'
@@ -726,12 +791,16 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="toInput" data-header="to" data-location-field="to" type="text" value="' +
+        '  <div class="input-row">' +
+        '    <input class="form-input picker-fallback" id="toInput" data-header="to" data-location-field="to" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
         escapeHtml(header.to || "") +
-        "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '    <button class="btn btn-outline kbd-btn" data-manual="to" type="button" aria-label="Ручной ввод" ' +
+        (isDraft ? "" : "disabled") +
+        ">⌨</button>" +
+        "  </div>" +
         '<div class="field-error" id="toError"></div>' +
         "</div>"
       );
@@ -777,12 +846,16 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" value="' +
+        '  <div class="input-row">' +
+        '    <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
         escapeHtml(header.from || "") +
-        "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '    <button class="btn btn-outline kbd-btn" data-manual="from" type="button" aria-label="Ручной ввод" ' +
+        (isDraft ? "" : "disabled") +
+        ">⌨</button>" +
+        "  </div>" +
         '<div class="field-error" id="fromError"></div>' +
         "</div>"
       );
@@ -802,12 +875,16 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" value="' +
+        '  <div class="input-row">' +
+        '    <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
         escapeHtml(header.from || "") +
-        "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '    <button class="btn btn-outline kbd-btn" data-manual="from" type="button" aria-label="Ручной ввод" ' +
+        (isDraft ? "" : "disabled") +
+        ">⌨</button>" +
+        "  </div>" +
         '<div class="field-error" id="fromError"></div>' +
         "</div>" +
         '<div class="form-field">' +
@@ -820,12 +897,16 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="toInput" data-header="to" data-location-field="to" type="text" value="' +
+        '  <div class="input-row">' +
+        '    <input class="form-input picker-fallback" id="toInput" data-header="to" data-location-field="to" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
         escapeHtml(header.to || "") +
-        "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '    <button class="btn btn-outline kbd-btn" data-manual="to" type="button" aria-label="Ручной ввод" ' +
+        (isDraft ? "" : "disabled") +
+        ">⌨</button>" +
+        "  </div>" +
         '<div class="field-error" id="toError"></div>' +
         "</div>"
       );
@@ -844,12 +925,16 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" value="' +
+        '  <div class="input-row">' +
+        '    <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
         escapeHtml(header.from || "") +
-        "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '    <button class="btn btn-outline kbd-btn" data-manual="from" type="button" aria-label="Ручной ввод" ' +
+        (isDraft ? "" : "disabled") +
+        ">⌨</button>" +
+        "  </div>" +
         '<div class="field-error" id="fromError"></div>' +
         "</div>" +
         '<div class="form-field reason-field">' +
@@ -880,12 +965,16 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <input class="form-input picker-fallback" id="locationInput" data-header="location" data-location-field="location" type="text" value="' +
+        '  <div class="input-row">' +
+        '    <input class="form-input picker-fallback" id="locationInput" data-header="location" data-location-field="location" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
         escapeHtml(header.location || "") +
-        "" +
         '" ' +
         (isDraft ? "" : "disabled") +
         " />" +
+        '    <button class="btn btn-outline kbd-btn" data-manual="location" type="button" aria-label="Ручной ввод" ' +
+        (isDraft ? "" : "disabled") +
+        ">⌨</button>" +
+        "  </div>" +
         '<div class="field-error" id="locationError"></div>' +
         "</div>"
       );
@@ -907,9 +996,14 @@
       (qtyMode === "ASK" ? " is-active" : "") +
       '" data-mode="ASK" type="button">Кол-во...</button>' +
       "  </div>" +
-      '  <input class="form-input scan-input" id="barcodeInput" type="text" ' +
+      '  <div class="scan-input-row">' +
+      '    <input class="form-input scan-input" id="barcodeInput" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly ' +
       (isDraft ? "" : "disabled") +
       " />" +
+      '    <button class="btn btn-outline kbd-btn" data-manual="barcode" type="button" aria-label="Ручной ввод" ' +
+      (isDraft ? "" : "disabled") +
+      ">⌨</button>" +
+      "  </div>" +
       '  <div id="scanItemInfo" class="scan-info"></div>' +
       '  <div class="scan-actions">' +
       '    <div class="qty-indicator">Шаг: <span id="qtyStepValue">1</span> шт</div>' +
@@ -1025,7 +1119,7 @@
     buttons.forEach(function (btn) {
       btn.addEventListener("click", function () {
         var op = btn.getAttribute("data-op");
-        createDocAndOpen(op);
+        createDocAndOpen(op, "home");
       });
     });
     var routes = document.querySelectorAll("[data-route]");
@@ -1044,6 +1138,7 @@
 
     if (newBtn) {
       newBtn.addEventListener("click", function () {
+        setNavOrigin("history");
         navigate("/new");
       });
     }
@@ -1057,6 +1152,7 @@
     docs.forEach(function (item) {
       item.addEventListener("click", function () {
         var docId = item.getAttribute("data-doc");
+        setNavOrigin("history");
         navigate("/doc/" + encodeURIComponent(docId));
       });
     });
@@ -1067,7 +1163,7 @@
     buttons.forEach(function (btn) {
       btn.addEventListener("click", function () {
         var op = btn.getAttribute("data-op");
-        createDocAndOpen(op);
+        createDocAndOpen(op, "history");
       });
     });
   }
@@ -1452,6 +1548,86 @@
     });
   }
 
+  function openManualInputOverlay(options) {
+    var config = options || {};
+    var title = config.title || "Ручной ввод";
+    var label = config.label || "";
+    var placeholder = config.placeholder || "";
+    var inputMode = config.inputMode || "text";
+    var overlay = document.createElement("div");
+    overlay.className = "overlay manual-input-overlay";
+    overlay.innerHTML =
+      '<div class="overlay-card manual-input-card">' +
+      '  <div class="overlay-header">' +
+      '    <div class="overlay-title"></div>' +
+      '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+      "  </div>" +
+      '  <div class="manual-input-hint">Ручной ввод. Подтвердите Enter или OK.</div>' +
+      (label ? '<label class="form-label"></label>' : "") +
+      '  <input class="form-input manual-input-field" type="text" inputmode="' +
+      escapeHtml(inputMode) +
+      '" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+      '  <div class="manual-input-actions">' +
+      '    <button class="btn btn-outline overlay-cancel" type="button">Отмена</button>' +
+      '    <button class="btn primary-btn overlay-confirm" type="button">OK</button>' +
+      "  </div>" +
+      "</div>";
+    overlay.querySelector(".overlay-title").textContent = title;
+    if (label) {
+      overlay.querySelector(".form-label").textContent = label;
+    }
+    var input = overlay.querySelector(".manual-input-field");
+    var closeBtn = overlay.querySelector(".overlay-close");
+    var cancelBtn = overlay.querySelector(".overlay-cancel");
+    var confirmBtn = overlay.querySelector(".overlay-confirm");
+
+    if (input) {
+      input.placeholder = placeholder;
+    }
+
+    function close() {
+      document.body.removeChild(overlay);
+      document.removeEventListener("keydown", onKeyDown);
+      enterScanMode();
+    }
+
+    function submit() {
+      var value = input ? input.value.trim() : "";
+      if (value && typeof config.onSubmit === "function") {
+        config.onSubmit(value);
+      }
+      close();
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        close();
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submit();
+      }
+    }
+
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", onKeyDown);
+
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) {
+        close();
+      }
+    });
+
+    closeBtn.addEventListener("click", close);
+    cancelBtn.addEventListener("click", close);
+    confirmBtn.addEventListener("click", submit);
+
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }
+
   function wireDoc(doc) {
     doc.lines = doc.lines || [];
     doc.undoStack = doc.undoStack || [];
@@ -1475,6 +1651,8 @@
     var headerInputs = document.querySelectorAll("[data-header]");
     var qtyButtons = document.querySelectorAll(".qty-btn");
     var deleteButtons = document.querySelectorAll(".line-delete");
+    var deleteDocBtn = document.getElementById("deleteDraftBtn");
+    var manualInputButtons = document.querySelectorAll(".kbd-btn");
     var partnerPickBtn = document.getElementById("partnerPickBtn");
     var toPickBtn = document.getElementById("toPickBtn");
     var fromPickBtn = document.getElementById("fromPickBtn");
@@ -1496,6 +1674,17 @@
     var qtyOverlay = null;
     var qtyOverlayKeyListener = null;
     var isDraftDoc = doc.status === "DRAFT";
+    var docActionStatus = document.getElementById("docActionStatus");
+    var scanTarget = { type: "barcode", field: null };
+    var scanBuffer = "";
+    var scanBufferTimer = null;
+
+    function setDocStatus(text) {
+      if (!docActionStatus) {
+        return;
+      }
+      docActionStatus.textContent = text || "";
+    }
 
     function updateQtyIndicator() {
       if (qtyIndicator) {
@@ -1511,10 +1700,39 @@
       scanItemInfo.classList.toggle("scan-info-unknown", !!isUnknown);
     }
 
-    function focusBarcode() {
-      if (barcodeInput && !barcodeInput.disabled) {
-        barcodeInput.focus();
+    function updateScanInfoByBarcode(value) {
+      var trimmed = String(value || "").trim();
+      if (!trimmed) {
+        setScanInfo("", false);
+        return;
       }
+      var token = (lookupToken += 1);
+      TsdStorage.findItemByCode(trimmed)
+        .then(function (item) {
+          if (token !== lookupToken) {
+            return;
+          }
+          if (item && item.name) {
+            setScanInfo(item.name, false);
+          } else {
+            setScanInfo("Неизвестный код", true);
+          }
+        })
+        .catch(function () {
+          if (token === lookupToken) {
+            setScanInfo("", false);
+          }
+        });
+    }
+
+    function setScanTarget(type, field) {
+      scanTarget.type = type;
+      scanTarget.field = field || null;
+    }
+
+    function focusBarcode() {
+      setScanTarget("barcode");
+      enterScanMode();
     }
 
     function applyCatalogState(status) {
@@ -1819,22 +2037,25 @@
       for (var i = 0; i < candidateFields.length; i += 1) {
         var field = candidateFields[i];
         if (!normalizeValue(doc.header[field])) {
-          var element = document.getElementById(field + "Input");
-          if (element) {
-            element.focus();
-            return;
-          }
+          setScanTarget("location", field);
+          enterScanMode();
+          return;
         }
       }
       focusBarcode();
     }
 
-    function handleLocationEntry(field) {
+    function handleLocationEntry(field, valueOverride) {
       if (doc.status !== "DRAFT") {
         return;
       }
       var inputEl = document.getElementById(field + "Input");
-      var value = inputEl ? inputEl.value.trim() : "";
+      var value = normalizeValue(
+        valueOverride != null ? valueOverride : inputEl ? inputEl.value : ""
+      );
+      if (inputEl && valueOverride != null) {
+        inputEl.value = value;
+      }
       if (!value) {
         setLocationError(field, "Введите код локации");
         return;
@@ -1930,11 +2151,13 @@
       wireDoc(doc);
     }
 
-    function handleAddLine() {
+    function handleAddLine(barcodeOverride) {
       if (doc.status !== "DRAFT") {
         return;
       }
-      var barcode = barcodeInput ? barcodeInput.value.trim() : "";
+      var barcode = normalizeValue(
+        barcodeOverride != null ? barcodeOverride : barcodeInput ? barcodeInput.value : ""
+      );
       if (!barcode) {
         focusBarcode();
         return;
@@ -1949,32 +2172,90 @@
       addLineWithQuantity(barcode, qtyStep);
     }
 
+    function clearScanBuffer() {
+      scanBuffer = "";
+      if (scanBufferTimer) {
+        clearTimeout(scanBufferTimer);
+        scanBufferTimer = null;
+      }
+      if (barcodeInput && scanTarget.type === "barcode") {
+        barcodeInput.value = "";
+      }
+      updateScanInfoByBarcode("");
+    }
+
+    function scheduleScanBufferReset() {
+      if (scanBufferTimer) {
+        clearTimeout(scanBufferTimer);
+      }
+      scanBufferTimer = window.setTimeout(function () {
+        clearScanBuffer();
+      }, 400);
+    }
+
+    function handleScannedValue(value) {
+      var trimmed = normalizeValue(value);
+      if (!trimmed) {
+        return;
+      }
+      if (scanTarget.type === "location" && scanTarget.field) {
+        handleLocationEntry(scanTarget.field, trimmed);
+        return;
+      }
+      handleAddLine(trimmed);
+    }
+
+    function handleScanKeydown(event) {
+      if (isManualOverlayOpen()) {
+        return;
+      }
+      if (!isDraftDoc) {
+        return;
+      }
+      if (event.key === "Enter") {
+        if (scanBuffer) {
+          var value = scanBuffer;
+          clearScanBuffer();
+          handleScannedValue(value);
+          event.preventDefault();
+        }
+        return;
+      }
+      if (
+        event.key &&
+        event.key.length === 1 &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey
+      ) {
+        scanBuffer += event.key;
+        scheduleScanBufferReset();
+        if (barcodeInput && scanTarget.type === "barcode") {
+          barcodeInput.value = scanBuffer;
+          updateScanInfoByBarcode(scanBuffer);
+        }
+      }
+    }
+
+    handleScanKeydown.cleanup = function () {
+      clearScanBuffer();
+    };
+
+    setScanHandler(handleScanKeydown);
+
     updateQtyIndicator();
 
     if (barcodeInput) {
+      barcodeInput.addEventListener("focus", function () {
+        setScanTarget("barcode");
+        enterScanMode();
+      });
+      barcodeInput.addEventListener("click", function () {
+        setScanTarget("barcode");
+        enterScanMode();
+      });
       barcodeInput.addEventListener("input", function () {
-        var value = barcodeInput.value.trim();
-        if (!value) {
-          setScanInfo("", false);
-          return;
-        }
-        var token = (lookupToken += 1);
-        TsdStorage.findItemByCode(value)
-          .then(function (item) {
-            if (token !== lookupToken) {
-              return;
-            }
-            if (item && item.name) {
-              setScanInfo(item.name, false);
-            } else {
-              setScanInfo("Неизвестный код", true);
-            }
-          })
-          .catch(function () {
-            if (token === lookupToken) {
-              setScanInfo("", false);
-            }
-          });
+        updateScanInfoByBarcode(barcodeInput.value);
       });
       barcodeInput.addEventListener("keydown", function (event) {
         if (event.key === "Enter") {
@@ -2137,9 +2418,35 @@
           }
           alert("Заполните обязательные поля шапки.");
           return;
+      }
+      doc.status = "READY";
+      saveDocState().then(refreshDocView);
+    });
+  }
+
+    if (deleteDocBtn) {
+      deleteDocBtn.addEventListener("click", function () {
+        if (doc.status !== "DRAFT") {
+          return;
         }
-        doc.status = "READY";
-        saveDocState().then(refreshDocView);
+        openConfirmOverlay(
+          "Удалить документ?",
+          "Документ-черновик будет удалён без возможности восстановления.",
+          "Удалить",
+          function () {
+            deleteDocBtn.disabled = true;
+            TsdStorage.deleteDoc(doc.id)
+              .then(function () {
+                alert("Черновик удалён");
+                setNavOrigin("history");
+                navigate("/docs");
+              })
+              .catch(function () {
+                setDocStatus("Ошибка удаления документа");
+                deleteDocBtn.disabled = false;
+              });
+          }
+        );
       });
     }
 
@@ -2203,6 +2510,14 @@
       if (!field) {
         return;
       }
+      input.addEventListener("focus", function () {
+        setScanTarget("location", field);
+        enterScanMode();
+      });
+      input.addEventListener("click", function () {
+        setScanTarget("location", field);
+        enterScanMode();
+      });
       input.addEventListener("input", function () {
         setLocationError(field, "");
       });
@@ -2211,6 +2526,44 @@
           event.preventDefault();
           handleLocationEntry(field);
         }
+      });
+    });
+
+    manualInputButtons.forEach(function (btn) {
+      btn.addEventListener("click", function (event) {
+        if (event) {
+          event.preventDefault();
+        }
+        if (!isDraftDoc) {
+          return;
+        }
+        var target = btn.getAttribute("data-manual");
+        if (!target) {
+          return;
+        }
+        if (target === "barcode") {
+          openManualInputOverlay({
+            title: "Ручной ввод",
+            label: "Штрихкод",
+            placeholder: "Введите штрихкод",
+            inputMode: "text",
+            onSubmit: function (value) {
+              setScanTarget("barcode");
+              handleAddLine(value);
+            },
+          });
+          return;
+        }
+        openManualInputOverlay({
+          title: "Ручной ввод",
+          label: "Код локации",
+          placeholder: "Введите код локации",
+          inputMode: "text",
+          onSubmit: function (value) {
+            setScanTarget("location", target);
+            handleLocationEntry(target, value);
+          },
+        });
       });
     });
 
@@ -2377,7 +2730,7 @@
     }
   }
 
-  function createDocAndOpen(op) {
+  function createDocAndOpen(op, navOrigin) {
     if (!OPS[op]) {
       return;
     }
@@ -2409,6 +2762,7 @@
         };
 
         return TsdStorage.saveDoc(doc).then(function () {
+          setNavOrigin(navOrigin || "home");
           navigate("/doc/" + encodeURIComponent(docId));
         });
       })
@@ -2646,17 +3000,24 @@
               navigate("/docs");
               return;
             }
-            if (currentRoute.name === "home") {
-              navigate("/docs");
-            } else if (currentRoute.name === "docs") {
-              navigate("/");
-            } else if (currentRoute.name === "doc" || currentRoute.name === "new" || currentRoute.name === "stock") {
-              navigate("/docs");
-            } else {
-              navigate("/");
-            }
-          });
+        var origin = getNavOrigin();
+        if (currentRoute.name === "home") {
+          navigate("/docs");
+        } else if (currentRoute.name === "docs") {
+          navigate("/home");
+        } else if (currentRoute.name === "doc" || currentRoute.name === "new") {
+          if (origin === "history") {
+            navigate("/docs");
+          } else {
+            navigate("/home");
+          }
+        } else if (currentRoute.name === "stock" || currentRoute.name === "settings") {
+          navigate("/home");
+        } else {
+          navigate("/home");
         }
+      });
+    }
 
         if (settingsBtn) {
           settingsBtn.addEventListener("click", function () {

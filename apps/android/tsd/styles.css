@@ -106,6 +106,15 @@ body {
   display: none;
 }
 
+.scan-sink {
+  position: fixed;
+  left: -1000px;
+  top: -1000px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
 .screen {
   width: min(720px, 100%);
 }
@@ -265,6 +274,31 @@ body {
   padding: 14px 16px;
   font-size: 20px;
   margin-bottom: 16px;
+}
+
+.input-row,
+.scan-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.input-row .form-input,
+.scan-input-row .form-input {
+  margin-bottom: 0;
+  flex: 1;
+}
+
+.kbd-btn {
+  width: 48px;
+  min-width: 48px;
+  height: 48px;
+  padding: 0;
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .picker-row {
@@ -750,6 +784,26 @@ body {
 }
 
 .qty-overlay-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.manual-input-card {
+  max-width: 420px;
+}
+
+.manual-input-hint {
+  font-size: 16px;
+  color: #486581;
+  margin-bottom: 12px;
+}
+
+.manual-input-field {
+  font-size: 20px;
+}
+
+.manual-input-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
