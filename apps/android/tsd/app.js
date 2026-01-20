@@ -718,19 +718,21 @@
       '<section class="screen">' +
       '  <div class="screen-card">' +
       '    <div class="doc-header">' +
-      '      <div class="doc-header-main">' +
-      '        <div class="doc-header-title">' +
+      '      <div class="doc-head-top">' +
+      '        <div class="doc-titleblock">' +
+      '          <div class="doc-header-title">' +
       escapeHtml(opLabel) +
       "</div>" +
-      '        <div class="doc-ref-line">№ ' +
+      '          <div class="doc-ref-line">№ ' +
       docRefInputHtml +
       "</div>" +
-      "      </div>" +
-      '      <div class="status-pill ' +
+      "        </div>" +
+      '        <div class="status-pill ' +
       escapeHtml(statusClass) +
       '">' +
       escapeHtml(statusLabel) +
       "</div>" +
+      "      </div>" +
       "    </div>" +
       '    <div class="form-grid">' +
       headerFields +

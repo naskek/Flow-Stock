@@ -427,14 +427,18 @@ body {
 }
 
 .doc-header {
-  display: inline-flex;
-  align-items: flex-start;
-  gap: 8px;
   margin-bottom: 10px;
   max-width: 100%;
 }
 
-.doc-header-main {
+.doc-head-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.doc-titleblock {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -502,6 +506,10 @@ body {
   border-radius: 999px;
   background: #e0ecf1;
   font-size: 12px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  max-width: 50%;
+  white-space: nowrap;
 }
 
 .status-pill.status-draft {
