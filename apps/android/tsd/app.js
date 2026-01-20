@@ -179,6 +179,11 @@
     return safeCode || safeName;
   }
 
+  function formatOrderLabel(orderNumber) {
+    var safeNumber = String(orderNumber || "").trim();
+    return safeNumber ? safeNumber : "Не выбран";
+  }
+
   function updateRecentSetting(key, value) {
     return TsdStorage.getSetting(key)
       .then(function (list) {
@@ -774,25 +779,21 @@
       var inboundToValue = formatLocationLabel(header.to, header.to_name);
       return (
         '<div class="header-fields">' +
-        '  <div class="field-row">' +
-        '    <div class="field-label">Поставщик</div>' +
-        '    <div class="field-value" id="partnerValue">' +
-        escapeHtml(inboundPartnerValue) +
-        "</div>" +
-        '    <button class="btn btn-outline field-pick" id="partnerPickBtn" type="button" ' +
-        (isDraft ? "" : "disabled") +
-        ">+</button>" +
-        "  </div>" +
+        renderPickerRow({
+          label: "Поставщик",
+          value: inboundPartnerValue,
+          valueId: "partnerValue",
+          pickId: "partnerPickBtn",
+          disabled: !isDraft,
+        }) +
         '  <div class="field-error" id="partnerError"></div>' +
-        '  <div class="field-row">' +
-        '    <div class="field-label">Куда</div>' +
-        '    <div class="field-value" id="toValue">' +
-        escapeHtml(inboundToValue) +
-        "</div>" +
-        '    <button class="btn btn-outline field-pick" id="toPickBtn" type="button" ' +
-        (isDraft ? "" : "disabled") +
-        ">+</button>" +
-        "  </div>" +
+        renderPickerRow({
+          label: "Куда",
+          value: inboundToValue,
+          valueId: "toValue",
+          pickId: "toPickBtn",
+          disabled: !isDraft,
+        }) +
         '  <div class="field-error" id="toError"></div>' +
         "</div>"
       );
@@ -801,49 +802,33 @@
     if (doc.op === "OUTBOUND") {
       var outboundPartnerValue = header.partner || "Не выбран";
       var outboundFromValue = formatLocationLabel(header.from, header.from_name);
+      var outboundOrderValue = formatOrderLabel(header.order_ref);
       return (
-        '<div class="form-field">' +
-        '  <label class="form-label">Покупатель</label>' +
-        '  <div class="picker-row" id="partnerPickerRow">' +
-        '    <div class="picker-value" id="partnerValue">' +
-        escapeHtml(outboundPartnerValue) +
-        "</div>" +
-        '    <button class="btn btn-outline picker-btn" id="partnerPickBtn" type="button" ' +
-        (isDraft ? "" : "disabled") +
-        ">Выбрать...</button>" +
-        "  </div>" +
+        '<div class="header-fields">' +
+        renderPickerRow({
+          label: "Покупатель",
+          value: outboundPartnerValue,
+          valueId: "partnerValue",
+          pickId: "partnerPickBtn",
+          disabled: !isDraft,
+        }) +
         '  <div class="field-error" id="partnerError"></div>' +
-        "</div>" +
-        '<div class="form-field">' +
-        '  <label class="form-label" for="orderRefInput">Заказ</label>' +
-        '  <input class="form-input" id="orderRefInput" data-header="order_ref" type="text" value="' +
-        escapeHtml(header.order_ref || "") +
-        "" +
-        '" ' +
-        (isDraft ? "" : "disabled") +
-        " />" +
-        "</div>" +
-        '<div class="form-field">' +
-        '  <label class="form-label" for="fromInput">Откуда</label>' +
-        '  <div class="picker-row" id="fromPickerRow">' +
-        '    <div class="picker-value" id="fromValue">' +
-        escapeHtml(outboundFromValue) +
-        "</div>" +
-        '    <button class="btn btn-outline picker-btn" id="fromPickBtn" type="button" ' +
-        (isDraft ? "" : "disabled") +
-        ">Выбрать...</button>" +
-        "  </div>" +
-        '  <div class="input-row">' +
-        '    <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
-        escapeHtml(header.from || "") +
-        '" ' +
-        (isDraft ? "" : "disabled") +
-        " />" +
-        '    <button class="btn btn-outline kbd-btn" data-manual="from" type="button" aria-label="Ручной ввод" ' +
-        (isDraft ? "" : "disabled") +
-        ">⌨</button>" +
-        "  </div>" +
-        '<div class="field-error" id="fromError"></div>' +
+        renderPickerRow({
+          label: "Откуда",
+          value: outboundFromValue,
+          valueId: "fromValue",
+          pickId: "fromPickBtn",
+          disabled: !isDraft,
+        }) +
+        '  <div class="field-error" id="fromError"></div>' +
+        renderPickerRow({
+          label: "Заказ",
+          value: outboundOrderValue,
+          valueId: "orderValue",
+          pickId: "orderPickBtn",
+          disabled: !isDraft,
+        }) +
+        '  <div class="field-hint is-hidden" id="orderHint">Нет списка заказов — импортируйте с ПК</div>' +
         "</div>"
       );
     }
@@ -852,39 +837,23 @@
       var moveFromValue = formatLocationLabel(header.from, header.from_name);
       var moveToValue = formatLocationLabel(header.to, header.to_name);
       return (
-        '<div class="form-field">' +
-        '  <label class="form-label" for="fromInput">Откуда</label>' +
-        '  <div class="picker-row" id="fromPickerRow">' +
-        '    <div class="picker-value" id="fromValue">' +
-        escapeHtml(moveFromValue) +
-        "</div>" +
-        '    <button class="btn btn-outline picker-btn" id="fromPickBtn" type="button" ' +
-        (isDraft ? "" : "disabled") +
-        ">Выбрать...</button>" +
-        "  </div>" +
-        '  <div class="input-row">' +
-        '    <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
-        escapeHtml(header.from || "") +
-        '" ' +
-        (isDraft ? "" : "disabled") +
-        " />" +
-        '    <button class="btn btn-outline kbd-btn" data-manual="from" type="button" aria-label="Ручной ввод" ' +
-        (isDraft ? "" : "disabled") +
-        ">⌨</button>" +
-        "  </div>" +
-        '<div class="field-error" id="fromError"></div>' +
-        "</div>" +
-        '<div class="form-field">' +
-        '  <label class="form-label" for="toInput">Куда</label>' +
-        '  <div class="picker-row" id="toPickerRow">' +
-        '    <div class="picker-value" id="toValue">' +
-        escapeHtml(moveToValue) +
-        "</div>" +
-        '    <button class="btn btn-outline picker-btn" id="toPickBtn" type="button" ' +
-        (isDraft ? "" : "disabled") +
-        ">Выбрать...</button>" +
-        "  </div>" +
-        '<div class="field-error" id="toError"></div>' +
+        '<div class="header-fields">' +
+        renderPickerRow({
+          label: "Откуда",
+          value: moveFromValue,
+          valueId: "fromValue",
+          pickId: "fromPickBtn",
+          disabled: !isDraft,
+        }) +
+        '  <div class="field-error" id="fromError"></div>' +
+        renderPickerRow({
+          label: "Куда",
+          value: moveToValue,
+          valueId: "toValue",
+          pickId: "toPickBtn",
+          disabled: !isDraft,
+        }) +
+        '  <div class="field-error" id="toError"></div>' +
         "</div>"
       );
     }
@@ -892,39 +861,23 @@
       var writeoffFromValue = formatLocationLabel(header.from, header.from_name);
       var currentReasonLabel = getReasonLabel(header.reason_code) || "Не выбрана";
       return (
-        '<div class="form-field">' +
-        '  <label class="form-label" for="fromInput">Откуда</label>' +
-        '  <div class="picker-row" id="fromPickerRow">' +
-        '    <div class="picker-value" id="fromValue">' +
-        escapeHtml(writeoffFromValue) +
-        "</div>" +
-        '    <button class="btn btn-outline picker-btn" id="fromPickBtn" type="button" ' +
-        (isDraft ? "" : "disabled") +
-        ">Выбрать...</button>" +
-        "  </div>" +
-        '  <div class="input-row">' +
-        '    <input class="form-input picker-fallback" id="fromInput" data-header="from" data-location-field="from" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
-        escapeHtml(header.from || "") +
-        '" ' +
-        (isDraft ? "" : "disabled") +
-        " />" +
-        '    <button class="btn btn-outline kbd-btn" data-manual="from" type="button" aria-label="Ручной ввод" ' +
-        (isDraft ? "" : "disabled") +
-        ">⌨</button>" +
-        "  </div>" +
-        '<div class="field-error" id="fromError"></div>' +
-        "</div>" +
-        '<div class="form-field reason-field">' +
-        '  <label class="form-label">Причина</label>' +
-        '  <div class="reason-picker-row">' +
-        '    <div class="reason-value" id="reasonValue">' +
-        escapeHtml(currentReasonLabel) +
-        "</div>" +
-        '    <button class="btn btn-outline picker-btn" id="reasonPickBtn" type="button" ' +
-        (isDraft ? "" : "disabled") +
-        ">Выбрать...</button>" +
-        "  </div>" +
-        '<div class="field-error" id="reasonError"></div>' +
+        '<div class="header-fields">' +
+        renderPickerRow({
+          label: "Откуда",
+          value: writeoffFromValue,
+          valueId: "fromValue",
+          pickId: "fromPickBtn",
+          disabled: !isDraft,
+        }) +
+        '  <div class="field-error" id="fromError"></div>' +
+        renderPickerRow({
+          label: "Причина",
+          value: currentReasonLabel,
+          valueId: "reasonValue",
+          pickId: "reasonPickBtn",
+          disabled: !isDraft,
+        }) +
+        '  <div class="field-error" id="reasonError"></div>' +
         "</div>"
       );
     }
@@ -932,27 +885,15 @@
     if (doc.op === "INVENTORY") {
       var inventoryValue = formatLocationLabel(header.location, header.location_name);
       return (
-        '<div class="form-field">' +
-        '  <label class="form-label" for="locationInput">Локация</label>' +
-        '  <div class="picker-row" id="locationPickerRow">' +
-        '    <div class="picker-value" id="locationValue">' +
-        escapeHtml(inventoryValue) +
-        "</div>" +
-        '    <button class="btn btn-outline picker-btn" id="locationPickBtn" type="button" ' +
-        (isDraft ? "" : "disabled") +
-        ">Выбрать...</button>" +
-        "  </div>" +
-        '  <div class="input-row">' +
-        '    <input class="form-input picker-fallback" id="locationInput" data-header="location" data-location-field="location" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
-        escapeHtml(header.location || "") +
-        '" ' +
-        (isDraft ? "" : "disabled") +
-        " />" +
-        '    <button class="btn btn-outline kbd-btn" data-manual="location" type="button" aria-label="Ручной ввод" ' +
-        (isDraft ? "" : "disabled") +
-        ">⌨</button>" +
-        "  </div>" +
-        '<div class="field-error" id="locationError"></div>' +
+        '<div class="header-fields">' +
+        renderPickerRow({
+          label: "Локация",
+          value: inventoryValue,
+          valueId: "locationValue",
+          pickId: "locationPickBtn",
+          disabled: !isDraft,
+        }) +
+        '  <div class="field-error" id="locationError"></div>' +
         "</div>"
       );
     }
@@ -1395,6 +1336,85 @@
     });
 
     loadRecents();
+    runSearch("");
+    input.focus();
+  }
+
+  function openOrderPicker(onSelect) {
+    setScanHighlight(false);
+    var overlay = buildOverlay("Заказы");
+    var input = overlay.querySelector(".overlay-search");
+    var recentsEl = overlay.querySelector(".overlay-recents");
+    var resultsEl = overlay.querySelector(".overlay-results");
+    var closeBtn = overlay.querySelector(".overlay-close");
+
+    var recentsSection = recentsEl ? recentsEl.parentElement : null;
+    if (recentsSection) {
+      recentsSection.parentElement.removeChild(recentsSection);
+      recentsEl = null;
+    }
+
+    function close() {
+      document.body.removeChild(overlay);
+      document.removeEventListener("keydown", onKeyDown);
+      enterScanMode();
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        close();
+      }
+    }
+
+    function runSearch(query) {
+      TsdStorage.searchOrders(query)
+        .then(function (orders) {
+          var list = orders.map(function (order) {
+            var meta = [];
+            if (order.plannedDate) {
+              meta.push("Дата: " + order.plannedDate);
+            }
+            if (order.status) {
+              meta.push("Статус: " + order.status);
+            }
+            order.subLabel = meta.join(" · ");
+            return order;
+          });
+          renderOverlayList(
+            resultsEl,
+            list,
+            function (order) {
+              return formatOrderLabel(
+                order.number || order.orderNumber || order.order_id || order.orderId || order.id
+              );
+            },
+            function (order) {
+              onSelect(order);
+              close();
+            }
+          );
+        })
+        .catch(function () {
+          renderOverlayList(resultsEl, [], function () {
+            return "";
+          });
+        });
+    }
+
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", onKeyDown);
+
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) {
+        close();
+      }
+    });
+
+    closeBtn.addEventListener("click", close);
+    input.addEventListener("input", function () {
+      runSearch(input.value);
+    });
+
     runSearch("");
     input.focus();
   }
@@ -1855,6 +1875,7 @@
     var partnerPickBtn = document.getElementById("partnerPickBtn");
     var toPickBtn = document.getElementById("toPickBtn");
     var fromPickBtn = document.getElementById("fromPickBtn");
+    var orderPickBtn = document.getElementById("orderPickBtn");
     var locationPickBtn = document.getElementById("locationPickBtn");
     var partnerPickerRow = document.getElementById("partnerPickerRow");
     var toPickerRow = document.getElementById("toPickerRow");
@@ -1867,6 +1888,7 @@
     var reasonPickBtn = document.getElementById("reasonPickBtn");
     var reasonErrorEl = document.getElementById("reasonError");
     var partnerErrorEl = document.getElementById("partnerError");
+    var orderHint = document.getElementById("orderHint");
     var dataStatus = null;
     var lookupToken = 0;
     var qtyModeButtons = document.querySelectorAll(".qty-mode-btn");
@@ -1934,6 +1956,7 @@
     function applyCatalogState(status) {
       var hasPartners = status && status.counts && status.counts.partners > 0;
       var hasLocations = status && status.counts && status.counts.locations > 0;
+      var hasOrders = status && status.counts && status.counts.orders > 0;
 
       if (partnerPickerRow) {
         partnerPickerRow.classList.remove("is-hidden");
@@ -1947,8 +1970,15 @@
       if (fromPickBtn) {
         fromPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
       }
+      if (orderPickBtn) {
+        orderPickBtn.disabled = !hasOrders || doc.status !== "DRAFT";
+      }
       if (locationPickBtn) {
         locationPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
+      }
+
+      if (orderHint) {
+        orderHint.classList.toggle("is-hidden", hasOrders);
       }
     }
 
@@ -2267,6 +2297,17 @@
           TsdStorage.getPartnerById(doc.header.partner_id).then(function (partner) {
             if (partner) {
               doc.header.partner = partner.name || "";
+              changed = true;
+            }
+          })
+        );
+      }
+
+      if (doc.header.order_id && !doc.header.order_ref) {
+        updates.push(
+          TsdStorage.getOrderById(doc.header.order_id).then(function (order) {
+            if (order) {
+              doc.header.order_ref = order.number || order.orderNumber || "";
               changed = true;
             }
           })
@@ -2729,6 +2770,16 @@
       saveDocState().then(refreshDocView);
     }
 
+    function applyOrderSelection(order) {
+      if (!order) {
+        return;
+      }
+      doc.header.order_id = order.orderId || order.order_id || order.id || null;
+      doc.header.order_ref =
+        order.number || order.orderNumber || order.order_id || order.orderId || "";
+      saveDocState().then(refreshDocView);
+    }
+
     function applyLocationSelection(field, location) {
       setLocationError(field, "");
       doc.header[field] = location.code || "";
@@ -2776,6 +2827,15 @@
         openLocationPicker(function (location) {
           applyLocationSelection("from", location);
         });
+      });
+    }
+
+    if (orderPickBtn) {
+      orderPickBtn.addEventListener("click", function () {
+        if (doc.status !== "DRAFT") {
+          return;
+        }
+        openOrderPicker(applyOrderSelection);
       });
     }
 
@@ -3180,6 +3240,7 @@
       return {
         partner: "",
         partner_id: null,
+        order_id: null,
         order_ref: "",
         from: "",
         from_name: null,
@@ -3329,6 +3390,7 @@
               from: line.from || null,
               to: line.to || null,
               partner_id: doc.header && doc.header.partner_id ? doc.header.partner_id : null,
+              order_id: doc.header && doc.header.order_id ? doc.header.order_id : null,
               order_ref: doc.header && doc.header.order_ref ? doc.header.order_ref : null,
               reason_code: line.reason_code || null,
             };
@@ -3380,6 +3442,34 @@
           statusEl.textContent = "Ошибка экспорта";
         }
       });
+  }
+
+  function renderPickerRow(options) {
+    var label = options.label || "";
+    var value = options.value || "";
+    var valueClass = options.valueClass || "field-value";
+    var valueId = options.valueId ? ' id="' + options.valueId + '"' : "";
+    var pickId = options.pickId || "";
+    var disabled = options.disabled ? "disabled" : "";
+    return (
+      '  <div class="field-row">' +
+      '    <div class="field-label">' +
+      escapeHtml(label) +
+      "</div>" +
+      '    <div class="' +
+      valueClass +
+      '"' +
+      valueId +
+      ">" +
+      escapeHtml(value) +
+      "</div>" +
+      '    <button class="btn btn-outline field-pick" id="' +
+      pickId +
+      '" type="button" ' +
+      disabled +
+      ">+</button>" +
+      "  </div>"
+    );
   }
 
   function exportLocalItems(statusElementId) {
@@ -3504,3 +3594,4 @@
       });
   });
 })();
+

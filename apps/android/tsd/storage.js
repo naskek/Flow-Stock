@@ -2,7 +2,7 @@
   "use strict";
 
   var DB_NAME = "tsd_app";
-  var DB_VERSION = 4;
+  var DB_VERSION = 5;
   var STORE_SETTINGS = "settings";
   var STORE_DOCS = "docs";
   var STORE_META = "meta";
@@ -11,6 +11,7 @@
   var STORE_PARTNERS = "partners";
   var STORE_LOCATIONS = "locations";
   var STORE_STOCK = "stock";
+  var STORE_ORDERS = "orders";
   var db = null;
   var locationCache = null;
 
@@ -103,6 +104,11 @@
           });
           locationsStore.createIndex("codeLower", "codeLower", { unique: false });
           locationsStore.createIndex("nameLower", "nameLower", { unique: false });
+        }
+        if (!database.objectStoreNames.contains(STORE_ORDERS)) {
+          var ordersStore = database.createObjectStore(STORE_ORDERS, { keyPath: "orderId" });
+          ordersStore.createIndex("numberLower", "numberLower", { unique: false });
+          ordersStore.createIndex("partnerId", "partnerId", { unique: false });
         }
         if (!database.objectStoreNames.contains(STORE_STOCK)) {
           var stockStore = database.createObjectStore(STORE_STOCK, { autoIncrement: true });
@@ -325,6 +331,7 @@
             STORE_ITEM_CODES,
             STORE_PARTNERS,
             STORE_LOCATIONS,
+            STORE_ORDERS,
             STORE_STOCK,
           ],
           "readwrite"
@@ -334,6 +341,7 @@
         var codesStore = tx.objectStore(STORE_ITEM_CODES);
         var partnersStore = tx.objectStore(STORE_PARTNERS);
         var locationsStore = tx.objectStore(STORE_LOCATIONS);
+        var ordersStore = tx.objectStore(STORE_ORDERS);
         var stockStore = tx.objectStore(STORE_STOCK);
 
         tx.oncomplete = function () {
@@ -350,6 +358,7 @@
           clearStore(codesStore),
           clearStore(partnersStore),
           clearStore(locationsStore),
+          clearStore(ordersStore),
           clearStore(stockStore),
         ])
           .then(function () {
@@ -400,6 +409,21 @@
                 name: location.name,
                 codeLower: String(location.code || "").toLowerCase(),
                 nameLower: String(location.name || "").toLowerCase(),
+              });
+            });
+
+            (json.orders || []).forEach(function (order) {
+              var orderId = order.orderId || order.id;
+              if (orderId == null) {
+                return;
+              }
+              ordersStore.put({
+                orderId: orderId,
+                number: order.number || order.orderNumber || "",
+                partnerId: order.partnerId || null,
+                plannedDate: order.plannedDate || order.planned_date || null,
+                status: order.status || null,
+                numberLower: String(order.number || order.orderNumber || "").toLowerCase(),
               });
             });
 
@@ -461,6 +485,7 @@
       countStore(STORE_ITEMS),
       countStore(STORE_PARTNERS),
       countStore(STORE_LOCATIONS),
+      countStore(STORE_ORDERS),
       countStore(STORE_STOCK),
     ]).then(function (results) {
       return {
@@ -470,7 +495,8 @@
           items: results[2] || 0,
           partners: results[3] || 0,
           locations: results[4] || 0,
-          stock: results[5] || 0,
+          orders: results[5] || 0,
+          stock: results[6] || 0,
         },
       };
     });
@@ -881,11 +907,64 @@
     });
   }
 
+  function searchOrders(query) {
+    var q = String(query || "").toLowerCase();
+    return init().then(function () {
+      return new Promise(function (resolve, reject) {
+        var results = [];
+        var request = db.transaction(STORE_ORDERS, "readonly")
+          .objectStore(STORE_ORDERS)
+          .openCursor();
+
+        request.onsuccess = function (event) {
+          var cursor = event.target.result;
+          if (!cursor) {
+            resolve(results);
+            return;
+          }
+          var value = cursor.value;
+          if (!q) {
+            results.push(value);
+          } else {
+            if (value.numberLower && value.numberLower.indexOf(q) !== -1) {
+              results.push(value);
+            }
+          }
+          if (results.length >= 100) {
+            resolve(results);
+            return;
+          }
+          cursor.continue();
+        };
+
+        request.onerror = function () {
+          reject(request.error);
+        };
+      });
+    });
+  }
+
   function getPartnerById(id) {
     return init().then(function () {
       return new Promise(function (resolve, reject) {
         var request = db.transaction(STORE_PARTNERS, "readonly")
           .objectStore(STORE_PARTNERS)
+          .get(id);
+        request.onsuccess = function () {
+          resolve(request.result || null);
+        };
+        request.onerror = function () {
+          reject(request.error);
+        };
+      });
+    });
+  }
+
+  function getOrderById(id) {
+    return init().then(function () {
+      return new Promise(function (resolve, reject) {
+        var request = db.transaction(STORE_ORDERS, "readonly")
+          .objectStore(STORE_ORDERS)
           .get(id);
         request.onsuccess = function () {
           resolve(request.result || null);
@@ -953,7 +1032,9 @@
     findItemByCode: findItemByCode,
     searchPartners: searchPartners,
     searchLocations: searchLocations,
+    searchOrders: searchOrders,
     getPartnerById: getPartnerById,
+    getOrderById: getOrderById,
     getLocationById: getLocationById,
     findLocationByCode: findLocationByCode,
     getStockByItemId: getStockByItemId,
