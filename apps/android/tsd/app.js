@@ -722,7 +722,6 @@
       "</span>" +
       "      </div>" +
       "    </div>" +
-      '    <div class="section-subtitle">Шапка</div>' +
       '    <div class="form-grid">' +
       headerFields +
       "    </div>" +
@@ -775,6 +774,7 @@
         ">Выбрать...</button>" +
         "  </div>" +
         '  <div class="field-hint is-hidden" id="partnerHint">Импортируйте данные с ПК (Настройки \u2192 Импорт).</div>' +
+        '  <div class="field-error" id="partnerError"></div>' +
         "</div>" +
         '<div class="form-field">' +
         '  <label class="form-label" for="toInput">Куда</label>' +
@@ -816,6 +816,7 @@
         ">Выбрать...</button>" +
         "  </div>" +
         '  <div class="field-hint is-hidden" id="partnerHint">Импортируйте данные с ПК (Настройки \u2192 Импорт).</div>' +
+        '  <div class="field-error" id="partnerError"></div>' +
         "</div>" +
         '<div class="form-field">' +
         '  <label class="form-label" for="orderRefInput">Заказ</label>' +
@@ -1578,6 +1579,9 @@
     function close() {
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
+      if (typeof config.onClose === "function") {
+        config.onClose();
+      }
       enterScanMode();
     }
 
@@ -1658,6 +1662,7 @@
     var reasonPickBtn = document.getElementById("reasonPickBtn");
     var reasonErrorEl = document.getElementById("reasonError");
     var partnerHint = document.getElementById("partnerHint");
+    var partnerErrorEl = document.getElementById("partnerError");
     var dataStatus = null;
     var lookupToken = 0;
     var qtyModeButtons = document.querySelectorAll(".qty-mode-btn");
@@ -2011,28 +2016,6 @@
     function focusFirstLocationOrBarcode() {
       if (preserveScanFocus) {
         preserveScanFocus = false;
-        focusBarcode();
-        return;
-      }
-      var candidateFields = [];
-      if (doc.op === "INBOUND") {
-        candidateFields = ["to"];
-      } else if (doc.op === "OUTBOUND") {
-        candidateFields = ["from"];
-      } else if (doc.op === "MOVE") {
-        candidateFields = ["from", "to"];
-      } else if (doc.op === "WRITE_OFF") {
-        candidateFields = ["from"];
-      } else if (doc.op === "INVENTORY") {
-        candidateFields = ["location"];
-      }
-      for (var i = 0; i < candidateFields.length; i += 1) {
-        var field = candidateFields[i];
-        if (!normalizeValue(doc.header[field])) {
-          setScanTarget("location", field);
-          enterScanMode();
-          return;
-        }
       }
       focusBarcode();
     }
@@ -2162,6 +2145,63 @@
         return;
       }
       addLineWithQuantity(barcode, qtyStep);
+    }
+
+    function validateBeforeFinish() {
+      var valid = true;
+      setPartnerError("");
+      setLocationError("from", "");
+      setLocationError("to", "");
+      setLocationError("location", "");
+      if (doc.op === "INBOUND") {
+        if (!doc.header.partner_id) {
+          setPartnerError("Выберите поставщика");
+          valid = false;
+        }
+        if (!normalizeValue(doc.header.to) && !doc.header.to_id) {
+          setLocationError("to", "Укажите место хранения");
+          valid = false;
+        }
+      } else if (doc.op === "OUTBOUND") {
+        if (!doc.header.partner_id) {
+          setPartnerError("Выберите покупателя");
+          valid = false;
+        }
+        if (!normalizeValue(doc.header.from) && !doc.header.from_id) {
+          setLocationError("from", "Укажите место хранения");
+          valid = false;
+        }
+      } else if (doc.op === "MOVE") {
+        if (!normalizeValue(doc.header.from) && !doc.header.from_id) {
+          setLocationError("from", "Укажите место хранения");
+          valid = false;
+        }
+        if (!normalizeValue(doc.header.to) && !doc.header.to_id) {
+          setLocationError("to", "Укажите место хранения");
+          valid = false;
+        }
+      } else if (doc.op === "WRITE_OFF") {
+        if (!normalizeValue(doc.header.from) && !doc.header.from_id) {
+          setLocationError("from", "Укажите место хранения");
+          valid = false;
+        }
+        if (!normalizeValue(doc.header.reason_code)) {
+          setReasonError("Выберите причину списания");
+          valid = false;
+        }
+      } else if (doc.op === "INVENTORY") {
+        if (!normalizeValue(doc.header.location) && !doc.header.location_id) {
+          setLocationError("location", "Укажите место хранения");
+          valid = false;
+        }
+      }
+      return valid;
+    }
+
+    function setPartnerError(message) {
+      if (partnerErrorEl) {
+        partnerErrorEl.textContent = message || "";
+      }
     }
 
     function clearScanBuffer() {
@@ -2321,6 +2361,7 @@
     });
 
     function applyPartnerSelection(partner) {
+      setPartnerError("");
       doc.header.partner_id = partner.partnerId;
       doc.header.partner = partner.name || "";
       saveDocState().then(refreshDocView);
@@ -2403,18 +2444,13 @@
           alert("Добавьте хотя бы одну строку перед завершением.");
           return;
         }
-        if (!isHeaderComplete(doc.op, doc.header)) {
-          if (doc.op === "WRITE_OFF" && !normalizeValue(doc.header.reason_code)) {
-            setReasonError("Выберите причину списания");
-            return;
-          }
-          alert("Заполните обязательные поля шапки.");
+        if (!validateBeforeFinish()) {
           return;
-      }
-      doc.status = "READY";
-      saveDocState().then(refreshDocView);
-    });
-  }
+        }
+        doc.status = "READY";
+        saveDocState().then(refreshDocView);
+      });
+    }
 
     if (deleteDocBtn) {
       deleteDocBtn.addEventListener("click", function () {
@@ -2539,6 +2575,9 @@
             label: "Штрихкод",
             placeholder: "Введите штрихкод",
             inputMode: "text",
+            onClose: function () {
+              setScanTarget("barcode");
+            },
             onSubmit: function (value) {
               setScanTarget("barcode");
               handleAddLine(value);
@@ -2551,6 +2590,9 @@
           label: "Код локации",
           placeholder: "Введите код локации",
           inputMode: "text",
+          onClose: function () {
+            setScanTarget("barcode");
+          },
           onSubmit: function (value) {
             setScanTarget("location", target);
             handleLocationEntry(target, value);
