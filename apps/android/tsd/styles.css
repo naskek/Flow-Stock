@@ -427,11 +427,11 @@ body {
 }
 
 .doc-header {
-  display: flex;
+  display: inline-flex;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 8px;
   margin-bottom: 10px;
+  max-width: 100%;
 }
 
 .doc-header-main {
