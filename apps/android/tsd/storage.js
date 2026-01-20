@@ -221,6 +221,14 @@
         }
         return true;
       });
+    })
+    .then(function () {
+      return getSetting("qtyStep").then(function (value) {
+        if (!value || isNaN(Number(value)) || Number(value) < 1) {
+          return setSetting("qtyStep", 1);
+        }
+        return true;
+      });
     });
   }
 

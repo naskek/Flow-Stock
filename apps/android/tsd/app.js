@@ -38,6 +38,13 @@
     }
   }
 
+  function setScanHighlight(active) {
+    var scanCard = document.querySelector(".scan-card");
+    if (scanCard) {
+      scanCard.classList.toggle("scan-active", !!active);
+    }
+  }
+
   function isManualOverlayOpen() {
     return !!document.querySelector(".overlay");
   }
@@ -51,6 +58,7 @@
       scanSink.value = "";
       scanSink.focus();
     }
+    setScanHighlight(true);
   }
 
   function setScanHandler(handler) {
@@ -786,16 +794,7 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <div class="input-row">' +
-        '    <input class="form-input picker-fallback" id="toInput" data-header="to" data-location-field="to" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
-        escapeHtml(header.to || "") +
-        '" ' +
-        (isDraft ? "" : "disabled") +
-        " />" +
-        '    <button class="btn btn-outline kbd-btn" data-manual="to" type="button" aria-label="Ручной ввод" ' +
-        (isDraft ? "" : "disabled") +
-        ">⌨</button>" +
-        "  </div>" +
+        '  <div class="field-hint is-hidden" id="toHint">Импортируйте данные с ПК.</div>' +
         '<div class="field-error" id="toError"></div>' +
         "</div>"
       );
@@ -888,16 +887,7 @@
         (isDraft ? "" : "disabled") +
         ">Выбрать...</button>" +
         "  </div>" +
-        '  <div class="input-row">' +
-        '    <input class="form-input picker-fallback" id="toInput" data-header="to" data-location-field="to" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly value="' +
-        escapeHtml(header.to || "") +
-        '" ' +
-        (isDraft ? "" : "disabled") +
-        " />" +
-        '    <button class="btn btn-outline kbd-btn" data-manual="to" type="button" aria-label="Ручной ввод" ' +
-        (isDraft ? "" : "disabled") +
-        ">⌨</button>" +
-        "  </div>" +
+        '  <div class="field-hint is-hidden" id="toHint">Импортируйте данные с ПК.</div>' +
         '<div class="field-error" id="toError"></div>' +
         "</div>"
       );
@@ -996,16 +986,6 @@
       ">⌨</button>" +
       "  </div>" +
       '  <div id="scanItemInfo" class="scan-info"></div>' +
-      '  <div class="scan-actions">' +
-      '    <div class="qty-indicator">Шаг: <span id="qtyStepValue">1</span> шт</div>' +
-      '    <div class="qty-buttons">' +
-      '      <button class="btn qty-btn" data-step="1" type="button">1</button>' +
-      '      <button class="btn qty-btn" data-step="6" type="button">6</button>' +
-      '      <button class="btn qty-btn" data-step="10" type="button">10</button>' +
-      '      <button class="btn qty-btn" data-step="12" type="button">12</button>' +
-      '      <button class="btn qty-btn" data-step="15" type="button">15</button>' +
-      "    </div>" +
-      "  </div>" +
       '  <button class="btn primary-btn" id="addLineBtn" type="button" ' +
       (isDraft ? "" : "disabled") +
       ">Добавить</button>" +
@@ -1213,6 +1193,7 @@
   }
 
   function openPartnerPicker(onSelect) {
+    setScanHighlight(false);
     var overlay = buildOverlay("Контрагенты");
     var input = overlay.querySelector(".overlay-search");
     var recentsEl = overlay.querySelector(".overlay-recents");
@@ -1222,6 +1203,7 @@
     function close() {
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
+      enterScanMode();
     }
 
     function onKeyDown(event) {
@@ -1320,6 +1302,7 @@
   }
 
   function openLocationPicker(onSelect) {
+    setScanHighlight(false);
     var overlay = buildOverlay("Локации");
     var input = overlay.querySelector(".overlay-search");
     var recentsEl = overlay.querySelector(".overlay-recents");
@@ -1329,6 +1312,7 @@
     function close() {
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
+      enterScanMode();
     }
 
     function onKeyDown(event) {
@@ -1416,6 +1400,7 @@
   }
 
   function openReasonPicker(onSelect) {
+    setScanHighlight(false);
     var overlay = buildOverlay("Причина списания");
     var searchInput = overlay.querySelector(".overlay-search");
     var recentsEl = overlay.querySelector(".overlay-recents");
@@ -1431,6 +1416,7 @@
     function close() {
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
+      enterScanMode();
     }
 
     function onKeyDown(event) {
@@ -1492,6 +1478,7 @@
   }
 
   function openConfirmOverlay(title, message, confirmLabel, onConfirm) {
+    setScanHighlight(false);
     var overlay = document.createElement("div");
     overlay.className = "overlay";
     overlay.innerHTML =
@@ -1513,6 +1500,7 @@
     function close() {
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
+      enterScanMode();
     }
 
     function onKeyDown(event) {
@@ -1545,6 +1533,7 @@
     var label = config.label || "";
     var placeholder = config.placeholder || "";
     var inputMode = config.inputMode || "text";
+    setScanHighlight(false);
     var overlay = document.createElement("div");
     overlay.className = "overlay manual-input-overlay";
     overlay.innerHTML =
@@ -1634,7 +1623,6 @@
     });
 
     var qtyStep = 1;
-    var qtyIndicator = document.getElementById("qtyStepValue");
     var barcodeInput = document.getElementById("barcodeInput");
     var addLineBtn = document.getElementById("addLineBtn");
     var undoBtn = document.getElementById("undoBtn");
@@ -1643,7 +1631,6 @@
     var backToDocsBtn = document.getElementById("backToDocsBtn");
     var docRefInput = document.getElementById("docRefInput");
     var headerInputs = document.querySelectorAll("[data-header]");
-    var qtyButtons = document.querySelectorAll(".qty-btn");
     var deleteButtons = document.querySelectorAll(".line-delete");
     var deleteDocBtn = document.getElementById("deleteDraftBtn");
     var manualInputButtons = document.querySelectorAll(".kbd-btn");
@@ -1663,6 +1650,7 @@
     var reasonErrorEl = document.getElementById("reasonError");
     var partnerHint = document.getElementById("partnerHint");
     var partnerErrorEl = document.getElementById("partnerError");
+    var toHint = document.getElementById("toHint");
     var dataStatus = null;
     var lookupToken = 0;
     var qtyModeButtons = document.querySelectorAll(".qty-mode-btn");
@@ -1673,18 +1661,15 @@
     var scanTarget = { type: "barcode", field: null };
     var scanBuffer = "";
     var scanBufferTimer = null;
+    var incBtn = null;
+    var incHoldTimer = null;
+    var incHoldTriggered = false;
 
     function setDocStatus(text) {
       if (!docActionStatus) {
         return;
       }
       docActionStatus.textContent = text || "";
-    }
-
-    function updateQtyIndicator() {
-      if (qtyIndicator) {
-        qtyIndicator.textContent = qtyStep;
-      }
     }
 
     function setScanInfo(text, isUnknown) {
@@ -1740,6 +1725,9 @@
       if (partnerHint) {
         partnerHint.classList.toggle("is-hidden", hasPartners);
       }
+      if (toHint) {
+        toHint.classList.toggle("is-hidden", hasLocations);
+      }
 
       if (partnerPickBtn) {
         partnerPickBtn.disabled = !hasPartners || doc.status !== "DRAFT";
@@ -1771,6 +1759,7 @@
       if (!doc.status || doc.status !== "DRAFT") {
         return;
       }
+      setScanHighlight(false);
       closeQuantityOverlay();
       qtyOverlay = document.createElement("div");
       qtyOverlay.className = "overlay qty-overlay";
@@ -2198,6 +2187,123 @@
       return valid;
     }
 
+    function normalizeQtyStep(value) {
+      var parsed = parseInt(value, 10);
+      if (!parsed || parsed < 1) {
+        return 1;
+      }
+      return parsed;
+    }
+
+    function updateQtyModeLabel() {
+      if (incBtn) {
+        incBtn.textContent = "+" + qtyStep;
+      }
+    }
+
+    function saveQtyStep(value) {
+      qtyStep = normalizeQtyStep(value);
+      updateQtyModeLabel();
+      return TsdStorage.setSetting("qtyStep", qtyStep).catch(function () {
+        return false;
+      });
+    }
+
+    function openStepOverlay() {
+      if (!incBtn) {
+        return;
+      }
+      setScanHighlight(false);
+      var overlay = document.createElement("div");
+      overlay.className = "overlay qty-overlay";
+      var quickValues = [1, 5, 10, 12, 15];
+      var quickButtons = quickValues
+        .map(function (value) {
+          return (
+            '<button type="button" class="btn qty-overlay-quick-btn" data-step="' +
+            value +
+            '">' +
+            value +
+            " шт</button>"
+          );
+        })
+        .join("");
+      overlay.innerHTML =
+        '<div class="overlay-card">' +
+        '  <div class="overlay-header">' +
+        '    <div class="overlay-title">Шаг инкремента</div>' +
+        '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+        "  </div>" +
+        '  <div class="qty-overlay-body">' +
+        '    <div class="qty-overlay-quick">' +
+        quickButtons +
+        "    </div>" +
+        '    <input class="form-input qty-overlay-input" type="number" min="1" value="' +
+        qtyStep +
+        '" />' +
+        '    <div class="qty-overlay-actions">' +
+        '      <button class="btn btn-outline" type="button" id="stepCancel">Отмена</button>' +
+        '      <button class="btn primary-btn" type="button" id="stepOk">OK</button>' +
+        "    </div>" +
+        "  </div>" +
+        "</div>";
+      document.body.appendChild(overlay);
+
+      var input = overlay.querySelector(".qty-overlay-input");
+      var closeBtn = overlay.querySelector(".overlay-close");
+      var cancelBtn = overlay.querySelector("#stepCancel");
+      var okBtn = overlay.querySelector("#stepOk");
+      var quickBtns = overlay.querySelectorAll(".qty-overlay-quick-btn");
+
+      function close() {
+        document.body.removeChild(overlay);
+        document.removeEventListener("keydown", onKeyDown);
+        enterScanMode();
+      }
+
+      function submit(value) {
+        var next = normalizeQtyStep(value != null ? value : input ? input.value : 1);
+        saveQtyStep(next).then(function () {
+          close();
+        });
+      }
+
+      function onKeyDown(event) {
+        if (event.key === "Escape") {
+          close();
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          submit();
+        }
+      }
+
+      quickBtns.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var value = parseInt(btn.getAttribute("data-step"), 10) || 1;
+          submit(value);
+        });
+      });
+
+      overlay.addEventListener("click", function (event) {
+        if (event.target === overlay) {
+          close();
+        }
+      });
+
+      closeBtn.addEventListener("click", close);
+      cancelBtn.addEventListener("click", close);
+      okBtn.addEventListener("click", function () {
+        submit();
+      });
+
+      document.addEventListener("keydown", onKeyDown);
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }
+
     function setPartnerError(message) {
       if (partnerErrorEl) {
         partnerErrorEl.textContent = message || "";
@@ -2228,10 +2334,6 @@
     function handleScannedValue(value) {
       var trimmed = normalizeValue(value);
       if (!trimmed) {
-        return;
-      }
-      if (scanTarget.type === "location" && scanTarget.field) {
-        handleLocationEntry(scanTarget.field, trimmed);
         return;
       }
       handleAddLine(trimmed);
@@ -2275,8 +2377,6 @@
 
     setScanHandler(handleScanKeydown);
 
-    updateQtyIndicator();
-
     if (barcodeInput) {
       barcodeInput.addEventListener("focus", function () {
         setScanTarget("barcode");
@@ -2309,6 +2409,10 @@
           return;
         }
         var mode = btn.getAttribute("data-mode");
+        if (incHoldTriggered && btn === incBtn) {
+          incHoldTriggered = false;
+          return;
+        }
         if (!mode || doc.header.qtyMode === mode) {
           return;
         }
@@ -2317,13 +2421,50 @@
       });
     });
 
-    qtyButtons.forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        qtyStep = parseInt(btn.getAttribute("data-step"), 10) || 1;
-        updateQtyIndicator();
-        focusBarcode();
+    incBtn = document.querySelector('.qty-mode-btn[data-mode="INC1"]');
+    if (incBtn) {
+      incBtn.addEventListener("pointerdown", function () {
+        if (doc.status !== "DRAFT") {
+          return;
+        }
+        incHoldTriggered = false;
+        if (incHoldTimer) {
+          clearTimeout(incHoldTimer);
+        }
+        incHoldTimer = window.setTimeout(function () {
+          incHoldTriggered = true;
+          openStepOverlay();
+        }, 600);
       });
-    });
+      incBtn.addEventListener("pointerup", function () {
+        if (incHoldTimer) {
+          clearTimeout(incHoldTimer);
+          incHoldTimer = null;
+        }
+      });
+      incBtn.addEventListener("pointerleave", function () {
+        if (incHoldTimer) {
+          clearTimeout(incHoldTimer);
+          incHoldTimer = null;
+        }
+      });
+      incBtn.addEventListener("pointercancel", function () {
+        if (incHoldTimer) {
+          clearTimeout(incHoldTimer);
+          incHoldTimer = null;
+        }
+      });
+    }
+
+    TsdStorage.getSetting("qtyStep")
+      .then(function (value) {
+        qtyStep = normalizeQtyStep(value);
+        updateQtyModeLabel();
+      })
+      .catch(function () {
+        qtyStep = 1;
+        updateQtyModeLabel();
+      });
 
     if (undoBtn) {
       undoBtn.addEventListener("click", function () {
@@ -2538,14 +2679,6 @@
       if (!field) {
         return;
       }
-      input.addEventListener("focus", function () {
-        setScanTarget("location", field);
-        enterScanMode();
-      });
-      input.addEventListener("click", function () {
-        setScanTarget("location", field);
-        enterScanMode();
-      });
       input.addEventListener("input", function () {
         setLocationError(field, "");
       });
@@ -2594,7 +2727,6 @@
             setScanTarget("barcode");
           },
           onSubmit: function (value) {
-            setScanTarget("location", target);
             handleLocationEntry(target, value);
           },
         });
@@ -2619,7 +2751,7 @@
           adjustLineAt(index, -1);
         }
         if (action === "plus") {
-          adjustLineAt(index, 1);
+          adjustLineAt(index, normalizeQtyStep(qtyStep));
         }
       });
     });
