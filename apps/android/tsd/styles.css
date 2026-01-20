@@ -837,6 +837,13 @@ body {
   gap: 8px;
 }
 
+.overlay-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 @media (min-width: 520px) {
   .menu-grid {
     grid-template-columns: 1fr 1fr;

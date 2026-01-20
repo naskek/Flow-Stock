@@ -1611,6 +1611,189 @@
     }
   }
 
+  function openItemCreateOverlay(scannedBarcode, onCreated) {
+    setScanHighlight(false);
+    var overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.innerHTML =
+      '<div class="overlay-card">' +
+      '  <div class="overlay-header">' +
+      '    <div class="overlay-title">Новый товар</div>' +
+      '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+      "  </div>" +
+      '  <label class="form-label" for="itemNameInput">Наименование*</label>' +
+      '  <input class="form-input" id="itemNameInput" type="text" autocomplete="off" />' +
+      '  <div class="field-error" id="itemNameError"></div>' +
+      '  <label class="form-label" for="itemBarcodeInput">Штрихкод*</label>' +
+      '  <input class="form-input" id="itemBarcodeInput" type="text" autocomplete="off" />' +
+      '  <div class="field-error" id="itemBarcodeError"></div>' +
+      '  <label class="form-label" for="itemGtinInput">GTIN</label>' +
+      '  <input class="form-input" id="itemGtinInput" type="text" autocomplete="off" />' +
+      '  <label class="form-label" for="itemUomSelect">Базовая единица*</label>' +
+      '  <select class="form-input" id="itemUomSelect"></select>' +
+      '  <div class="field-hint is-hidden" id="itemUomHint">Импортируйте данные с ПК.</div>' +
+      '  <div class="field-error" id="itemUomError"></div>' +
+      '  <div class="overlay-actions">' +
+      '    <button class="btn btn-outline overlay-cancel" type="button">Отмена</button>' +
+      '    <button class="btn primary-btn overlay-confirm" type="button">Сохранить</button>' +
+      "  </div>" +
+      "</div>";
+
+    var nameInput = overlay.querySelector("#itemNameInput");
+    var barcodeInput = overlay.querySelector("#itemBarcodeInput");
+    var gtinInput = overlay.querySelector("#itemGtinInput");
+    var uomSelect = overlay.querySelector("#itemUomSelect");
+    var nameError = overlay.querySelector("#itemNameError");
+    var barcodeError = overlay.querySelector("#itemBarcodeError");
+    var uomError = overlay.querySelector("#itemUomError");
+    var uomHint = overlay.querySelector("#itemUomHint");
+    var closeBtn = overlay.querySelector(".overlay-close");
+    var cancelBtn = overlay.querySelector(".overlay-cancel");
+    var confirmBtn = overlay.querySelector(".overlay-confirm");
+
+    function setError(el, message) {
+      if (el) {
+        el.textContent = message || "";
+      }
+    }
+
+    function close() {
+      document.body.removeChild(overlay);
+      document.removeEventListener("keydown", onKeyDown);
+      enterScanMode();
+    }
+
+    function validate() {
+      var valid = true;
+      setError(nameError, "");
+      setError(barcodeError, "");
+      setError(uomError, "");
+      var nameValue = nameInput ? nameInput.value.trim() : "";
+      var barcodeValue = barcodeInput ? barcodeInput.value.trim() : "";
+      var uomValue = uomSelect ? uomSelect.value : "";
+      if (!nameValue) {
+        setError(nameError, "Введите наименование");
+        valid = false;
+      }
+      if (!barcodeValue) {
+        setError(barcodeError, "Введите штрихкод");
+        valid = false;
+      }
+      if (!uomValue) {
+        setError(uomError, "Выберите единицу");
+        valid = false;
+      }
+      return valid;
+    }
+
+    function buildItemId(deviceId) {
+      var safeDevice = String(deviceId || "CT48-01").replace(/[^a-zA-Z0-9_-]/g, "");
+      var rand = Math.random().toString(36).slice(2, 6);
+      return "local-" + safeDevice + "-" + Date.now() + "-" + rand;
+    }
+
+    function submit() {
+      if (!validate()) {
+        return;
+      }
+      confirmBtn.disabled = true;
+      var nameValue = nameInput ? nameInput.value.trim() : "";
+      var barcodeValue = barcodeInput ? barcodeInput.value.trim() : "";
+      var gtinValue = gtinInput ? gtinInput.value.trim() : "";
+      var uomValue = uomSelect ? uomSelect.value : "";
+      TsdStorage.getSetting("device_id")
+        .then(function (deviceId) {
+          var record = {
+            itemId: buildItemId(deviceId),
+            name: nameValue,
+            barcode: barcodeValue,
+            gtin: gtinValue || null,
+            base_uom: uomValue,
+            created_at: new Date().toISOString(),
+            created_on_device: true,
+            exported_at: null,
+            barcodes: [barcodeValue],
+          };
+          return TsdStorage.createLocalItem(record);
+        })
+        .then(function (created) {
+          close();
+          if (typeof onCreated === "function") {
+            onCreated(created);
+          }
+        })
+        .catch(function (error) {
+          confirmBtn.disabled = false;
+          if (error && error.code === "barcode_exists") {
+            setError(barcodeError, "Штрихкод уже существует");
+            return;
+          }
+          setError(barcodeError, "Ошибка сохранения");
+        });
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        close();
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submit();
+      }
+    }
+
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", onKeyDown);
+
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) {
+        close();
+      }
+    });
+
+    closeBtn.addEventListener("click", close);
+    cancelBtn.addEventListener("click", close);
+    confirmBtn.addEventListener("click", submit);
+
+    if (barcodeInput) {
+      barcodeInput.value = scannedBarcode || "";
+    }
+
+    if (uomSelect) {
+      uomSelect.innerHTML = '<option value="">Выберите...</option>';
+      TsdStorage.listUoms()
+        .then(function (uoms) {
+          if (!uoms.length) {
+            if (uomHint) {
+              uomHint.classList.remove("is-hidden");
+            }
+            uomSelect.disabled = true;
+            confirmBtn.disabled = true;
+            return;
+          }
+          uoms.forEach(function (uom) {
+            var option = document.createElement("option");
+            option.value = uom;
+            option.textContent = uom;
+            uomSelect.appendChild(option);
+          });
+          uomSelect.disabled = false;
+          confirmBtn.disabled = false;
+        })
+        .catch(function () {
+          if (uomHint) {
+            uomHint.classList.remove("is-hidden");
+          }
+          uomSelect.disabled = true;
+          confirmBtn.disabled = true;
+        });
+    }
+
+    if (nameInput) {
+      nameInput.focus();
+    }
+  }
+
   function wireDoc(doc) {
     doc.lines = doc.lines || [];
     doc.undoStack = doc.undoStack || [];
@@ -1875,15 +2058,27 @@
       var lineData = buildLineData(doc.op, doc.header);
       TsdStorage.findItemByCode(barcode)
         .then(function (item) {
-          finalizeLine(item);
+          if (item) {
+            finalizeLine(item);
+            return;
+          }
+          setScanInfo("Товар не найден", true);
+          openConfirmOverlay("Товар не найден", "Создать?", "Создать", function () {
+            openItemCreateOverlay(barcode, function (createdItem) {
+              finalizeLine(createdItem);
+            });
+          });
         })
         .catch(function () {
-          finalizeLine(null);
+          setScanInfo("Товар не найден", true);
         });
 
       function finalizeLine(item) {
         var itemId = item ? item.itemId : null;
         var itemName = item ? item.name : null;
+        if (!item) {
+          return;
+        }
         var lineIndex = findLineIndex(doc.op, doc.lines, barcode, lineData);
         if (lineIndex >= 0) {
           doc.lines[lineIndex].qty += qtyValue;

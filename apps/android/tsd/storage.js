@@ -573,6 +573,121 @@
     });
   }
 
+  function listUoms() {
+    return init().then(function () {
+      return new Promise(function (resolve, reject) {
+        var uoms = {};
+        var tx = db.transaction(STORE_ITEMS, "readonly");
+        var store = tx.objectStore(STORE_ITEMS);
+        var request = store.openCursor();
+        request.onsuccess = function (event) {
+          var cursor = event.target.result;
+          if (!cursor) {
+            resolve(Object.keys(uoms).sort());
+            return;
+          }
+          var item = cursor.value || {};
+          var uom = String(item.base_uom || "").trim();
+          if (uom) {
+            uoms[uom] = true;
+          }
+          cursor.continue();
+        };
+        request.onerror = function () {
+          reject(request.error);
+        };
+      });
+    });
+  }
+
+  function createLocalItem(data) {
+    return init().then(function () {
+      return new Promise(function (resolve, reject) {
+        var record = Object.assign({}, data);
+        var barcode = String(record.barcode || "").trim();
+        var gtin = String(record.gtin || "").trim();
+        if (!barcode) {
+          reject({ code: "barcode_required" });
+          return;
+        }
+
+        var tx = db.transaction([STORE_ITEMS, STORE_ITEM_CODES], "readwrite");
+        var itemsStore = tx.objectStore(STORE_ITEMS);
+        var codesStore = tx.objectStore(STORE_ITEM_CODES);
+        var pending = 0;
+        var hasError = false;
+        var created = false;
+
+        function fail(err) {
+          if (hasError) {
+            return;
+          }
+          hasError = true;
+          try {
+            tx.abort();
+          } catch (abortError) {
+            // ignore
+          }
+          reject(err);
+        }
+
+        function maybeCreate() {
+          if (hasError || created || pending > 0) {
+            return;
+          }
+          created = true;
+          record.itemId = record.itemId;
+          record.nameLower = String(record.name || "").toLowerCase();
+          record.skuLower = String(record.sku || "").toLowerCase();
+          record.gtinLower = String(record.gtin || "").toLowerCase();
+          record.barcodes = record.barcodes || [barcode];
+          itemsStore.put(record);
+          codesStore.put({ code: barcode, itemId: record.itemId, kind: "barcode" });
+          if (gtin && gtin !== barcode) {
+            codesStore.put({ code: gtin, itemId: record.itemId, kind: "gtin" });
+          }
+        }
+
+        function checkCode(code) {
+          if (!code) {
+            return;
+          }
+          pending += 1;
+          var request = codesStore.get(code);
+          request.onsuccess = function () {
+            pending -= 1;
+            if (request.result) {
+              fail({ code: "barcode_exists", value: code });
+              return;
+            }
+            maybeCreate();
+          };
+          request.onerror = function () {
+            pending -= 1;
+            fail(request.error);
+          };
+        }
+
+        tx.oncomplete = function () {
+          resolve(record);
+        };
+        tx.onerror = function () {
+          if (!hasError) {
+            reject(tx.error);
+          }
+        };
+
+        checkCode(barcode);
+        if (gtin && gtin !== barcode) {
+          checkCode(gtin);
+        }
+        if (!gtin || gtin === barcode) {
+          maybeCreate();
+        }
+      });
+    });
+  }
+
   function getTotalStockByItemId(itemId) {
     return getStockByItemId(itemId).then(function (rows) {
       return rows.reduce(function (sum, row) {
@@ -765,6 +880,8 @@
     getDataStatus: getDataStatus,
     getMetaExportedAt: getMetaExportedAt,
     searchItems: searchItems,
+    listUoms: listUoms,
+    createLocalItem: createLocalItem,
     findItemByCode: findItemByCode,
     searchPartners: searchPartners,
     searchLocations: searchLocations,
