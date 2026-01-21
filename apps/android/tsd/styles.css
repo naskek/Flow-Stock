@@ -173,6 +173,10 @@ body {
   max-width: none;
 }
 
+.home-screen {
+  padding-top: 0;
+}
+
 .screen-center {
   margin-top: auto;
   margin-bottom: auto;

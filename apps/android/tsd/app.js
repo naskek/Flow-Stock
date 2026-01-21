@@ -346,7 +346,7 @@
 
   function renderHome() {
     return (
-      '<section class="screen screen-center">' +
+      '<section class="screen home-screen">' +
       '  <div class="menu-grid">' +
       '    <button class="btn menu-btn" data-op="INBOUND">Приемка</button>' +
       '    <button class="btn menu-btn" data-op="OUTBOUND">Отгрузка</button>' +
