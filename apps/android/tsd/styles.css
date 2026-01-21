@@ -67,6 +67,12 @@ body {
   flex: 0 0 auto;
 }
 
+.icon-svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+
 .icon-btn:active {
   transform: scale(0.98);
   opacity: 0.9;
