@@ -78,7 +78,7 @@ public partial class ItemPickerWindow : Window
         CommitSelection();
     }
 
-    private void ItemsGrid_KeyDown(object sender, KeyEventArgs e)
+    private void ItemsGrid_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         if (e.Key == Key.Enter)
         {
@@ -87,7 +87,7 @@ public partial class ItemPickerWindow : Window
         }
     }
 
-    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         if (e.Key == Key.Escape)
         {
