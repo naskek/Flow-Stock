@@ -1336,6 +1336,23 @@
     var listEl = document.getElementById("ordersList");
     var statusEl = document.getElementById("ordersStatus");
 
+    function updateOrdersStatus() {
+      if (!statusEl) {
+        return;
+      }
+      TsdStorage.getDataStatus()
+        .then(function (status) {
+          if (status && status.exportedAt) {
+            statusEl.textContent = "По состоянию на: " + status.exportedAt;
+            return;
+          }
+          statusEl.textContent = "Данные не загружены";
+        })
+        .catch(function () {
+          statusEl.textContent = "Данные не загружены";
+        });
+    }
+
     function renderList(orders) {
       if (!listEl) {
         return;
@@ -1404,10 +1421,8 @@
       }
       TsdStorage.listOrders({ q: query })
         .then(function (orders) {
-          if (statusEl) {
-            statusEl.textContent = "";
-          }
           renderList(orders);
+          updateOrdersStatus();
         })
         .catch(function () {
           if (statusEl) {
@@ -3487,12 +3502,6 @@
         reader.onload = function () {
           try {
             var data = JSON.parse(reader.result);
-            if (!data.meta || data.meta.schemaVersion !== 1) {
-              if (dataStatusText) {
-                dataStatusText.textContent = "Неверная версия схемы данных";
-              }
-              return;
-            }
             var importedDeviceId =
               data.meta && data.meta.device_id ? String(data.meta.device_id).trim() : "";
             TsdStorage.importTsdData(data)
@@ -3510,9 +3519,10 @@
               .then(function (statusInfo) {
                 renderDataStatus(statusInfo);
               })
-              .catch(function () {
+              .catch(function (error) {
                 if (dataStatusText) {
-                  dataStatusText.textContent = "Ошибка импорта данных";
+                  dataStatusText.textContent =
+                    error && error.message ? error.message : "Ошибка импорта данных";
                 }
               });
           } catch (error) {

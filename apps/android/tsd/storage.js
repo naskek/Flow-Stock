@@ -2,7 +2,7 @@
   "use strict";
 
   var DB_NAME = "tsd_app";
-  var DB_VERSION = 6;
+  var DB_VERSION = 7;
   var STORE_SETTINGS = "settings";
   var STORE_DOCS = "docs";
   var STORE_META = "meta";
@@ -10,6 +10,7 @@
   var STORE_ITEM_CODES = "itemCodes";
   var STORE_PARTNERS = "partners";
   var STORE_LOCATIONS = "locations";
+  var STORE_UOMS = "uoms";
   var STORE_STOCK = "stock";
   var STORE_ORDERS = "orders";
   var STORE_ORDER_LINES = "orderLines";
@@ -147,6 +148,11 @@
           });
           locationsStore.createIndex("codeLower", "codeLower", { unique: false });
           locationsStore.createIndex("nameLower", "nameLower", { unique: false });
+        }
+        if (!database.objectStoreNames.contains(STORE_UOMS)) {
+          var uomsStore = database.createObjectStore(STORE_UOMS, { keyPath: "uomId" });
+          uomsStore.createIndex("codeLower", "codeLower", { unique: false });
+          uomsStore.createIndex("nameLower", "nameLower", { unique: false });
         }
         if (!database.objectStoreNames.contains(STORE_ORDERS)) {
           var ordersStore = database.createObjectStore(STORE_ORDERS, { keyPath: "orderId" });
@@ -364,8 +370,276 @@
     });
   }
 
+  function isObject(value) {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function isNonEmptyString(value) {
+    return typeof value === "string" && value.trim() !== "";
+  }
+
+  function normalizeNumber(value) {
+    var num = Number(value);
+    return isNaN(num) ? 0 : num;
+  }
+
+  function buildImportError(message) {
+    var err = new Error(message);
+    err.code = "invalid_data";
+    return err;
+  }
+
+  function validateTsdData(json) {
+    if (!isObject(json)) {
+      throw buildImportError("Некорректный JSON: ожидается объект.");
+    }
+    if (!isObject(json.meta)) {
+      throw buildImportError("Отсутствует секция meta.");
+    }
+    if (typeof json.meta.schema_version !== "number" || isNaN(json.meta.schema_version)) {
+      throw buildImportError("meta.schema_version должен быть числом.");
+    }
+    if (json.meta.schema_version !== 1) {
+      throw buildImportError(
+        "Неподдерживаемая версия схемы: " + String(json.meta.schema_version)
+      );
+    }
+    if (!isNonEmptyString(json.meta.exported_at)) {
+      throw buildImportError("meta.exported_at должен быть непустой строкой.");
+    }
+
+    if (!isObject(json.catalog)) {
+      throw buildImportError("Отсутствует секция catalog.");
+    }
+    if (!Array.isArray(json.catalog.items)) {
+      throw buildImportError("catalog.items должен быть массивом.");
+    }
+    if (!Array.isArray(json.catalog.partners)) {
+      throw buildImportError("catalog.partners должен быть массивом.");
+    }
+    if (!Array.isArray(json.catalog.locations)) {
+      throw buildImportError("catalog.locations должен быть массивом.");
+    }
+    if (!Array.isArray(json.catalog.uoms)) {
+      throw buildImportError("catalog.uoms должен быть массивом.");
+    }
+
+    if (!isObject(json.stock)) {
+      throw buildImportError("Отсутствует секция stock.");
+    }
+    if (!isNonEmptyString(json.stock.exported_at)) {
+      throw buildImportError("stock.exported_at должен быть непустой строкой.");
+    }
+    if (!Array.isArray(json.stock.rows)) {
+      throw buildImportError("stock.rows должен быть массивом.");
+    }
+
+    if (!isObject(json.orders)) {
+      throw buildImportError("Отсутствует секция orders.");
+    }
+    if (!Array.isArray(json.orders.orders)) {
+      throw buildImportError("orders.orders должен быть массивом.");
+    }
+    if (!Array.isArray(json.orders.lines)) {
+      throw buildImportError("orders.lines должен быть массивом.");
+    }
+
+    var uoms = json.catalog.uoms.map(function (uom, index) {
+      if (!isObject(uom) || uom.id == null) {
+        throw buildImportError("catalog.uoms[" + index + "].id обязателен.");
+      }
+      var code = String(uom.code || "").trim();
+      var name = String(uom.name || "").trim();
+      if (!code) {
+        throw buildImportError("catalog.uoms[" + index + "].code обязателен.");
+      }
+      if (!name) {
+        throw buildImportError("catalog.uoms[" + index + "].name обязателен.");
+      }
+      return {
+        uomId: uom.id,
+        code: code,
+        name: name,
+        codeLower: code.toLowerCase(),
+        nameLower: name.toLowerCase(),
+      };
+    });
+
+    var itemCodes = [];
+    var items = json.catalog.items.map(function (item, index) {
+      if (!isObject(item) || item.id == null) {
+        throw buildImportError("catalog.items[" + index + "].id обязателен.");
+      }
+      var name = String(item.name || "").trim();
+      if (!name) {
+        throw buildImportError("catalog.items[" + index + "].name обязателен.");
+      }
+      var baseUom = String(item.base_uom_code || "").trim();
+      if (!baseUom) {
+        throw buildImportError(
+          "catalog.items[" + index + "].base_uom_code обязателен."
+        );
+      }
+      var barcode = String(item.barcode || "").trim();
+      var gtin = String(item.gtin || "").trim();
+      var sku = String(item.sku || "").trim();
+      if (!sku) {
+        sku = barcode;
+      }
+      var barcodes = [];
+      if (barcode) {
+        barcodes.push(barcode);
+        itemCodes.push({ code: barcode, itemId: item.id, kind: "barcode" });
+      }
+      if (gtin && gtin.toLowerCase() !== barcode.toLowerCase()) {
+        barcodes.push(gtin);
+        itemCodes.push({ code: gtin, itemId: item.id, kind: "gtin" });
+      }
+      return {
+        itemId: item.id,
+        name: name,
+        sku: sku || null,
+        barcode: barcode || null,
+        gtin: gtin || null,
+        base_uom: baseUom,
+        barcodes: barcodes,
+        nameLower: name.toLowerCase(),
+        skuLower: String(sku || "").toLowerCase(),
+        gtinLower: String(gtin || "").toLowerCase(),
+      };
+    });
+
+    var partners = json.catalog.partners.map(function (partner, index) {
+      if (!isObject(partner) || partner.id == null) {
+        throw buildImportError("catalog.partners[" + index + "].id обязателен.");
+      }
+      var name = String(partner.name || "").trim();
+      if (!name) {
+        throw buildImportError("catalog.partners[" + index + "].name обязателен.");
+      }
+      return {
+        partnerId: partner.id,
+        name: name,
+        inn: partner.inn || null,
+        code: partner.code || null,
+        nameLower: name.toLowerCase(),
+      };
+    });
+
+    var locations = json.catalog.locations.map(function (location, index) {
+      if (!isObject(location) || location.id == null) {
+        throw buildImportError("catalog.locations[" + index + "].id обязателен.");
+      }
+      var code = String(location.code || "").trim();
+      var name = String(location.name || "").trim();
+      if (!code) {
+        throw buildImportError("catalog.locations[" + index + "].code обязателен.");
+      }
+      if (!name) {
+        throw buildImportError("catalog.locations[" + index + "].name обязателен.");
+      }
+      return {
+        locationId: location.id,
+        code: code,
+        name: name,
+        codeLower: code.toLowerCase(),
+        nameLower: name.toLowerCase(),
+      };
+    });
+
+    var stockRows = json.stock.rows.map(function (row, index) {
+      if (!isObject(row) || row.item_id == null || row.location_id == null) {
+        throw buildImportError("stock.rows[" + index + "]: item_id и location_id обязательны.");
+      }
+      return {
+        itemId: row.item_id,
+        locationId: row.location_id,
+        qtyBase: normalizeNumber(row.qty),
+      };
+    });
+
+    var orders = json.orders.orders.map(function (order, index) {
+      if (!isObject(order) || order.id == null) {
+        throw buildImportError("orders.orders[" + index + "].id обязателен.");
+      }
+      var orderRef = String(order.order_ref || "").trim();
+      if (!orderRef) {
+        throw buildImportError("orders.orders[" + index + "].order_ref обязателен.");
+      }
+      var partnerId = order.partner_id;
+      if (partnerId == null) {
+        throw buildImportError("orders.orders[" + index + "].partner_id обязателен.");
+      }
+      var status = String(order.status || "").trim();
+      if (!status) {
+        throw buildImportError("orders.orders[" + index + "].status обязателен.");
+      }
+      var createdAt = String(order.created_at || "").trim();
+      if (!createdAt) {
+        throw buildImportError("orders.orders[" + index + "].created_at обязателен.");
+      }
+      var plannedDate = String(order.planned_ship_date || "").trim();
+      var shippedAt = String(order.shipped_at || "").trim();
+      return {
+        orderId: order.id,
+        number: orderRef,
+        partnerId: partnerId,
+        plannedDate: plannedDate || null,
+        shippedAt: shippedAt || null,
+        createdAt: createdAt,
+        status: status,
+        numberLower: orderRef.toLowerCase(),
+      };
+    });
+
+    var orderLines = json.orders.lines.map(function (line, index) {
+      if (!isObject(line) || line.id == null) {
+        throw buildImportError("orders.lines[" + index + "].id обязателен.");
+      }
+      var orderId = line.order_id;
+      if (orderId == null) {
+        throw buildImportError("orders.lines[" + index + "].order_id обязателен.");
+      }
+      var itemId = line.item_id;
+      if (itemId == null) {
+        throw buildImportError("orders.lines[" + index + "].item_id обязателен.");
+      }
+      var orderedQty = normalizeNumber(line.qty_ordered);
+      var shippedQty = normalizeNumber(line.qty_shipped);
+      return {
+        lineId: line.id,
+        orderId: orderId,
+        itemId: itemId,
+        orderedQty: orderedQty,
+        shippedQty: shippedQty,
+        barcode: line.barcode || line.gtin || null,
+        itemName: line.name || null,
+      };
+    });
+
+    return {
+      schemaVersion: json.meta.schema_version,
+      exportedAt: json.stock.exported_at,
+      uoms: uoms,
+      items: items,
+      itemCodes: itemCodes,
+      partners: partners,
+      locations: locations,
+      stockRows: stockRows,
+      orders: orders,
+      orderLines: orderLines,
+    };
+  }
+
   function importTsdData(json) {
     return init().then(function () {
+      var normalized;
+      try {
+        normalized = validateTsdData(json);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(
           [
@@ -374,6 +648,7 @@
             STORE_ITEM_CODES,
             STORE_PARTNERS,
             STORE_LOCATIONS,
+            STORE_UOMS,
             STORE_ORDERS,
             STORE_ORDER_LINES,
             STORE_STOCK,
@@ -385,6 +660,7 @@
         var codesStore = tx.objectStore(STORE_ITEM_CODES);
         var partnersStore = tx.objectStore(STORE_PARTNERS);
         var locationsStore = tx.objectStore(STORE_LOCATIONS);
+        var uomsStore = tx.objectStore(STORE_UOMS);
         var ordersStore = tx.objectStore(STORE_ORDERS);
         var orderLinesStore = tx.objectStore(STORE_ORDER_LINES);
         var stockStore = tx.objectStore(STORE_STOCK);
@@ -403,120 +679,45 @@
           clearStore(codesStore),
           clearStore(partnersStore),
           clearStore(locationsStore),
+          clearStore(uomsStore),
           clearStore(ordersStore),
           clearStore(orderLinesStore),
           clearStore(stockStore),
         ])
           .then(function () {
-            var meta = json && json.meta ? json.meta : {};
-            metaStore.put({ key: "dataExportedAt", value: meta.exportedAt || null });
-            metaStore.put({ key: "schemaVersion", value: meta.schemaVersion || null });
+            metaStore.put({ key: "dataExportedAt", value: normalized.exportedAt });
+            metaStore.put({ key: "schemaVersion", value: normalized.schemaVersion });
 
-            (json.items || []).forEach(function (item) {
-              var itemRecord = Object.assign({}, item);
-              itemRecord.nameLower = String(itemRecord.name || "").toLowerCase();
-              itemRecord.skuLower = String(itemRecord.sku || "").toLowerCase();
-              itemRecord.gtinLower = String(itemRecord.gtin || "").toLowerCase();
-              itemsStore.put(itemRecord);
-              var codes = [];
-              if (Array.isArray(item.barcodes)) {
-                codes = codes.concat(item.barcodes);
-              }
-              if (item.gtin) {
-                codes.push(item.gtin);
-              }
-              codes.forEach(function (code) {
-                var clean = String(code || "").trim();
-                if (!clean) {
-                  return;
-                }
-                codesStore.put({
-                  code: clean,
-                  itemId: item.itemId,
-                  kind: code === item.gtin ? "gtin" : "barcode",
-                });
-              });
+            normalized.uoms.forEach(function (uom) {
+              uomsStore.put(uom);
             });
 
-            (json.partners || []).forEach(function (partner) {
-              partnersStore.put({
-                partnerId: partner.partnerId,
-                name: partner.name,
-                inn: partner.inn || null,
-                code: partner.code || null,
-                nameLower: String(partner.name || "").toLowerCase(),
-              });
+            normalized.items.forEach(function (item) {
+              itemsStore.put(item);
             });
 
-            (json.locations || []).forEach(function (location) {
-              locationsStore.put({
-                locationId: location.locationId,
-                code: location.code,
-                name: location.name,
-                codeLower: String(location.code || "").toLowerCase(),
-                nameLower: String(location.name || "").toLowerCase(),
-              });
+            normalized.itemCodes.forEach(function (code) {
+              codesStore.put(code);
             });
 
-            (json.orders || []).forEach(function (order) {
-              var orderId = order.orderId || order.id;
-              if (orderId == null) {
-                return;
-              }
-              var number = order.number || order.orderNumber || "";
-              ordersStore.put({
-                orderId: orderId,
-                number: number,
-                partnerId: order.partnerId || order.partner_id || null,
-                plannedDate: order.plannedDate || order.planned_date || null,
-                shippedAt: order.shippedAt || order.shipped_at || null,
-                createdAt: order.createdAt || order.created_at || null,
-                status: order.status || null,
-                numberLower: String(number || "").toLowerCase(),
-              });
+            normalized.partners.forEach(function (partner) {
+              partnersStore.put(partner);
             });
 
-            (json.order_lines || json.orderLines || []).forEach(function (line, index) {
-              var orderId = line.orderId || line.order_id;
-              if (orderId == null) {
-                return;
-              }
-              var itemId = line.itemId || line.item_id || null;
-              var lineId =
-                line.lineId ||
-                line.id ||
-                String(orderId) + "-" + String(itemId || "item") + "-" + index;
-              var orderedQty = Number(
-                line.orderedQty ||
-                  line.ordered_qty ||
-                  line.qtyOrdered ||
-                  line.qty ||
-                  0
-              );
-              var shippedQty = Number(
-                line.shippedQty ||
-                  line.shipped_qty ||
-                  line.qtyShipped ||
-                  line.qty_done ||
-                  0
-              );
-              orderLinesStore.put({
-                lineId: lineId,
-                orderId: orderId,
-                itemId: itemId,
-                orderedQty: isNaN(orderedQty) ? 0 : orderedQty,
-                shippedQty: isNaN(shippedQty) ? 0 : shippedQty,
-                barcode: line.barcode || line.gtin || line.code || null,
-                itemName: line.name || line.itemName || null,
-              });
+            normalized.locations.forEach(function (location) {
+              locationsStore.put(location);
             });
 
-            (json.stock || []).forEach(function (stock) {
-              stockStore.put({
-                itemId: stock.itemId,
-                locationId: stock.locationId,
-                qtyBase: stock.qtyBase,
-              });
+            normalized.orders.forEach(function (order) {
+              ordersStore.put(order);
+            });
+
+            normalized.orderLines.forEach(function (line) {
+              orderLinesStore.put(line);
+            });
+
+            normalized.stockRows.forEach(function (row) {
+              stockStore.put(row);
             });
           })
           .catch(function (error) {
@@ -566,6 +767,7 @@
     return Promise.all([
       getMetaValue("dataExportedAt"),
       getMetaValue("schemaVersion"),
+      countStore(STORE_UOMS),
       countStore(STORE_ITEMS),
       countStore(STORE_PARTNERS),
       countStore(STORE_LOCATIONS),
@@ -576,11 +778,12 @@
         exportedAt: results[0] || null,
         schemaVersion: results[1] || null,
         counts: {
-          items: results[2] || 0,
-          partners: results[3] || 0,
-          locations: results[4] || 0,
-          orders: results[5] || 0,
-          stock: results[6] || 0,
+          uoms: results[2] || 0,
+          items: results[3] || 0,
+          partners: results[4] || 0,
+          locations: results[5] || 0,
+          orders: results[6] || 0,
+          stock: results[7] || 0,
         },
       };
     });
@@ -683,12 +886,43 @@
     });
   }
 
+  function listUomsFromItems() {
+    return new Promise(function (resolve, reject) {
+      var uoms = {};
+      var tx = db.transaction(STORE_ITEMS, "readonly");
+      var store = tx.objectStore(STORE_ITEMS);
+      var request = store.openCursor();
+      request.onsuccess = function (event) {
+        var cursor = event.target.result;
+        if (!cursor) {
+          resolve(Object.keys(uoms).sort());
+          return;
+        }
+        var item = cursor.value || {};
+        var uom = String(item.base_uom || "").trim();
+        if (uom) {
+          uoms[uom] = true;
+        }
+        cursor.continue();
+      };
+      request.onerror = function () {
+        reject(request.error);
+      };
+    });
+  }
+
   function listUoms() {
     return init().then(function () {
       return new Promise(function (resolve, reject) {
         var uoms = {};
-        var tx = db.transaction(STORE_ITEMS, "readonly");
-        var store = tx.objectStore(STORE_ITEMS);
+        var tx;
+        try {
+          tx = db.transaction(STORE_UOMS, "readonly");
+        } catch (error) {
+          resolve(null);
+          return;
+        }
+        var store = tx.objectStore(STORE_UOMS);
         var request = store.openCursor();
         request.onsuccess = function (event) {
           var cursor = event.target.result;
@@ -696,16 +930,21 @@
             resolve(Object.keys(uoms).sort());
             return;
           }
-          var item = cursor.value || {};
-          var uom = String(item.base_uom || "").trim();
-          if (uom) {
-            uoms[uom] = true;
+          var uom = cursor.value || {};
+          var code = String(uom.code || "").trim();
+          if (code) {
+            uoms[code] = true;
           }
           cursor.continue();
         };
         request.onerror = function () {
           reject(request.error);
         };
+      }).then(function (result) {
+        if (Array.isArray(result) && result.length) {
+          return result;
+        }
+        return listUomsFromItems();
       });
     });
   }
