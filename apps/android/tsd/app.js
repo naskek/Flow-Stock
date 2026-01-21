@@ -1003,13 +1003,9 @@
       '<section class="screen">' +
       '  <div class="screen-card">' +
       '    <h1 class="screen-title">Настройки</h1>' +
-      '    <label class="form-label" for="deviceIdInput">ID устройства</label>' +
-      '    <input class="form-input" id="deviceIdInput" type="text" ' +
-      '      inputmode="text" autocomplete="off" autocapitalize="off" />' +
-      '    <button id="saveSettingsBtn" class="btn primary-btn" type="button">' +
-      "      Сохранить" +
-      "    </button>" +
-      '    <div id="saveStatus" class="status"></div>' +
+      '    <label class="form-label">ID устройства</label>' +
+      '    <div class="field-value" id="deviceIdValue"></div>' +
+      '    <div class="field-hint is-hidden" id="deviceIdHint">Назначается при импорте с ПК</div>' +
       '    <button id="importDataBtn" class="btn btn-outline" type="button">' +
       "      Загрузить данные с ПК..." +
       "    </button>" +
@@ -3048,9 +3044,8 @@
   }
 
   function wireSettings() {
-    var input = document.getElementById("deviceIdInput");
-    var status = document.getElementById("saveStatus");
-    var saveBtn = document.getElementById("saveSettingsBtn");
+    var deviceIdValue = document.getElementById("deviceIdValue");
+    var deviceIdHint = document.getElementById("deviceIdHint");
     var exportBtn = document.getElementById("exportFromSettingsBtn");
     var exportItemsBtn = document.getElementById("exportItemsBtn");
     var importBtn = document.getElementById("importDataBtn");
@@ -3058,16 +3053,23 @@
     var dataStatusText = document.getElementById("dataStatus");
     var dataCountsText = document.getElementById("dataCounts");
 
+    function renderDeviceId(value) {
+      if (!deviceIdValue) {
+        return;
+      }
+      var clean = value ? String(value).trim() : "";
+      deviceIdValue.textContent = clean || "Не задан";
+      if (deviceIdHint) {
+        deviceIdHint.classList.toggle("is-hidden", !!clean);
+      }
+    }
+
     TsdStorage.getSetting("device_id")
       .then(function (value) {
-        if (input) {
-          input.value = value || "CT48-01";
-        }
+        renderDeviceId(value);
       })
       .catch(function () {
-        if (input) {
-          input.value = "CT48-01";
-        }
+        renderDeviceId("");
       });
 
     function renderDataStatus(statusInfo) {
@@ -3097,24 +3099,6 @@
         renderDataStatus(null);
       });
 
-    if (saveBtn) {
-      saveBtn.addEventListener("click", function () {
-        var value = input ? input.value.trim() : "";
-        if (!value) {
-          value = "CT48-01";
-        }
-
-        TsdStorage.setSetting("device_id", value).then(function () {
-          if (status) {
-            status.textContent = "Сохранено";
-            setTimeout(function () {
-              status.textContent = "";
-            }, 1500);
-          }
-        });
-      });
-    }
-
     if (importBtn && fileInput) {
       importBtn.addEventListener("click", function () {
         fileInput.click();
@@ -3138,7 +3122,17 @@
               }
               return;
             }
+            var importedDeviceId =
+              data.meta && data.meta.device_id ? String(data.meta.device_id).trim() : "";
             TsdStorage.importTsdData(data)
+              .then(function () {
+                if (importedDeviceId) {
+                  return TsdStorage.setSetting("device_id", importedDeviceId).then(function () {
+                    renderDeviceId(importedDeviceId);
+                  });
+                }
+                return false;
+              })
               .then(function () {
                 return TsdStorage.getDataStatus();
               })

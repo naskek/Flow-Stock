@@ -197,13 +197,7 @@
   }
 
   function ensureDefaults() {
-    return getSetting("device_id")
-      .then(function (value) {
-        if (!value) {
-          return setSetting("device_id", "CT48-01");
-        }
-        return true;
-      })
+    return Promise.resolve(true)
       .then(function () {
         return getSetting("docCounters").then(function (value) {
           if (!value || typeof value !== "object") {
