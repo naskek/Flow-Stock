@@ -88,7 +88,7 @@
   var OPS = {
     INBOUND: { label: "Приемка", prefix: "IN" },
     OUTBOUND: { label: "Отгрузка", prefix: "OUT" },
-    MOVE: { label: "Перемещение", prefix: "MOV" },
+    MOVE: { label: "Перемещение", prefix: "MOVE" },
     WRITE_OFF: { label: "Списание", prefix: "WO" },
     INVENTORY: { label: "Инвентаризация", prefix: "INV" },
   };
@@ -134,6 +134,26 @@
       str = "0" + str;
     }
     return str;
+  }
+
+  function formatDocCreatedAt(doc) {
+    if (!doc) {
+      return "—";
+    }
+    var raw = doc.createdAt || doc.created_at;
+    if (!raw) {
+      return "—";
+    }
+    var date = new Date(raw);
+    if (isNaN(date.getTime())) {
+      return "—";
+    }
+    var day = padNumber(date.getDate(), 2);
+    var month = padNumber(date.getMonth() + 1, 2);
+    var year = date.getFullYear();
+    var hours = padNumber(date.getHours(), 2);
+    var minutes = padNumber(date.getMinutes(), 2);
+    return day + "." + month + "." + year + " " + hours + ":" + minutes;
   }
 
   function getDateKey(date) {
@@ -213,6 +233,9 @@
     }
 
     var parts = path.split("/");
+    if (parts[0] === "docs" && parts[1]) {
+      return { name: "docs", op: decodeURIComponent(parts[1]) };
+    }
     if (parts[0] === "doc" && parts[1]) {
       return { name: "doc", id: decodeURIComponent(parts[1]) };
     }
@@ -261,7 +284,7 @@
       app.innerHTML = renderLoading();
       TsdStorage.listDocs()
         .then(function (docs) {
-          app.innerHTML = renderDocsList(docs);
+          app.innerHTML = renderDocsList(docs, route.op);
           wireDocsList();
         })
         .catch(function () {
@@ -336,8 +359,14 @@
       "</section>"
     );
   }
-  function renderDocsList(docs) {
+  function renderDocsList(docs, opFilter) {
     var list = docs || [];
+    var listOp = opFilter && OPS[opFilter] ? opFilter : null;
+    if (listOp) {
+      list = list.filter(function (doc) {
+        return doc.op === listOp;
+      });
+    }
     list.sort(function (a, b) {
       var statusDiff = (STATUS_ORDER[a.status] || 0) - (STATUS_ORDER[b.status] || 0);
       if (statusDiff !== 0) {
@@ -352,6 +381,7 @@
       .map(function (doc) {
         var opLabel = OPS[doc.op] ? OPS[doc.op].label : doc.op;
         var statusLabel = STATUS_LABELS[doc.status] || doc.status;
+        var createdLabel = formatDocCreatedAt(doc);
         return (
           '<button class="doc-item" data-doc="' +
           escapeHtml(doc.id) +
@@ -362,6 +392,9 @@
           "</div>" +
           '    <div class="doc-ref">' +
           escapeHtml(doc.doc_ref || "") +
+          "</div>" +
+          '    <div class="doc-created">Создан: ' +
+          escapeHtml(createdLabel) +
           "</div>" +
           "  </div>" +
           '  <div class="doc-status">' +
@@ -376,15 +409,24 @@
       rows = '<div class="empty-state">Операций пока нет.</div>';
     }
 
+    var title = listOp && OPS[listOp] ? OPS[listOp].label : "История операций";
+    var actionsHtml = "";
+    if (listOp) {
+      actionsHtml =
+        '<div class="actions-row doc-actions">' +
+        '  <button class="btn primary-btn" id="newDocBtn" data-op="' +
+        escapeHtml(listOp) +
+        '">+ Новый</button>' +
+        "</div>";
+    }
+
     return (
       '<section class="screen">' +
       '  <div class="screen-card doc-screen-card">' +
-      '    <div class="section-title">История операций</div>' +
-      '    <div class="actions-row">' +
-      '      <button class="btn primary-btn" id="newDocBtn">Новая операция</button>' +
-      '      <button class="btn btn-outline" id="exportBtn">Экспорт JSONL</button>' +
-      "    </div>" +
-      '    <div id="exportStatus" class="status"></div>' +
+      '    <div class="section-title">' +
+      escapeHtml(title) +
+      "</div>" +
+      actionsHtml +
       '    <div class="doc-list">' +
       rows +
       "    </div>" +
@@ -423,7 +465,6 @@
       '    <div id="stockDetails" class="stock-details"></div>' +
       '    <div class="actions-bar">' +
       '      <button class="btn btn-outline" id="stockClearBtn" type="button">Очистить</button>' +
-      '      <button class="btn btn-outline" id="stockBackBtn" type="button">Назад</button>' +
       "    </div>" +
       "  </div>" +
       "</section>"
@@ -437,7 +478,6 @@
     var messageEl = document.getElementById("stockMessage");
     var detailsEl = document.getElementById("stockDetails");
     var clearBtn = document.getElementById("stockClearBtn");
-    var backBtn = document.getElementById("stockBackBtn");
     var dataReady = false;
 
     function setStatusText(text) {
@@ -666,12 +706,6 @@
       setStockMessage("");
     });
   }
-
-    if (backBtn) {
-      backBtn.addEventListener("click", function () {
-        navigate("/home");
-      });
-    }
 
     if (searchInput) {
       searchInput.focus();
@@ -1030,7 +1064,9 @@
     buttons.forEach(function (btn) {
       btn.addEventListener("click", function () {
         var op = btn.getAttribute("data-op");
-        createDocAndOpen(op, "home");
+        if (op) {
+          navigate("/docs/" + encodeURIComponent(op));
+        }
       });
     });
     var routes = document.querySelectorAll("[data-route]");
@@ -1044,26 +1080,24 @@
 
   function wireDocsList() {
     var newBtn = document.getElementById("newDocBtn");
-    var exportBtn = document.getElementById("exportBtn");
     var docs = document.querySelectorAll("[data-doc]");
+    var listOp = currentRoute && currentRoute.op ? currentRoute.op : null;
+    var listOrigin = listOp ? "home" : "history";
 
     if (newBtn) {
       newBtn.addEventListener("click", function () {
-        setNavOrigin("history");
-        navigate("/new");
-      });
-    }
-
-    if (exportBtn) {
-      exportBtn.addEventListener("click", function () {
-        exportReadyDocs("exportStatus");
+        var op = newBtn.getAttribute("data-op") || listOp;
+        if (!op) {
+          return;
+        }
+        createDocAndOpen(op, listOrigin);
       });
     }
 
     docs.forEach(function (item) {
       item.addEventListener("click", function () {
         var docId = item.getAttribute("data-doc");
-        setNavOrigin("history");
+        setNavOrigin(listOrigin);
         navigate("/doc/" + encodeURIComponent(docId));
       });
     });
@@ -3184,12 +3218,9 @@
     var dateKey = getDateKey(now);
     var prefix = OPS[op].prefix;
 
-    Promise.all([TsdStorage.getSetting("device_id"), TsdStorage.nextDocCounter(prefix, dateKey)])
-      .then(function (results) {
-        var deviceId = results[0] || "CT48-01";
-        var counter = results[1];
-        var docRef =
-          prefix + "-" + dateKey + "-" + deviceId + "-" + padNumber(counter, 3);
+    TsdStorage.nextDocCounter(prefix, dateKey)
+      .then(function (counter) {
+        var docRef = prefix + "-" + dateKey + "-" + padNumber(counter, 3);
         var docId = createUuid();
         var nowIso = new Date().toISOString();
 
@@ -3585,4 +3616,5 @@
       });
   });
 })();
+
 

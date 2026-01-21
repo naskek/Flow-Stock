@@ -504,7 +504,8 @@ body {
 
 .primary-btn {
   width: 100%;
-  background: linear-gradient(135deg, var(--primary), var(--accent));
+  background: #b9e6b3;
+  color: #1b3a57;
 }
 
 .actions-row {
@@ -515,19 +516,19 @@ body {
 
 .doc-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .doc-item {
   border: 2px solid #d9e7ee;
   border-radius: 12px;
-  padding: 10px;
+  padding: 8px;
   background: #fff;
   display: flex;
   align-items: center;
   justify-content: space-between;
   text-align: left;
-  font-size: 15px;
+  font-size: 13px;
   cursor: pointer;
 }
 
@@ -536,12 +537,22 @@ body {
 }
 
 .doc-title {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
 }
 
 .doc-ref {
-  font-size: 12px;
+  font-size: 11px;
+  color: #486581;
+}
+
+.doc-main {
+  display: grid;
+  gap: 2px;
+}
+
+.doc-created {
+  font-size: 11px;
   color: #486581;
 }
 
@@ -590,9 +601,9 @@ body {
 }
 
 .doc-status {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--primary-dark);
-  padding-left: 12px;
+  padding-left: 8px;
 }
 
 .doc-meta {
