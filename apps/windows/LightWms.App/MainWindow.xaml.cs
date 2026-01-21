@@ -8,7 +8,6 @@ using System.Windows.Input;
 using System.Windows.Threading;
 using LightWms.Core.Models;
 using Microsoft.Win32;
-using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 
 namespace LightWms.App;
 
