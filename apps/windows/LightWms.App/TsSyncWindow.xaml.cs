@@ -1,21 +1,25 @@
 using System.Collections.ObjectModel;
 using System.IO;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows;
 using LightWms.Core.Models;
 using Microsoft.Win32;
+using System.Globalization;
 
 namespace LightWms.App;
 
 public partial class TsSyncWindow : Window
 {
-    private const string TsdDataFileName = "LightWMS_TSD_DATA.json";
+    internal const string TsdDataFileName = "LightWMS_TSD_DATA.json";
+    private static readonly JsonSerializerOptions ExportJsonOptions = new()
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.Never
+    };
     private readonly AppServices _services;
     private readonly ObservableCollection<ImportFileLog> _importLogs = new();
-    private readonly JsonSerializerOptions _jsonOptions;
     private readonly Action? _onImportCompleted;
     private BackupSettings _settings = BackupSettings.Default();
 
@@ -23,11 +27,6 @@ public partial class TsSyncWindow : Window
     {
         _services = services;
         _onImportCompleted = onImportCompleted;
-        _jsonOptions = new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-        };
 
         InitializeComponent();
         ImportLogGrid.ItemsSource = _importLogs;
@@ -75,13 +74,12 @@ public partial class TsSyncWindow : Window
         {
             _services.AppLogger.Info($"TSD export start path={targetPath}");
 
-            var payload = BuildExportPayload();
-            var json = JsonSerializer.Serialize(payload, _jsonOptions);
-            File.WriteAllText(targetPath, json, Encoding.UTF8);
-
-            ExportSummaryText.Text = $"Выгружено: товары {payload.Items.Count}, контрагенты {payload.Partners.Count}, " +
-                                     $"места хранения {payload.Locations.Count}, остатки {payload.Stock.Count}.";
-            _services.AppLogger.Info($"TSD export finish path={targetPath} items={payload.Items.Count} partners={payload.Partners.Count} locations={payload.Locations.Count} stock={payload.Stock.Count}");
+            var summary = ExportTsdData(_services, targetPath);
+            ExportSummaryText.Text = $"Выгружено: ед. изм. {summary.Uoms}, товары {summary.Items}, контрагенты {summary.Partners}, " +
+                                     $"места хранения {summary.Locations}, остатки {summary.StockRows}, заказы {summary.Orders}, строки заказов {summary.OrderLines}.";
+            _services.AppLogger.Info(
+                $"TSD export finish path={targetPath} uoms={summary.Uoms} items={summary.Items} partners={summary.Partners} " +
+                $"locations={summary.Locations} stock={summary.StockRows} orders={summary.Orders} order_lines={summary.OrderLines}");
 
             MessageBox.Show("Выгрузка завершена.", "Синхронизация с ТСД", MessageBoxButton.OK, MessageBoxImage.Information);
         }
@@ -303,114 +301,161 @@ public partial class TsSyncWindow : Window
         return null;
     }
 
-    private TsExportPayload BuildExportPayload()
+    internal static TsdExportSummary ExportTsdData(AppServices services, string targetPath, string? deviceId = null)
     {
-        var items = _services.Catalog.GetItems(null);
-        var partners = _services.Catalog.GetPartners();
-        var locations = _services.Catalog.GetLocations();
-        var stock = _services.Documents.GetStock(null);
+        var payload = BuildExportPayload(services, deviceId);
+        var json = JsonSerializer.Serialize(payload, ExportJsonOptions);
+        File.WriteAllText(targetPath, json, Encoding.UTF8);
+        return new TsdExportSummary(
+            payload.Catalog.Uoms.Count,
+            payload.Catalog.Items.Count,
+            payload.Catalog.Partners.Count,
+            payload.Catalog.Locations.Count,
+            payload.Stock.Rows.Count,
+            payload.Orders.Orders.Count,
+            payload.Orders.Lines.Count);
+    }
+
+    private static TsdExportPayload BuildExportPayload(AppServices services, string? deviceId)
+    {
+        var exportedAt = DateTimeOffset.Now;
+        var exportedAtText = exportedAt.ToString("O", CultureInfo.InvariantCulture);
+        var items = services.Catalog.GetItems(null);
+        var partners = services.Catalog.GetPartners();
+        var locations = services.Catalog.GetLocations();
+        var uoms = services.Catalog.GetUoms();
+        var stock = services.Documents.GetStock(null);
+        var orders = services.Orders.GetOrders();
 
         var locationByCode = locations.ToDictionary(l => l.Code, l => l.Id, StringComparer.OrdinalIgnoreCase);
 
-        var itemDtos = new List<TsItem>(items.Count);
-        foreach (var item in items)
+        var uomDtos = uoms.Select(uom => new TsdUom
         {
-            var packagings = _services.Packagings.GetPackagings(item.Id, includeInactive: true);
-            var defaultPackaging = item.DefaultPackagingId.HasValue
-                ? packagings.FirstOrDefault(p => p.Id == item.DefaultPackagingId.Value)
-                : null;
+            Id = uom.Id,
+            Code = uom.Name,
+            Name = uom.Name
+        }).ToList();
 
-            var barcodes = new List<string>();
-            AddBarcode(barcodes, item.Barcode);
-            AddBarcode(barcodes, item.Gtin);
-
-            itemDtos.Add(new TsItem
-            {
-                ItemId = item.Id,
-                Sku = item.Barcode,
-                Name = item.Name,
-                Gtin = item.Gtin,
-                BaseUom = item.BaseUom,
-                Barcodes = barcodes,
-                DefaultPackaging = defaultPackaging == null
-                    ? null
-                    : new TsPackaging
-                    {
-                        Code = defaultPackaging.Code,
-                        Name = defaultPackaging.Name,
-                        FactorToBase = defaultPackaging.FactorToBase,
-                        IsActive = defaultPackaging.IsActive,
-                        SortOrder = defaultPackaging.SortOrder
-                    },
-                Packagings = packagings.Select(p => new TsPackaging
-                {
-                    Code = p.Code,
-                    Name = p.Name,
-                    FactorToBase = p.FactorToBase,
-                    IsActive = p.IsActive,
-                    SortOrder = p.SortOrder
-                }).ToList()
-            });
-        }
-
-        var partnerDtos = partners.Select(partner => new TsPartner
+        var itemDtos = items.Select(item => new TsdItem
         {
-            PartnerId = partner.Id,
+            Id = item.Id,
+            Name = item.Name,
+            Sku = item.Barcode,
+            Barcode = item.Barcode,
+            Gtin = item.Gtin,
+            BaseUomCode = string.IsNullOrWhiteSpace(item.BaseUom) ? "шт" : item.BaseUom
+        }).ToList();
+
+        var partnerDtos = partners.Select(partner => new TsdPartner
+        {
+            Id = partner.Id,
             Name = partner.Name,
             Inn = partner.Code
         }).ToList();
 
-        var locationDtos = locations.Select(location => new TsLocation
+        var locationDtos = locations.Select(location => new TsdLocation
         {
-            LocationId = location.Id,
+            Id = location.Id,
             Code = location.Code,
             Name = location.Name
         }).ToList();
 
-        var stockDtos = new List<TsStockRow>(stock.Count);
+        var stockDtos = new List<TsdStockRow>(stock.Count);
         foreach (var row in stock)
         {
             if (!locationByCode.TryGetValue(row.LocationCode, out var locationId))
             {
-                _services.AppLogger.Warn($"TSD export: location code not found {row.LocationCode}");
+                services.AppLogger.Warn($"TSD export: location code not found {row.LocationCode}");
                 continue;
             }
 
-            stockDtos.Add(new TsStockRow
+            stockDtos.Add(new TsdStockRow
             {
                 ItemId = row.ItemId,
                 LocationId = locationId,
-                QtyBase = row.Qty
+                Qty = row.Qty
             });
         }
 
-        var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString();
-        return new TsExportPayload
+        var orderDtos = new List<TsdOrder>(orders.Count);
+        var orderLineDtos = new List<TsdOrderLine>();
+        foreach (var order in orders)
         {
-            Meta = new TsMeta
+            orderDtos.Add(new TsdOrder
+            {
+                Id = order.Id,
+                OrderRef = order.OrderRef ?? string.Empty,
+                PartnerId = order.PartnerId,
+                PlannedShipDate = FormatDate(order.DueDate),
+                Status = OrderStatusMapper.StatusToString(order.Status),
+                ShippedAt = FormatDateTime(order.ShippedAt),
+                CreatedAt = FormatDateTime(order.CreatedAt)
+            });
+
+            foreach (var line in services.Orders.GetOrderLineViews(order.Id))
+            {
+                orderLineDtos.Add(new TsdOrderLine
+                {
+                    Id = line.Id,
+                    OrderId = line.OrderId,
+                    ItemId = line.ItemId,
+                    QtyOrdered = line.QtyOrdered,
+                    QtyShipped = line.QtyShipped
+                });
+            }
+        }
+
+        return new TsdExportPayload
+        {
+            Meta = new TsdMeta
             {
                 SchemaVersion = 1,
-                ExportedAt = DateTime.Now.ToString("O"),
-                AppVersion = version
+                ExportedAt = exportedAtText,
+                Source = "LightWMS Local",
+                DbId = null,
+                DeviceId = deviceId
             },
-            Items = itemDtos,
-            Partners = partnerDtos,
-            Locations = locationDtos,
-            Stock = stockDtos
+            Catalog = new TsdCatalog
+            {
+                Uoms = uomDtos,
+                Items = itemDtos,
+                Partners = partnerDtos,
+                Locations = locationDtos
+            },
+            Stock = new TsdStock
+            {
+                ExportedAt = exportedAtText,
+                Rows = stockDtos
+            },
+            Orders = new TsdOrders
+            {
+                Orders = orderDtos,
+                Lines = orderLineDtos
+            }
         };
     }
 
-    private static void AddBarcode(List<string> barcodes, string? value)
+    private static string? FormatDate(DateTime? value)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (!value.HasValue)
         {
-            return;
+            return null;
         }
 
-        if (!barcodes.Contains(value, StringComparer.OrdinalIgnoreCase))
+        return value.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    private static string? FormatDateTime(DateTime? value)
+    {
+        if (!value.HasValue)
         {
-            barcodes.Add(value);
+            return null;
         }
+
+        var local = value.Value.Kind == DateTimeKind.Unspecified
+            ? DateTime.SpecifyKind(value.Value, DateTimeKind.Local)
+            : value.Value.ToLocalTime();
+        return new DateTimeOffset(local).ToString("O", CultureInfo.InvariantCulture);
     }
 
     private sealed class ImportFileLog
@@ -423,85 +468,91 @@ public partial class TsSyncWindow : Window
         public int Errors { get; init; }
     }
 
-    private sealed class TsExportPayload
+    private sealed class TsdExportPayload
     {
         [JsonPropertyName("meta")]
-        public TsMeta Meta { get; init; } = new();
+        public TsdMeta Meta { get; init; } = new();
 
-        [JsonPropertyName("items")]
-        public List<TsItem> Items { get; init; } = new();
-
-        [JsonPropertyName("partners")]
-        public List<TsPartner> Partners { get; init; } = new();
-
-        [JsonPropertyName("locations")]
-        public List<TsLocation> Locations { get; init; } = new();
+        [JsonPropertyName("catalog")]
+        public TsdCatalog Catalog { get; init; } = new();
 
         [JsonPropertyName("stock")]
-        public List<TsStockRow> Stock { get; init; } = new();
+        public TsdStock Stock { get; init; } = new();
+
+        [JsonPropertyName("orders")]
+        public TsdOrders Orders { get; init; } = new();
     }
 
-    private sealed class TsMeta
+    private sealed class TsdMeta
     {
-        [JsonPropertyName("schemaVersion")]
+        [JsonPropertyName("schema_version")]
         public int SchemaVersion { get; init; }
 
-        [JsonPropertyName("exportedAt")]
+        [JsonPropertyName("exported_at")]
         public string ExportedAt { get; init; } = string.Empty;
 
-        [JsonPropertyName("appVersion")]
-        public string? AppVersion { get; init; }
+        [JsonPropertyName("source")]
+        public string Source { get; init; } = string.Empty;
+
+        [JsonPropertyName("db_id")]
+        public string? DbId { get; init; }
+
+        [JsonPropertyName("device_id")]
+        public string? DeviceId { get; init; }
     }
 
-    private sealed class TsItem
+    private sealed class TsdCatalog
     {
-        [JsonPropertyName("itemId")]
-        public long ItemId { get; init; }
+        [JsonPropertyName("uoms")]
+        public List<TsdUom> Uoms { get; init; } = new();
 
-        [JsonPropertyName("sku")]
-        public string? Sku { get; init; }
+        [JsonPropertyName("items")]
+        public List<TsdItem> Items { get; init; } = new();
 
-        [JsonPropertyName("name")]
-        public string Name { get; init; } = string.Empty;
+        [JsonPropertyName("partners")]
+        public List<TsdPartner> Partners { get; init; } = new();
 
-        [JsonPropertyName("gtin")]
-        public string? Gtin { get; init; }
-
-        [JsonPropertyName("base_uom")]
-        public string BaseUom { get; init; } = "шт";
-
-        [JsonPropertyName("barcodes")]
-        public List<string> Barcodes { get; init; } = new();
-
-        [JsonPropertyName("defaultPackaging")]
-        public TsPackaging? DefaultPackaging { get; init; }
-
-        [JsonPropertyName("packagings")]
-        public List<TsPackaging> Packagings { get; init; } = new();
+        [JsonPropertyName("locations")]
+        public List<TsdLocation> Locations { get; init; } = new();
     }
 
-    private sealed class TsPackaging
+    private sealed class TsdUom
     {
+        [JsonPropertyName("id")]
+        public long Id { get; init; }
+
         [JsonPropertyName("code")]
         public string Code { get; init; } = string.Empty;
 
         [JsonPropertyName("name")]
         public string Name { get; init; } = string.Empty;
-
-        [JsonPropertyName("factor_to_base")]
-        public double FactorToBase { get; init; }
-
-        [JsonPropertyName("is_active")]
-        public bool IsActive { get; init; }
-
-        [JsonPropertyName("sort_order")]
-        public int SortOrder { get; init; }
     }
 
-    private sealed class TsPartner
+    private sealed class TsdItem
     {
-        [JsonPropertyName("partnerId")]
-        public long PartnerId { get; init; }
+        [JsonPropertyName("id")]
+        public long Id { get; init; }
+
+        [JsonPropertyName("name")]
+        public string Name { get; init; } = string.Empty;
+
+        [JsonPropertyName("sku")]
+        public string? Sku { get; init; }
+
+        [JsonPropertyName("barcode")]
+        public string? Barcode { get; init; }
+
+        [JsonPropertyName("gtin")]
+        public string? Gtin { get; init; }
+
+        [JsonPropertyName("base_uom_code")]
+        public string BaseUomCode { get; init; } = "шт";
+    }
+
+    private sealed class TsdPartner
+    {
+        [JsonPropertyName("id")]
+        public long Id { get; init; }
 
         [JsonPropertyName("name")]
         public string Name { get; init; } = string.Empty;
@@ -510,10 +561,10 @@ public partial class TsSyncWindow : Window
         public string? Inn { get; init; }
     }
 
-    private sealed class TsLocation
+    private sealed class TsdLocation
     {
-        [JsonPropertyName("locationId")]
-        public long LocationId { get; init; }
+        [JsonPropertyName("id")]
+        public long Id { get; init; }
 
         [JsonPropertyName("code")]
         public string Code { get; init; } = string.Empty;
@@ -522,15 +573,84 @@ public partial class TsSyncWindow : Window
         public string Name { get; init; } = string.Empty;
     }
 
-    private sealed class TsStockRow
+    private sealed class TsdStock
     {
-        [JsonPropertyName("itemId")]
+        [JsonPropertyName("exported_at")]
+        public string ExportedAt { get; init; } = string.Empty;
+
+        [JsonPropertyName("rows")]
+        public List<TsdStockRow> Rows { get; init; } = new();
+    }
+
+    private sealed class TsdStockRow
+    {
+        [JsonPropertyName("item_id")]
         public long ItemId { get; init; }
 
-        [JsonPropertyName("locationId")]
+        [JsonPropertyName("location_id")]
         public long LocationId { get; init; }
 
-        [JsonPropertyName("qtyBase")]
-        public double QtyBase { get; init; }
+        [JsonPropertyName("qty")]
+        public double Qty { get; init; }
     }
+
+    private sealed class TsdOrders
+    {
+        [JsonPropertyName("orders")]
+        public List<TsdOrder> Orders { get; init; } = new();
+
+        [JsonPropertyName("lines")]
+        public List<TsdOrderLine> Lines { get; init; } = new();
+    }
+
+    private sealed class TsdOrder
+    {
+        [JsonPropertyName("id")]
+        public long Id { get; init; }
+
+        [JsonPropertyName("order_ref")]
+        public string OrderRef { get; init; } = string.Empty;
+
+        [JsonPropertyName("partner_id")]
+        public long PartnerId { get; init; }
+
+        [JsonPropertyName("planned_ship_date")]
+        public string? PlannedShipDate { get; init; }
+
+        [JsonPropertyName("status")]
+        public string Status { get; init; } = string.Empty;
+
+        [JsonPropertyName("shipped_at")]
+        public string? ShippedAt { get; init; }
+
+        [JsonPropertyName("created_at")]
+        public string CreatedAt { get; init; } = string.Empty;
+    }
+
+    private sealed class TsdOrderLine
+    {
+        [JsonPropertyName("id")]
+        public long Id { get; init; }
+
+        [JsonPropertyName("order_id")]
+        public long OrderId { get; init; }
+
+        [JsonPropertyName("item_id")]
+        public long ItemId { get; init; }
+
+        [JsonPropertyName("qty_ordered")]
+        public double QtyOrdered { get; init; }
+
+        [JsonPropertyName("qty_shipped")]
+        public double QtyShipped { get; init; }
+    }
+
+    internal sealed record TsdExportSummary(
+        int Uoms,
+        int Items,
+        int Partners,
+        int Locations,
+        int StockRows,
+        int Orders,
+        int OrderLines);
 }

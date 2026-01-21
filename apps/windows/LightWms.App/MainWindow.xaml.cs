@@ -901,6 +901,35 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
+    private void ExportTsdData_Click(object sender, RoutedEventArgs e)
+    {
+        var exportDir = Path.Combine(_services.BaseDir, "Exports");
+        Directory.CreateDirectory(exportDir);
+
+        var dialog = new SaveFileDialog
+        {
+            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+            FileName = TsSyncWindow.TsdDataFileName,
+            InitialDirectory = exportDir
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        try
+        {
+            TsSyncWindow.ExportTsdData(_services, dialog.FileName);
+            MessageBox.Show($"Файл сохранен:\n{dialog.FileName}", "Выгрузка на ТСД", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error($"TSD export failed path={dialog.FileName}", ex);
+            MessageBox.Show(ex.Message, "Выгрузка на ТСД", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void OpenTsdSync_Click(object sender, RoutedEventArgs e)
     {
         OpenTsdSyncWindow();
