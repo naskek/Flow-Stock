@@ -156,6 +156,68 @@
     return day + "." + month + "." + year + " " + hours + ":" + minutes;
   }
 
+  function formatDate(value) {
+    if (!value) {
+      return "—";
+    }
+    var date = new Date(value);
+    if (isNaN(date.getTime())) {
+      return "—";
+    }
+    var day = padNumber(date.getDate(), 2);
+    var month = padNumber(date.getMonth() + 1, 2);
+    var year = date.getFullYear();
+    return day + "." + month + "." + year;
+  }
+
+  function formatDateTime(value) {
+    if (!value) {
+      return "—";
+    }
+    var date = new Date(value);
+    if (isNaN(date.getTime())) {
+      return "—";
+    }
+    var day = padNumber(date.getDate(), 2);
+    var month = padNumber(date.getMonth() + 1, 2);
+    var year = date.getFullYear();
+    var hours = padNumber(date.getHours(), 2);
+    var minutes = padNumber(date.getMinutes(), 2);
+    return day + "." + month + "." + year + " " + hours + ":" + minutes;
+  }
+
+  function getOrderStatusInfo(status) {
+    var raw = String(status || "").trim();
+    if (!raw) {
+      return { label: "—", className: "order-status-pill order-status-neutral" };
+    }
+    var normalized = raw.toLowerCase();
+    if (
+      normalized.indexOf("принят") !== -1 ||
+      normalized.indexOf("accepted") !== -1 ||
+      normalized.indexOf("new") !== -1
+    ) {
+      return { label: raw, className: "order-status-pill order-status-accepted" };
+    }
+    if (
+      normalized.indexOf("процесс") !== -1 ||
+      normalized.indexOf("в работе") !== -1 ||
+      normalized.indexOf("processing") !== -1 ||
+      normalized.indexOf("picking") !== -1
+    ) {
+      return { label: raw, className: "order-status-pill order-status-progress" };
+    }
+    if (
+      normalized.indexOf("отгруж") !== -1 ||
+      normalized.indexOf("shipped") !== -1 ||
+      normalized.indexOf("done") !== -1 ||
+      normalized.indexOf("closed") !== -1
+    ) {
+      return { label: raw, className: "order-status-pill order-status-shipped" };
+    }
+    return { label: raw, className: "order-status-pill order-status-neutral" };
+  }
+
   function getDateKey(date) {
     var year = date.getFullYear();
     var month = padNumber(date.getMonth() + 1, 2);
@@ -238,6 +300,9 @@
     }
     if (parts[0] === "doc" && parts[1]) {
       return { name: "doc", id: decodeURIComponent(parts[1]) };
+    }
+    if (parts[0] === "order" && parts[1]) {
+      return { name: "order", id: decodeURIComponent(parts[1]) };
     }
     return { name: parts[0] };
   }
@@ -322,6 +387,44 @@
       return;
     }
 
+    if (route.name === "orders") {
+      app.innerHTML = renderOrders();
+      wireOrders();
+      return;
+    }
+
+    if (route.name === "order") {
+      app.innerHTML = renderLoading();
+      TsdStorage.getOrderById(route.id)
+        .then(function (order) {
+          if (!order) {
+            app.innerHTML = renderError("Заказ не найден");
+            return;
+          }
+          return Promise.all([
+            TsdStorage.listOrderLines(route.id),
+            order.partnerId ? TsdStorage.getPartnerById(order.partnerId) : Promise.resolve(null),
+          ])
+            .then(function (results) {
+              var lines = results[0] || [];
+              var partner = results[1];
+              if (partner) {
+                order.partnerName = partner.name || "";
+                order.partnerInn = partner.inn || "";
+              }
+              app.innerHTML = renderOrderDetails(order, lines);
+              wireOrderDetails();
+            })
+            .catch(function () {
+              app.innerHTML = renderError("Ошибка загрузки строк заказа");
+            });
+        })
+        .catch(function () {
+          app.innerHTML = renderError("Ошибка загрузки заказа");
+        });
+      return;
+    }
+
     if (route.name === "stock") {
       app.innerHTML = renderStock();
       wireStock();
@@ -354,6 +457,7 @@
       '    <button class="btn menu-btn" data-op="WRITE_OFF">Списание</button>' +
       '    <button class="btn menu-btn" data-route="stock">Остатки</button>' +
       '    <button class="btn menu-btn" data-op="INVENTORY">Инвентаризация</button>' +
+      '    <button class="btn menu-btn" data-route="orders">Заказы</button>' +
       '    <button class="btn menu-btn" data-route="docs">История операций</button>' +
       "  </div>" +
       "</section>"
@@ -428,6 +532,124 @@
       "</div>" +
       actionsHtml +
       '    <div class="doc-list">' +
+      rows +
+      "    </div>" +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function renderOrders() {
+    return (
+      '<section class="screen">' +
+      '  <div class="screen-card doc-screen-card">' +
+      '    <div class="section-title">Заказы</div>' +
+      '    <input class="form-input" id="ordersSearchInput" type="text" autocomplete="off" placeholder="Поиск по номеру или контрагенту" />' +
+      '    <div id="ordersStatus" class="status"></div>' +
+      '    <div id="ordersList" class="doc-list order-list"></div>' +
+      "  </div>" +
+      "</section>"
+    );
+  }
+
+  function renderOrderDetails(order, lines) {
+    var statusInfo = getOrderStatusInfo(order.status);
+    var orderNumber =
+      order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
+    var partnerLabel = order.partnerName || "—";
+    if (order.partnerInn) {
+      partnerLabel += " · ИНН: " + order.partnerInn;
+    }
+    var plannedDate = formatDate(order.plannedDate || order.planned_date);
+    var shippedDate = formatDate(order.shippedAt || order.shipped_at);
+    var createdAt = formatDateTime(order.createdAt || order.created_at);
+
+    var rows = (lines || [])
+      .map(function (line) {
+        var ordered = Number(line.orderedQty) || 0;
+        var shipped = Number(line.shippedQty) || 0;
+        var left = Number(line.leftQty);
+        if (isNaN(left)) {
+          left = Math.max(ordered - shipped, 0);
+        }
+        return (
+          '<div class="order-line-row">' +
+          '  <div class="order-line-item">' +
+          '    <div class="order-line-name">' +
+          escapeHtml(line.itemName || "-") +
+          "</div>" +
+          (line.barcode
+            ? '    <div class="order-line-barcode">' + escapeHtml(line.barcode) + "</div>"
+            : "") +
+          "  </div>" +
+          '  <div class="order-line-qty">' +
+          escapeHtml(String(ordered)) +
+          "</div>" +
+          '  <div class="order-line-qty">' +
+          escapeHtml(String(shipped)) +
+          "</div>" +
+          '  <div class="order-line-qty">' +
+          escapeHtml(String(left)) +
+          "</div>" +
+          "</div>"
+        );
+      })
+      .join("");
+
+    if (!rows) {
+      rows = '<div class="empty-state">Строк заказа нет.</div>';
+    } else {
+      rows =
+        '<div class="order-line-header">' +
+        '  <div class="order-line-head">Товар</div>' +
+        '  <div class="order-line-head">Заказано</div>' +
+        '  <div class="order-line-head">Отгружено</div>' +
+        '  <div class="order-line-head">Осталось</div>' +
+        "</div>" +
+        rows;
+    }
+
+    return (
+      '<section class="screen">' +
+      '  <div class="screen-card doc-screen-card">' +
+      '    <div class="order-head">' +
+      '      <div class="order-title">Заказ № ' +
+      escapeHtml(String(orderNumber || "—")) +
+      "</div>" +
+      '      <div class="' +
+      escapeHtml(statusInfo.className) +
+      '">' +
+      escapeHtml(statusInfo.label) +
+      "</div>" +
+      "    </div>" +
+      '    <div class="order-fields">' +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Контрагент</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(partnerLabel) +
+      "</div>" +
+      "      </div>" +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Плановая отгрузка</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(plannedDate) +
+      "</div>" +
+      "      </div>" +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Факт отгрузки</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(shippedDate) +
+      "</div>" +
+      "      </div>" +
+      '      <div class="order-field-row">' +
+      '        <div class="order-field-label">Создан</div>' +
+      '        <div class="order-field-value">' +
+      escapeHtml(createdAt) +
+      "</div>" +
+      "      </div>" +
+      "    </div>" +
+      '    <div class="section-subtitle">Строки заказа</div>' +
+      '    <div class="order-lines">' +
       rows +
       "    </div>" +
       "  </div>" +
@@ -840,6 +1062,7 @@
       var outboundPartnerValue = header.partner || "Не выбран";
       var outboundFromValue = formatLocationLabel(header.from, header.from_name);
       var outboundOrderValue = formatOrderLabel(header.order_ref);
+      var outboundOrderId = header.order_id || null;
       return (
         '<div class="header-fields">' +
         renderPickerRow({
@@ -858,13 +1081,18 @@
           disabled: !isDraft,
         }) +
         '  <div class="field-error" id="fromError"></div>' +
-        renderPickerRow({
-          label: "Заказ",
-          value: outboundOrderValue,
-          valueId: "orderValue",
-          pickId: "orderPickBtn",
-          disabled: !isDraft,
-        }) +
+        '  <div class="field-row field-row-4">' +
+        '    <div class="field-label">Заказ</div>' +
+        '    <div class="field-value" id="orderValue">' +
+        escapeHtml(outboundOrderValue) +
+        "</div>" +
+        '    <button class="btn btn-outline field-info-btn" id="orderInfoBtn" type="button" ' +
+        (outboundOrderId ? "" : "disabled") +
+        '>i</button>' +
+        '    <button class="btn btn-outline field-pick" id="orderPickBtn" type="button" ' +
+        (isDraft ? "" : "disabled") +
+        ">+</button>" +
+        "  </div>" +
         '  <div class="field-hint is-hidden" id="orderHint">Нет списка заказов — импортируйте с ПК</div>' +
         "</div>"
       );
@@ -1101,6 +1329,105 @@
         navigate("/doc/" + encodeURIComponent(docId));
       });
     });
+  }
+
+  function wireOrders() {
+    var searchInput = document.getElementById("ordersSearchInput");
+    var listEl = document.getElementById("ordersList");
+    var statusEl = document.getElementById("ordersStatus");
+
+    function renderList(orders) {
+      if (!listEl) {
+        return;
+      }
+      var rows = (orders || [])
+        .map(function (order) {
+          var statusInfo = getOrderStatusInfo(order.status);
+          var orderNumber =
+            order.number || order.orderNumber || order.order_ref || order.orderRef || "—";
+          var partnerLabel = order.partnerName || "—";
+          if (order.partnerInn) {
+            partnerLabel += " · ИНН: " + order.partnerInn;
+          }
+          var plannedDate = formatDate(order.plannedDate || order.planned_date);
+          var shippedDate = formatDate(order.shippedAt || order.shipped_at);
+          var createdAt = formatDateTime(order.createdAt || order.created_at);
+          return (
+            '<button class="doc-item order-item" data-order="' +
+            escapeHtml(order.orderId) +
+            '">' +
+            '  <div class="doc-main">' +
+            '    <div class="doc-title">' +
+            escapeHtml(String(orderNumber)) +
+            "</div>" +
+            '    <div class="order-meta">' +
+            '      <div class="order-meta-row">' +
+            escapeHtml(partnerLabel) +
+            "</div>" +
+            '      <div class="order-meta-row">План: ' +
+            escapeHtml(plannedDate) +
+            "</div>" +
+            '      <div class="order-meta-row">Факт: ' +
+            escapeHtml(shippedDate) +
+            "</div>" +
+            '      <div class="order-meta-row">Создан: ' +
+            escapeHtml(createdAt) +
+            "</div>" +
+            "    </div>" +
+            "  </div>" +
+            '  <div class="' +
+            escapeHtml(statusInfo.className) +
+            '">' +
+            escapeHtml(statusInfo.label) +
+            "</div>" +
+            "</button>"
+          );
+        })
+        .join("");
+
+      if (!rows) {
+        rows = '<div class="empty-state">Заказов пока нет.</div>';
+      }
+      listEl.innerHTML = rows;
+      var items = listEl.querySelectorAll("[data-order]");
+      items.forEach(function (item) {
+        item.addEventListener("click", function () {
+          var orderId = item.getAttribute("data-order");
+          navigate("/order/" + encodeURIComponent(orderId));
+        });
+      });
+    }
+
+    function loadOrders(query) {
+      if (statusEl) {
+        statusEl.textContent = "Загрузка...";
+      }
+      TsdStorage.listOrders({ q: query })
+        .then(function (orders) {
+          if (statusEl) {
+            statusEl.textContent = "";
+          }
+          renderList(orders);
+        })
+        .catch(function () {
+          if (statusEl) {
+            statusEl.textContent = "Ошибка загрузки заказов";
+          }
+          renderList([]);
+        });
+    }
+
+    if (searchInput) {
+      searchInput.addEventListener("input", function () {
+        loadOrders(searchInput.value);
+      });
+    }
+
+    loadOrders("");
+  }
+
+  function wireOrderDetails() {
+    // Read-only screen; no actions to wire.
   }
 
   function wireNewOp() {
@@ -1908,6 +2235,7 @@
     var toPickBtn = document.getElementById("toPickBtn");
     var fromPickBtn = document.getElementById("fromPickBtn");
     var orderPickBtn = document.getElementById("orderPickBtn");
+    var orderInfoBtn = document.getElementById("orderInfoBtn");
     var locationPickBtn = document.getElementById("locationPickBtn");
     var partnerPickerRow = document.getElementById("partnerPickerRow");
     var toPickerRow = document.getElementById("toPickerRow");
@@ -2871,6 +3199,15 @@
       });
     }
 
+    if (orderInfoBtn) {
+      orderInfoBtn.addEventListener("click", function () {
+        if (!doc.header.order_id) {
+          return;
+        }
+        navigate("/order/" + encodeURIComponent(doc.header.order_id));
+      });
+    }
+
     if (locationPickBtn) {
       locationPickBtn.addEventListener("click", function () {
         if (doc.status !== "DRAFT") {
@@ -3592,6 +3929,10 @@
           } else {
             navigate("/home");
           }
+        } else if (currentRoute.name === "orders") {
+          navigate("/home");
+        } else if (currentRoute.name === "order") {
+          navigate("/orders");
         } else if (currentRoute.name === "stock" || currentRoute.name === "settings") {
           navigate("/home");
         } else {

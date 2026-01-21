@@ -2,7 +2,7 @@
   "use strict";
 
   var DB_NAME = "tsd_app";
-  var DB_VERSION = 5;
+  var DB_VERSION = 6;
   var STORE_SETTINGS = "settings";
   var STORE_DOCS = "docs";
   var STORE_META = "meta";
@@ -12,6 +12,7 @@
   var STORE_LOCATIONS = "locations";
   var STORE_STOCK = "stock";
   var STORE_ORDERS = "orders";
+  var STORE_ORDER_LINES = "orderLines";
   var db = null;
   var locationCache = null;
 
@@ -23,6 +24,48 @@
     return new Promise(function (resolve, reject) {
       var tx = db.transaction(STORE_LOCATIONS, "readonly");
       var store = tx.objectStore(STORE_LOCATIONS);
+      var request = store.openCursor();
+      var map = {};
+      request.onsuccess = function (event) {
+        var cursor = event.target.result;
+        if (cursor) {
+          map[cursor.key] = cursor.value;
+          cursor.continue();
+          return;
+        }
+        resolve(map);
+      };
+      request.onerror = function () {
+        reject(request.error);
+      };
+    });
+  }
+
+  function loadPartnerMap() {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(STORE_PARTNERS, "readonly");
+      var store = tx.objectStore(STORE_PARTNERS);
+      var request = store.openCursor();
+      var map = {};
+      request.onsuccess = function (event) {
+        var cursor = event.target.result;
+        if (cursor) {
+          map[cursor.key] = cursor.value;
+          cursor.continue();
+          return;
+        }
+        resolve(map);
+      };
+      request.onerror = function () {
+        reject(request.error);
+      };
+    });
+  }
+
+  function loadItemMap() {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(STORE_ITEMS, "readonly");
+      var store = tx.objectStore(STORE_ITEMS);
       var request = store.openCursor();
       var map = {};
       request.onsuccess = function (event) {
@@ -109,6 +152,12 @@
           var ordersStore = database.createObjectStore(STORE_ORDERS, { keyPath: "orderId" });
           ordersStore.createIndex("numberLower", "numberLower", { unique: false });
           ordersStore.createIndex("partnerId", "partnerId", { unique: false });
+        }
+        if (!database.objectStoreNames.contains(STORE_ORDER_LINES)) {
+          var orderLinesStore = database.createObjectStore(STORE_ORDER_LINES, {
+            keyPath: "lineId",
+          });
+          orderLinesStore.createIndex("byOrderId", "orderId", { unique: false });
         }
         if (!database.objectStoreNames.contains(STORE_STOCK)) {
           var stockStore = database.createObjectStore(STORE_STOCK, { autoIncrement: true });
@@ -326,6 +375,7 @@
             STORE_PARTNERS,
             STORE_LOCATIONS,
             STORE_ORDERS,
+            STORE_ORDER_LINES,
             STORE_STOCK,
           ],
           "readwrite"
@@ -336,6 +386,7 @@
         var partnersStore = tx.objectStore(STORE_PARTNERS);
         var locationsStore = tx.objectStore(STORE_LOCATIONS);
         var ordersStore = tx.objectStore(STORE_ORDERS);
+        var orderLinesStore = tx.objectStore(STORE_ORDER_LINES);
         var stockStore = tx.objectStore(STORE_STOCK);
 
         tx.oncomplete = function () {
@@ -353,6 +404,7 @@
           clearStore(partnersStore),
           clearStore(locationsStore),
           clearStore(ordersStore),
+          clearStore(orderLinesStore),
           clearStore(stockStore),
         ])
           .then(function () {
@@ -411,13 +463,51 @@
               if (orderId == null) {
                 return;
               }
+              var number = order.number || order.orderNumber || "";
               ordersStore.put({
                 orderId: orderId,
-                number: order.number || order.orderNumber || "",
-                partnerId: order.partnerId || null,
+                number: number,
+                partnerId: order.partnerId || order.partner_id || null,
                 plannedDate: order.plannedDate || order.planned_date || null,
+                shippedAt: order.shippedAt || order.shipped_at || null,
+                createdAt: order.createdAt || order.created_at || null,
                 status: order.status || null,
-                numberLower: String(order.number || order.orderNumber || "").toLowerCase(),
+                numberLower: String(number || "").toLowerCase(),
+              });
+            });
+
+            (json.order_lines || json.orderLines || []).forEach(function (line, index) {
+              var orderId = line.orderId || line.order_id;
+              if (orderId == null) {
+                return;
+              }
+              var itemId = line.itemId || line.item_id || null;
+              var lineId =
+                line.lineId ||
+                line.id ||
+                String(orderId) + "-" + String(itemId || "item") + "-" + index;
+              var orderedQty = Number(
+                line.orderedQty ||
+                  line.ordered_qty ||
+                  line.qtyOrdered ||
+                  line.qty ||
+                  0
+              );
+              var shippedQty = Number(
+                line.shippedQty ||
+                  line.shipped_qty ||
+                  line.qtyShipped ||
+                  line.qty_done ||
+                  0
+              );
+              orderLinesStore.put({
+                lineId: lineId,
+                orderId: orderId,
+                itemId: itemId,
+                orderedQty: isNaN(orderedQty) ? 0 : orderedQty,
+                shippedQty: isNaN(shippedQty) ? 0 : shippedQty,
+                barcode: line.barcode || line.gtin || line.code || null,
+                itemName: line.name || line.itemName || null,
               });
             });
 
@@ -938,6 +1028,116 @@
     });
   }
 
+  function listOrders(query) {
+    var q = "";
+    if (typeof query === "string") {
+      q = query;
+    } else if (query && typeof query.q === "string") {
+      q = query.q;
+    }
+    var needle = String(q || "").toLowerCase();
+    return init().then(function () {
+      return loadPartnerMap().then(function (partners) {
+        return new Promise(function (resolve, reject) {
+          var results = [];
+          var request = db.transaction(STORE_ORDERS, "readonly")
+            .objectStore(STORE_ORDERS)
+            .openCursor();
+
+          request.onsuccess = function (event) {
+            var cursor = event.target.result;
+            if (!cursor) {
+              resolve(results);
+              return;
+            }
+            var order = cursor.value || {};
+            var partner = partners[order.partnerId] || {};
+            var partnerName = partner.name || "";
+            var partnerInn = partner.inn || "";
+            var number = order.number || order.orderNumber || "";
+            var candidate =
+              String(order.numberLower || String(number || "").toLowerCase()) +
+              "|" +
+              String(partnerName || "").toLowerCase() +
+              "|" +
+              String(partnerInn || "").toLowerCase();
+            if (!needle || candidate.indexOf(needle) !== -1) {
+              results.push({
+                orderId: order.orderId,
+                number: number,
+                partnerId: order.partnerId || null,
+                partnerName: partnerName,
+                partnerInn: partnerInn,
+                plannedDate: order.plannedDate || order.planned_date || null,
+                shippedAt: order.shippedAt || order.shipped_at || null,
+                createdAt: order.createdAt || order.created_at || null,
+                status: order.status || null,
+              });
+            }
+            cursor.continue();
+          };
+
+          request.onerror = function () {
+            reject(request.error);
+          };
+        });
+      });
+    });
+  }
+
+  function listOrderLines(orderId) {
+    return init().then(function () {
+      return Promise.all([loadItemMap(), new Promise(function (resolve, reject) {
+        var lines = [];
+        var tx = db.transaction(STORE_ORDER_LINES, "readonly");
+        var index = tx.objectStore(STORE_ORDER_LINES).index("byOrderId");
+        var range = IDBKeyRange.only(orderId);
+        var request = index.openCursor(range);
+        request.onsuccess = function (event) {
+          var cursor = event.target.result;
+          if (cursor) {
+            lines.push(cursor.value);
+            cursor.continue();
+            return;
+          }
+          resolve(lines);
+        };
+        request.onerror = function () {
+          reject(request.error);
+        };
+      })]).then(function (results) {
+        var items = results[0] || {};
+        var rawLines = results[1] || [];
+        return rawLines.map(function (line) {
+          var item = items[line.itemId] || {};
+          var barcode = line.barcode;
+          if (!barcode) {
+            if (Array.isArray(item.barcodes) && item.barcodes.length) {
+              barcode = item.barcodes[0];
+            } else {
+              barcode = item.gtin || "";
+            }
+          }
+          var orderedQty = Number(line.orderedQty) || 0;
+          var shippedQty = Number(line.shippedQty) || 0;
+          var leftQty = Number(line.leftQty);
+          if (isNaN(leftQty)) {
+            leftQty = Math.max(orderedQty - shippedQty, 0);
+          }
+          return {
+            orderId: line.orderId,
+            itemId: line.itemId,
+            itemName: line.itemName || item.name || "",
+            barcode: barcode,
+            orderedQty: orderedQty,
+            shippedQty: shippedQty,
+            leftQty: leftQty,
+          };
+        });
+      });
+    });
+  }
+
   function getPartnerById(id) {
     return init().then(function () {
       return new Promise(function (resolve, reject) {
@@ -1027,6 +1227,8 @@
     searchPartners: searchPartners,
     searchLocations: searchLocations,
     searchOrders: searchOrders,
+    listOrders: listOrders,
+    listOrderLines: listOrderLines,
     getPartnerById: getPartnerById,
     getOrderById: getOrderById,
     getLocationById: getLocationById,
