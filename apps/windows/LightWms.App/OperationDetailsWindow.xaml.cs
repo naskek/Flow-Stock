@@ -26,6 +26,8 @@ public partial class OperationDetailsWindow : Window
     private bool _suppressDirtyTracking;
     private bool _isPartialShipment;
     private bool _hasUnsavedChanges;
+    private bool _hasOutboundShortage;
+    private int _outboundShortageCount;
 
     public OperationDetailsWindow(AppServices services, long docId)
     {
@@ -118,8 +120,33 @@ public partial class OperationDetailsWindow : Window
             .GroupBy(location => location.Code)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
-        foreach (var line in _services.Documents.GetDocLines(_docId))
+        var lines = _services.Documents.GetDocLines(_docId);
+        var isOutbound = _doc?.Type == DocType.Outbound;
+        var availableByItem = isOutbound
+            ? _services.Orders.GetItemAvailability()
+            : new Dictionary<long, double>();
+        var requiredByItem = isOutbound
+            ? lines.Where(line => line.Qty > 0)
+                .GroupBy(line => line.ItemId)
+                .ToDictionary(group => group.Key, group => group.Sum(line => line.Qty))
+            : new Dictionary<long, double>();
+        var shortageByItem = new Dictionary<long, double>();
+        if (isOutbound)
         {
+            foreach (var entry in requiredByItem)
+            {
+                var available = availableByItem.TryGetValue(entry.Key, out var qty) ? qty : 0;
+                var shortage = entry.Value - available;
+                if (shortage > 0)
+                {
+                    shortageByItem[entry.Key] = shortage;
+                }
+            }
+        }
+
+        foreach (var line in lines)
+        {
+            var hasShortage = isOutbound && shortageByItem.ContainsKey(line.ItemId);
             _docLines.Add(new DocLineDisplay
             {
                 Id = line.Id,
@@ -130,13 +157,22 @@ public partial class OperationDetailsWindow : Window
                 UomCode = line.UomCode,
                 BaseUom = line.BaseUom,
                 QtyDisplay = FormatDocLineQty(line),
+                AvailableQty = isOutbound
+                    ? (availableByItem.TryGetValue(line.ItemId, out var qty) ? qty : 0)
+                    : null,
+                HasShortage = hasShortage,
+                ShortageQty = hasShortage ? shortageByItem[line.ItemId] : null,
                 FromLocation = FormatLocationDisplay(line.FromLocation, locationLookup),
                 ToLocation = FormatLocationDisplay(line.ToLocation, locationLookup)
             });
         }
 
+        _hasOutboundShortage = isOutbound && shortageByItem.Count > 0;
+        _outboundShortageCount = isOutbound ? shortageByItem.Count : 0;
         _selectedDocLine = null;
         UpdateLineButtons();
+        UpdateAvailabilityStatus();
+        UpdateActionButtons();
     }
 
     private static string? FormatLocationDisplay(string? code, IReadOnlyDictionary<string, Location> lookup)
@@ -194,6 +230,12 @@ public partial class OperationDetailsWindow : Window
 
         if (_hasUnsavedChanges && !TrySaveHeader())
         {
+            return;
+        }
+
+        if (IsPartnerRequired() && _doc?.PartnerId == null)
+        {
+            MessageBox.Show("Выберите контрагента.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -671,8 +713,28 @@ public partial class OperationDetailsWindow : Window
     {
         var isDraft = _doc?.Status == DocStatus.Draft;
         var hasId = _doc?.Id > 0;
-        DocCloseButton.IsEnabled = isDraft && hasId && !_hasUnsavedChanges;
+        var hasPartner = !IsPartnerRequired() || _doc?.PartnerId != null || DocPartnerCombo.SelectedItem != null;
+        var hasShortage = _doc?.Type == DocType.Outbound && _hasOutboundShortage;
+        DocCloseButton.IsEnabled = isDraft && hasId && !_hasUnsavedChanges && hasPartner && !hasShortage;
         DocHeaderSaveButton.IsEnabled = isDraft;
+    }
+
+    private bool IsPartnerRequired()
+    {
+        return _doc?.Type == DocType.Inbound || _doc?.Type == DocType.Outbound;
+    }
+
+    private void UpdateAvailabilityStatus()
+    {
+        if (_doc?.Type != DocType.Outbound || _outboundShortageCount == 0)
+        {
+            DocShortageText.Text = string.Empty;
+            DocShortageText.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        DocShortageText.Text = $"Не хватает по {_outboundShortageCount} позициям.";
+        DocShortageText.Visibility = Visibility.Visible;
     }
 
     private bool HasOrderBinding()
@@ -1076,6 +1138,9 @@ public partial class OperationDetailsWindow : Window
         public string? UomCode { get; init; }
         public string BaseUom { get; init; } = "шт";
         public string QtyDisplay { get; init; } = string.Empty;
+        public double? AvailableQty { get; init; }
+        public bool HasShortage { get; init; }
+        public double? ShortageQty { get; init; }
         public string? FromLocation { get; init; }
         public string? ToLocation { get; init; }
     }

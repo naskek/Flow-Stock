@@ -9,6 +9,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
         <StackPanel Grid.Row="0" Margin="0,0,0,8">
             <DockPanel LastChildFill="True">
@@ -56,12 +57,23 @@
         <DataGrid x:Name="DocLinesGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
                   SelectionChanged="DocLines_SelectionChanged"
                   KeyDown="DocLinesGrid_KeyDown">
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding HasShortage}" Value="True">
+                            <Setter Property="Background" Value="#FFF4CCCC" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
                 <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyDisplay}" Width="180" />
+                <DataGridTextColumn Header="Доступно" Binding="{Binding AvailableQty, StringFormat={}{0:0.###}}" Width="140" />
                 <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="220" />
                 <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="220" />
             </DataGrid.Columns>
         </DataGrid>
+        <TextBlock x:Name="DocShortageText" Grid.Row="3" Margin="0,6,0,0" Foreground="DarkRed" Visibility="Collapsed" />
     </Grid>
 </Window>
