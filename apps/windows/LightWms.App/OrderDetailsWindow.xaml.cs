@@ -69,6 +69,12 @@ public partial class OrderDetailsWindow : Window
         _partners.Clear();
         foreach (var partner in _services.Catalog.GetPartners())
         {
+            var status = _services.PartnerStatuses.GetStatus(partner.Id);
+            if (status == PartnerStatus.Supplier)
+            {
+                continue;
+            }
+
             _partners.Add(partner);
         }
     }
@@ -130,13 +136,18 @@ public partial class OrderDetailsWindow : Window
         SaveStatusText.Text = string.Empty;
         RefreshLineMetrics();
         SetEditingEnabled(!isShipped);
-        UpdateDeleteButtonState();
         EndLoad();
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
-        TrySaveOrder(showFeedback: true);
+        if (!TrySaveOrder(showFeedback: false))
+        {
+            return;
+        }
+
+        _allowCloseWithoutPrompt = true;
+        Close();
     }
 
     private bool TrySaveOrder(bool showFeedback)
@@ -230,6 +241,42 @@ public partial class OrderDetailsWindow : Window
         MarkDirty();
     }
 
+    private void EditLine_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureEditable())
+        {
+            return;
+        }
+
+        if (_selectedLine == null)
+        {
+            MessageBox.Show("Выберите строку.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var item = _services.DataStore.FindItemById(_selectedLine.ItemId);
+        if (item == null)
+        {
+            MessageBox.Show("Товар не найден.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        var packagings = _services.Packagings.GetPackagings(item.Id);
+        var defaultUomCode = ResolveDefaultUomCode(item, packagings);
+        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, _selectedLine.QtyOrdered, defaultUomCode)
+        {
+            Owner = this
+        };
+        if (qtyDialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        _selectedLine.QtyOrdered = qtyDialog.QtyBase;
+        RefreshLineMetrics();
+        MarkDirty();
+    }
+
     private void DeleteLine_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureEditable())
@@ -253,6 +300,7 @@ public partial class OrderDetailsWindow : Window
     {
         _selectedLine = OrderLinesGrid.SelectedItem as OrderLineView;
         DeleteLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
+        EditLineButton.IsEnabled = _selectedLine != null && EnsureEditable(false);
     }
 
     private void RefreshLineMetrics()
@@ -309,9 +357,9 @@ public partial class OrderDetailsWindow : Window
         StatusCombo.IsEnabled = enabled;
         CommentBox.IsEnabled = enabled;
         AddItemButton.IsEnabled = enabled;
+        EditLineButton.IsEnabled = enabled && _selectedLine != null;
         DeleteLineButton.IsEnabled = enabled && _selectedLine != null;
         SaveButton.IsEnabled = enabled;
-        UpdateDeleteButtonState();
     }
 
     private void OrderHeaderChanged(object? sender, RoutedEventArgs e)
@@ -341,26 +389,6 @@ public partial class OrderDetailsWindow : Window
         SaveStatusText.Text = string.Empty;
     }
 
-    private void UpdateDeleteButtonState()
-    {
-        if (!_orderId.HasValue || _order == null)
-        {
-            DeleteOrderButton.IsEnabled = false;
-            return;
-        }
-
-        if (_order.Status != OrderStatus.Draft)
-        {
-            DeleteOrderButton.IsEnabled = false;
-            return;
-        }
-
-        var hasOutbound = _services.DataStore.HasOutboundDocs(_order.Id);
-        var shippedTotals = _services.Orders.GetShippedTotals(_order.Id);
-        var hasShipped = shippedTotals.Values.Any(qty => qty > 0);
-        DeleteOrderButton.IsEnabled = !hasOutbound && !hasShipped;
-    }
-
     private bool TryGetHeaderValues(out string orderRef, out long partnerId, out DateTime? dueDate, out OrderStatus status, out string? comment)
     {
         orderRef = OrderRefBox.Text ?? string.Empty;
@@ -377,7 +405,19 @@ public partial class OrderDetailsWindow : Window
 
         if (PartnerCombo.SelectedItem is not Partner partner)
         {
+            if (_order?.PartnerId is long existingPartnerId && IsSupplierPartner(existingPartnerId))
+            {
+                MessageBox.Show("В заказе нельзя выбрать контрагента со статусом \"Поставщик\".", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+
             MessageBox.Show("Выберите контрагента.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        if (IsSupplierPartner(partner.Id))
+        {
+            MessageBox.Show("В заказе нельзя выбрать контрагента со статусом \"Поставщик\".", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
@@ -397,6 +437,11 @@ public partial class OrderDetailsWindow : Window
         return true;
     }
 
+    private bool IsSupplierPartner(long partnerId)
+    {
+        return _services.PartnerStatuses.GetStatus(partnerId) == PartnerStatus.Supplier;
+    }
+
     private bool TryValidateOrderRefUnique(string orderRef)
     {
         var normalized = orderRef.Trim();
@@ -410,36 +455,6 @@ public partial class OrderDetailsWindow : Window
 
         MessageBox.Show($"Заказ с номером {normalized} уже существует. Продолжить нельзя.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
         return false;
-    }
-
-    private void DeleteOrder_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_orderId.HasValue)
-        {
-            MessageBox.Show("Заказ не найден.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var confirm = MessageBox.Show("Удалить заказ?", "Заказы", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
-        if (confirm != MessageBoxResult.Yes)
-        {
-            return;
-        }
-
-        try
-        {
-            _services.Orders.DeleteOrder(_orderId.Value);
-            _allowCloseWithoutPrompt = true;
-            Close();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
     }
 
     private void Close_Click(object sender, RoutedEventArgs e)
