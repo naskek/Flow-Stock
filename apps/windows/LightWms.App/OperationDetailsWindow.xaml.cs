@@ -13,6 +13,7 @@ public partial class OperationDetailsWindow : Window
     private readonly AppServices _services;
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Partner> _partners = new();
+    private readonly List<Partner> _partnersAll = new();
     private readonly ObservableCollection<DocLineDisplay> _docLines = new();
     private readonly ObservableCollection<OrderOption> _orders = new();
     private readonly List<OrderOption> _ordersAll = new();
@@ -56,11 +57,12 @@ public partial class OperationDetailsWindow : Window
             _locations.Add(location);
         }
 
-        _partners.Clear();
+        _partnersAll.Clear();
         foreach (var partner in _services.Catalog.GetPartners())
         {
-            _partners.Add(partner);
+            _partnersAll.Add(partner);
         }
+        ApplyPartnerFilter();
     }
 
     private void LoadOrders()
@@ -157,6 +159,10 @@ public partial class OperationDetailsWindow : Window
             {
                 return;
             }
+            if (HasOrderBinding())
+            {
+                return;
+            }
             DocDeleteLine_Click(sender, new RoutedEventArgs());
         }
     }
@@ -229,7 +235,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (_doc?.OrderId.HasValue == true)
+        if (HasOrderBinding())
         {
             MessageBox.Show("Нельзя добавлять строки вручную, когда выбран заказ.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
@@ -293,6 +299,11 @@ public partial class OperationDetailsWindow : Window
     private void DocDeleteLine_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureDraftDocSelected())
+        {
+            return;
+        }
+
+        if (HasOrderBinding())
         {
             return;
         }
@@ -408,6 +419,7 @@ public partial class OperationDetailsWindow : Window
         DocHeaderPanel.IsEnabled = isDraft;
 
         ConfigureHeaderFields(_doc, isDraft);
+        ApplyPartnerFilter();
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
         SelectOrderFromDoc(_doc);
         UpdateLineButtons();
@@ -479,6 +491,7 @@ public partial class OperationDetailsWindow : Window
         DocPartnerCombo.SelectedItem = partner;
         _suppressOrderSync = false;
         UpdatePartnerLock();
+        TryApplyOrderSelection(selected);
         UpdateLineButtons();
     }
 
@@ -492,6 +505,7 @@ public partial class OperationDetailsWindow : Window
         if (string.IsNullOrWhiteSpace(DocOrderCombo.Text))
         {
             DocOrderCombo.SelectedItem = null;
+            ClearDocOrderBinding();
             UpdatePartnerLock();
             UpdateLineButtons();
         }
@@ -503,6 +517,7 @@ public partial class OperationDetailsWindow : Window
         DocOrderCombo.SelectedItem = null;
         DocOrderCombo.Text = string.Empty;
         _suppressOrderSync = false;
+        ClearDocOrderBinding();
         UpdatePartnerLock();
         UpdateLineButtons();
     }
@@ -593,10 +608,73 @@ public partial class OperationDetailsWindow : Window
     private void UpdateLineButtons()
     {
         var isDraft = _doc?.Status == DocStatus.Draft;
-        var hasOrder = _doc?.OrderId.HasValue == true || DocOrderCombo.SelectedItem != null;
+        var hasOrder = HasOrderBinding();
         AddItemButton.IsEnabled = isDraft && !hasOrder;
-        EditLineButton.IsEnabled = isDraft && _selectedDocLine != null;
-        DeleteLineButton.IsEnabled = isDraft && _selectedDocLine != null;
+        EditLineButton.IsEnabled = isDraft && _selectedDocLine != null && !hasOrder;
+        DeleteLineButton.IsEnabled = isDraft && _selectedDocLine != null && !hasOrder;
+    }
+
+    private bool HasOrderBinding()
+    {
+        return _doc?.OrderId.HasValue == true || DocOrderCombo.SelectedItem != null;
+    }
+
+    private void TryApplyOrderSelection(OrderOption selected)
+    {
+        if (_doc == null || _doc.Type != DocType.Outbound)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Documents.ApplyOrderToDoc(_doc.Id, selected.Id);
+            LoadDoc();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ClearDocOrderBinding()
+    {
+        if (_doc == null || _doc.Status != DocStatus.Draft)
+        {
+            return;
+        }
+
+        var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
+        try
+        {
+            _services.Documents.ClearDocOrder(_doc.Id, partnerId);
+            LoadDoc();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ApplyPartnerFilter()
+    {
+        _partners.Clear();
+        var docType = _doc?.Type;
+        foreach (var partner in _partnersAll)
+        {
+            var status = _services.PartnerStatuses.GetStatus(partner.Id);
+            if (docType == DocType.Inbound && status == PartnerStatus.Client)
+            {
+                continue;
+            }
+
+            if (docType == DocType.Outbound && status == PartnerStatus.Supplier)
+            {
+                continue;
+            }
+
+            _partners.Add(partner);
+        }
     }
 
     private string FormatDocLineQty(DocLineView line)
