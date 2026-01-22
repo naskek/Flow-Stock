@@ -14,9 +14,12 @@ public partial class OperationDetailsWindow : Window
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly ObservableCollection<DocLineDisplay> _docLines = new();
+    private readonly ObservableCollection<OrderOption> _orders = new();
+    private readonly List<OrderOption> _ordersAll = new();
     private readonly long _docId;
     private Doc? _doc;
     private DocLineDisplay? _selectedDocLine;
+    private bool _suppressOrderSync;
 
     public OperationDetailsWindow(AppServices services, long docId)
     {
@@ -28,8 +31,11 @@ public partial class OperationDetailsWindow : Window
         DocFromCombo.ItemsSource = _locations;
         DocToCombo.ItemsSource = _locations;
         DocPartnerCombo.ItemsSource = _partners;
+        DocPartnerCombo.SelectionChanged += DocPartnerCombo_SelectionChanged;
+        DocOrderCombo.ItemsSource = _orders;
 
         LoadCatalog();
+        LoadOrders();
         LoadDoc();
     }
 
@@ -54,6 +60,32 @@ public partial class OperationDetailsWindow : Window
         foreach (var partner in _services.Catalog.GetPartners())
         {
             _partners.Add(partner);
+        }
+    }
+
+    private void LoadOrders()
+    {
+        _ordersAll.Clear();
+        foreach (var order in _services.Orders.GetOrders())
+        {
+            _ordersAll.Add(new OrderOption(order.Id, order.OrderRef, order.PartnerId, order.PartnerDisplay));
+        }
+
+        RefreshOrderList();
+    }
+
+    private void RefreshOrderList()
+    {
+        _orders.Clear();
+        var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
+        foreach (var order in _ordersAll)
+        {
+            if (partnerId.HasValue && order.PartnerId != partnerId.Value)
+            {
+                continue;
+            }
+
+            _orders.Add(order);
         }
     }
 
@@ -136,22 +168,29 @@ public partial class OperationDetailsWindow : Window
 
     private void TryCloseCurrentDoc()
     {
-        if (_doc == null)
+        var doc = _doc;
+        if (doc == null)
         {
             MessageBox.Show("Операция не выбрана.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        if (_doc.Status == DocStatus.Closed)
+        if (doc.Status == DocStatus.Closed)
         {
             MessageBox.Show("Операция уже закрыта.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var result = _services.Documents.TryCloseDoc(_doc.Id, allowNegative: false);
+        var result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: false);
         if (result.Errors.Count > 0)
         {
             MessageBox.Show(string.Join("\n", result.Errors), "Проверка операции", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (doc.Type == DocType.Outbound && result.Warnings.Count > 0)
+        {
+            MessageBox.Show(string.Join("\n", result.Warnings), "Недостаточно товара", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -164,7 +203,7 @@ public partial class OperationDetailsWindow : Window
                 return;
             }
 
-            result = _services.Documents.TryCloseDoc(_doc.Id, allowNegative: true);
+            result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: true);
             if (!result.Success)
             {
                 if (result.Errors.Count > 0)
@@ -187,6 +226,12 @@ public partial class OperationDetailsWindow : Window
     {
         if (!EnsureDraftDocSelected())
         {
+            return;
+        }
+
+        if (_doc?.OrderId.HasValue == true)
+        {
+            MessageBox.Show("Нельзя добавлять строки вручную, когда выбран заказ.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -329,7 +374,19 @@ public partial class OperationDetailsWindow : Window
         var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
         try
         {
-            _services.Documents.UpdateDocHeader(_doc.Id, partnerId, DocOrderRefBox.Text, DocShippingRefBox.Text);
+            if (!TryResolveOrder(out var orderOption))
+            {
+                return;
+            }
+
+            if (orderOption != null)
+            {
+                _services.Documents.ApplyOrderToDoc(_doc.Id, orderOption.Id);
+            }
+            else
+            {
+                _services.Documents.ClearDocOrder(_doc.Id, partnerId);
+            }
             LoadDoc();
         }
         catch (Exception ex)
@@ -352,9 +409,9 @@ public partial class OperationDetailsWindow : Window
 
         ConfigureHeaderFields(_doc, isDraft);
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
-        DocOrderRefBox.Text = _doc.OrderRef ?? string.Empty;
-        DocShippingRefBox.Text = _doc.ShippingRef ?? string.Empty;
+        SelectOrderFromDoc(_doc);
         UpdateLineButtons();
+        UpdatePartnerLock();
 
         if (_doc.Status == DocStatus.Draft)
         {
@@ -362,11 +419,103 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
+    private void SelectOrderFromDoc(Doc doc)
+    {
+        if (_suppressOrderSync)
+        {
+            return;
+        }
+
+        _suppressOrderSync = true;
+        if (doc.OrderId.HasValue)
+        {
+            var selected = _ordersAll.FirstOrDefault(order => order.Id == doc.OrderId.Value);
+            DocOrderCombo.SelectedItem = selected;
+            DocOrderCombo.Text = selected?.DisplayName ?? doc.OrderRef ?? string.Empty;
+        }
+        else
+        {
+            DocOrderCombo.SelectedItem = null;
+            DocOrderCombo.Text = doc.OrderRef ?? string.Empty;
+        }
+        _suppressOrderSync = false;
+    }
+
+    private void DocPartnerCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_suppressOrderSync)
+        {
+            return;
+        }
+
+        RefreshOrderList();
+        if (DocOrderCombo.SelectedItem is OrderOption selected && _orders.All(o => o.Id != selected.Id))
+        {
+            DocOrderCombo.SelectedItem = null;
+            DocOrderCombo.Text = string.Empty;
+        }
+    }
+
+    private void DocOrderCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_suppressOrderSync)
+        {
+            return;
+        }
+
+        if (DocOrderCombo.SelectedItem is not OrderOption selected)
+        {
+            UpdatePartnerLock();
+            return;
+        }
+
+        var partner = _partners.FirstOrDefault(p => p.Id == selected.PartnerId);
+        if (partner == null)
+        {
+            return;
+        }
+
+        _suppressOrderSync = true;
+        DocPartnerCombo.SelectedItem = partner;
+        _suppressOrderSync = false;
+        UpdatePartnerLock();
+        UpdateLineButtons();
+    }
+
+    private void DocOrderCombo_KeyUp(object sender, KeyEventArgs e)
+    {
+        if (_suppressOrderSync)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(DocOrderCombo.Text))
+        {
+            DocOrderCombo.SelectedItem = null;
+            UpdatePartnerLock();
+            UpdateLineButtons();
+        }
+    }
+
+    private void DocOrderClear_Click(object sender, RoutedEventArgs e)
+    {
+        _suppressOrderSync = true;
+        DocOrderCombo.SelectedItem = null;
+        DocOrderCombo.Text = string.Empty;
+        _suppressOrderSync = false;
+        UpdatePartnerLock();
+        UpdateLineButtons();
+    }
+
+    private void UpdatePartnerLock()
+    {
+        DocPartnerCombo.IsEnabled = DocOrderCombo.SelectedItem == null;
+    }
+
     private void ConfigureHeaderFields(Doc doc, bool isDraft)
     {
         var showPartner = false;
         var showOrder = false;
-        var showShipping = false;
         var showFrom = false;
         var showTo = false;
         var partnerLabel = "Контрагент";
@@ -385,9 +534,6 @@ public partial class OperationDetailsWindow : Window
                 showPartner = true;
                 partnerLabel = "Покупатель";
                 showOrder = true;
-                showShipping = true;
-                showFrom = true;
-                fromLabel = "Место хранения";
                 break;
             case DocType.Move:
                 showFrom = true;
@@ -407,7 +553,6 @@ public partial class OperationDetailsWindow : Window
 
         DocPartnerPanel.Visibility = showPartner ? Visibility.Visible : Visibility.Collapsed;
         DocOrderPanel.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
-        DocShippingPanel.Visibility = showShipping ? Visibility.Visible : Visibility.Collapsed;
         DocFromPanel.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
         DocToPanel.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
 
@@ -425,7 +570,7 @@ public partial class OperationDetailsWindow : Window
             DocToCombo.SelectedItem = null;
         }
 
-        DocHeaderSaveButton.Visibility = showPartner || showOrder || showShipping
+        DocHeaderSaveButton.Visibility = showPartner || showOrder
             ? Visibility.Visible
             : Visibility.Collapsed;
         DocHeaderSaveButton.IsEnabled = isDraft;
@@ -448,7 +593,8 @@ public partial class OperationDetailsWindow : Window
     private void UpdateLineButtons()
     {
         var isDraft = _doc?.Status == DocStatus.Draft;
-        AddItemButton.IsEnabled = isDraft;
+        var hasOrder = _doc?.OrderId.HasValue == true || DocOrderCombo.SelectedItem != null;
+        AddItemButton.IsEnabled = isDraft && !hasOrder;
         EditLineButton.IsEnabled = isDraft && _selectedDocLine != null;
         DeleteLineButton.IsEnabled = isDraft && _selectedDocLine != null;
     }
@@ -546,6 +692,33 @@ public partial class OperationDetailsWindow : Window
         return true;
     }
 
+    private bool TryResolveOrder(out OrderOption? orderOption)
+    {
+        orderOption = null;
+        var text = DocOrderCombo.Text?.Trim();
+        if (DocOrderCombo.SelectedItem is OrderOption selected)
+        {
+            orderOption = selected;
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return true;
+        }
+
+        var match = _ordersAll.FirstOrDefault(order => string.Equals(order.OrderRef, text, StringComparison.OrdinalIgnoreCase));
+        if (match == null)
+        {
+            MessageBox.Show("Выберите заказ из списка.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        DocOrderCombo.SelectedItem = match;
+        orderOption = match;
+        return true;
+    }
+
     private bool ValidateLineLocations(Doc doc, Location? fromLocation, Location? toLocation)
     {
         switch (doc.Type)
@@ -565,11 +738,6 @@ public partial class OperationDetailsWindow : Window
                 }
                 return true;
             case DocType.Outbound:
-                if (fromLocation == null)
-                {
-                    MessageBox.Show("Для отгрузки выберите место хранения источника.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return false;
-                }
                 return true;
             case DocType.Move:
                 if (fromLocation == null || toLocation == null)
@@ -600,5 +768,12 @@ public partial class OperationDetailsWindow : Window
         public string QtyDisplay { get; init; } = string.Empty;
         public string? FromLocation { get; init; }
         public string? ToLocation { get; init; }
+    }
+
+    private sealed record OrderOption(long Id, string OrderRef, long PartnerId, string PartnerDisplay)
+    {
+        public string DisplayName => string.IsNullOrWhiteSpace(PartnerDisplay)
+            ? OrderRef
+            : $"{OrderRef} - {PartnerDisplay}";
     }
 }

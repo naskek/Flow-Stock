@@ -26,11 +26,12 @@
                 </StackPanel>
                 <StackPanel x:Name="DocOrderPanel" Margin="0,0,12,0">
                     <TextBlock Text="Заказ" />
-                    <TextBox x:Name="DocOrderRefBox" Width="160" Margin="0,4,0,0" />
-                </StackPanel>
-                <StackPanel x:Name="DocShippingPanel" Margin="0,0,12,0">
-                    <TextBlock Text="Накладная/ТТН" />
-                    <TextBox x:Name="DocShippingRefBox" Width="160" Margin="0,4,0,0" />
+                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                        <ComboBox x:Name="DocOrderCombo" Width="220" DisplayMemberPath="DisplayName" IsEditable="True"
+                                  SelectionChanged="DocOrderCombo_SelectionChanged" KeyUp="DocOrderCombo_KeyUp" />
+                        <Button x:Name="DocOrderClearButton" Content="Сброс" Width="60" Margin="8,0,0,0"
+                                Click="DocOrderClear_Click" />
+                    </StackPanel>
                 </StackPanel>
                 <StackPanel x:Name="DocFromPanel" Margin="0,0,12,0">
                     <TextBlock x:Name="DocFromLabel" Text="Откуда" />

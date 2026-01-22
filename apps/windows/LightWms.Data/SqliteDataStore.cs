@@ -890,6 +890,17 @@ SELECT last_insert_rowid();
         });
     }
 
+    public void DeleteDocLines(long docId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM doc_lines WHERE doc_id = @doc_id");
+            command.Parameters.AddWithValue("@doc_id", docId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef)
     {
         WithConnection(connection =>
@@ -904,6 +915,24 @@ WHERE id = @id
             command.Parameters.AddWithValue("@partner_id", partnerId.HasValue ? partnerId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@order_ref", string.IsNullOrWhiteSpace(orderRef) ? DBNull.Value : orderRef);
             command.Parameters.AddWithValue("@shipping_ref", string.IsNullOrWhiteSpace(shippingRef) ? DBNull.Value : shippingRef);
+            command.Parameters.AddWithValue("@id", docId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateDocOrder(long docId, long? orderId, string? orderRef)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE docs
+SET order_id = @order_id,
+    order_ref = @order_ref
+WHERE id = @id;
+");
+            command.Parameters.AddWithValue("@order_id", orderId.HasValue ? orderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@order_ref", string.IsNullOrWhiteSpace(orderRef) ? DBNull.Value : orderRef);
             command.Parameters.AddWithValue("@id", docId);
             command.ExecuteNonQuery();
             return 0;

@@ -54,7 +54,9 @@ public interface IDataStore
     long AddDocLine(DocLine line);
     void UpdateDocLineQty(long docLineId, double qty, double? qtyInput, string? uomCode);
     void DeleteDocLine(long docLineId);
+    void DeleteDocLines(long docId);
     void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef);
+    void UpdateDocOrder(long docId, long? orderId, string? orderRef);
     void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt);
 
     Order? GetOrder(long id);

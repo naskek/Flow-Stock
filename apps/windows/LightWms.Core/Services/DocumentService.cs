@@ -46,17 +46,14 @@ public sealed class DocumentService
             throw new ArgumentException("Контрагент не найден.", nameof(partnerId));
         }
 
-        if (type == DocType.Outbound && !partnerId.HasValue)
-        {
-            throw new ArgumentException("Для отгрузки требуется контрагент.", nameof(partnerId));
-        }
-
         if (orderId.HasValue && _data.GetOrder(orderId.Value) == null)
         {
             throw new ArgumentException("Заказ не найден.", nameof(orderId));
         }
 
-        var cleanedOrderRef = string.IsNullOrWhiteSpace(orderRef) ? null : orderRef.Trim();
+        var order = orderId.HasValue ? _data.GetOrder(orderId.Value) : null;
+        var resolvedOrderRef = order?.OrderRef ?? orderRef;
+        var cleanedOrderRef = string.IsNullOrWhiteSpace(resolvedOrderRef) ? null : resolvedOrderRef.Trim();
         var cleanedShippingRef = string.IsNullOrWhiteSpace(shippingRef) ? null : shippingRef.Trim();
         var cleanedComment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim();
 
@@ -74,7 +71,36 @@ public sealed class DocumentService
             Comment = cleanedComment
         };
 
-        return _data.AddDoc(doc);
+        if (!orderId.HasValue)
+        {
+            return _data.AddDoc(doc);
+        }
+
+        long docId = 0;
+        _data.ExecuteInTransaction(store =>
+        {
+            docId = store.AddDoc(doc);
+            foreach (var line in store.GetOrderLines(orderId.Value))
+            {
+                if (line.QtyOrdered <= 0)
+                {
+                    continue;
+                }
+
+                store.AddDocLine(new DocLine
+                {
+                    DocId = docId,
+                    ItemId = line.ItemId,
+                    Qty = line.QtyOrdered,
+                    QtyInput = null,
+                    UomCode = null,
+                    FromLocationId = null,
+                    ToLocationId = null
+                });
+            }
+        });
+
+        return docId;
     }
 
     public Doc? GetDoc(long docId)
@@ -166,6 +192,38 @@ public sealed class DocumentService
                                 QtyDelta = -line.Qty
                             });
                         }
+                        else
+                        {
+                            var remaining = line.Qty;
+                            var locations = store.GetLocations()
+                                .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
+                                .ToList();
+
+                            foreach (var location in locations)
+                            {
+                                if (remaining <= 0)
+                                {
+                                    break;
+                                }
+
+                                var available = store.GetLedgerBalance(line.ItemId, location.Id);
+                                if (available <= 0)
+                                {
+                                    continue;
+                                }
+
+                                var take = Math.Min(available, remaining);
+                                store.AddLedgerEntry(new LedgerEntry
+                                {
+                                    Timestamp = closedAt,
+                                    DocId = docId,
+                                    ItemId = line.ItemId,
+                                    LocationId = location.Id,
+                                    QtyDelta = -take
+                                });
+                                remaining -= take;
+                            }
+                        }
                         break;
                     case DocType.Move:
                         if (line.FromLocationId.HasValue)
@@ -220,6 +278,58 @@ public sealed class DocumentService
         var cleanedShippingRef = string.IsNullOrWhiteSpace(shippingRef) ? null : shippingRef.Trim();
 
         _data.UpdateDocHeader(docId, partnerId, cleanedOrderRef, cleanedShippingRef);
+    }
+
+    public void ApplyOrderToDoc(long docId, long orderId)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        var cleanedOrderRef = order.OrderRef.Trim();
+
+        _data.ExecuteInTransaction(store =>
+        {
+            store.UpdateDocHeader(docId, order.PartnerId, cleanedOrderRef, doc.ShippingRef);
+            store.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
+            store.DeleteDocLines(docId);
+            foreach (var line in store.GetOrderLines(orderId))
+            {
+                if (line.QtyOrdered <= 0)
+                {
+                    continue;
+                }
+
+                store.AddDocLine(new DocLine
+                {
+                    DocId = docId,
+                    ItemId = line.ItemId,
+                    Qty = line.QtyOrdered,
+                    QtyInput = null,
+                    UomCode = null,
+                    FromLocationId = null,
+                    ToLocationId = null
+                });
+            }
+        });
+    }
+
+    public void ClearDocOrder(long docId, long? partnerId)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        _data.ExecuteInTransaction(store =>
+        {
+            store.UpdateDocHeader(docId, partnerId, null, doc.ShippingRef);
+            store.UpdateDocOrder(docId, null, null);
+        });
     }
 
     public void AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null)
@@ -311,9 +421,11 @@ public sealed class DocumentService
 
         var lines = _data.GetDocLines(docId);
         var itemsById = _data.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
-        var locationsById = _data.GetLocations().ToDictionary(location => location.Id, location => location.Code);
+        var locations = _data.GetLocations();
+        var locationsById = locations.ToDictionary(location => location.Id, location => location.Code);
 
         var outgoing = new Dictionary<(long itemId, long locationId), double>();
+        var outboundByItem = new Dictionary<long, double>();
 
         for (var index = 0; index < lines.Count; index++)
         {
@@ -341,10 +453,6 @@ public sealed class DocumentService
                     }
                     break;
                 case DocType.Outbound:
-                    if (!line.FromLocationId.HasValue)
-                    {
-                        check.Errors.Add($"{rowLabel}: требуется место хранения отгрузки.");
-                    }
                     break;
                 case DocType.Move:
                     if (!line.FromLocationId.HasValue || !line.ToLocationId.HasValue)
@@ -358,7 +466,7 @@ public sealed class DocumentService
                     break;
             }
 
-            if (doc.Type is DocType.WriteOff or DocType.Move or DocType.Outbound)
+            if (doc.Type is DocType.WriteOff or DocType.Move)
             {
                 if (line.Qty > 0 && line.FromLocationId.HasValue)
                 {
@@ -372,9 +480,16 @@ public sealed class DocumentService
                     }
                 }
             }
+
+            if (doc.Type == DocType.Outbound)
+            {
+                outboundByItem[line.ItemId] = outboundByItem.TryGetValue(line.ItemId, out var current)
+                    ? current + line.Qty
+                    : line.Qty;
+            }
         }
 
-        if (doc.Type is DocType.WriteOff or DocType.Move or DocType.Outbound)
+        if (doc.Type is DocType.WriteOff or DocType.Move)
         {
             foreach (var entry in outgoing)
             {
@@ -385,6 +500,21 @@ public sealed class DocumentService
                     var itemLabel = itemsById.TryGetValue(entry.Key.itemId, out var name) ? name : $"ID {entry.Key.itemId}";
                     var locationLabel = locationsById.TryGetValue(entry.Key.locationId, out var code) ? code : $"ID {entry.Key.locationId}";
                     check.Warnings.Add($"{itemLabel} @ {locationLabel}: {FormatQty(current)} -> {FormatQty(future)} (дельта -{FormatQty(entry.Value)})");
+                }
+            }
+        }
+
+        if (doc.Type == DocType.Outbound)
+        {
+            var totals = _data.GetLedgerTotalsByItem();
+            foreach (var entry in outboundByItem)
+            {
+                var current = totals.TryGetValue(entry.Key, out var qty) ? qty : 0;
+                var future = current - entry.Value;
+                if (future < 0)
+                {
+                    var itemLabel = itemsById.TryGetValue(entry.Key, out var name) ? name : $"ID {entry.Key}";
+                    check.Errors.Add($"{itemLabel}: на складе {FormatQty(current)}, требуется {FormatQty(entry.Value)}.");
                 }
             }
         }
@@ -423,10 +553,6 @@ public sealed class DocumentService
                 }
                 break;
             case DocType.Outbound:
-                if (!fromLocationId.HasValue)
-                {
-                    throw new ArgumentException("Для отгрузки требуется место хранения источника.");
-                }
                 break;
             case DocType.Move:
                 if (!fromLocationId.HasValue || !toLocationId.HasValue)
