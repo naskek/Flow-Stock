@@ -45,7 +45,6 @@
                             <DataGridTextColumn Header="Товар" Binding="{Binding ItemName}" Width="*" />
                             <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="160" />
                             <DataGridTextColumn Header="Место хранения" Binding="{Binding LocationCode}" Width="140" />
-                            <DataGridTextColumn Header="Упаковки" Binding="{Binding PackagingDisplay}" Width="220" />
                             <DataGridTextColumn Header="В базе" Binding="{Binding BaseDisplay}" Width="140" />
                         </DataGrid.Columns>
                     </DataGrid>
