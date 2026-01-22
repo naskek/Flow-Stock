@@ -280,7 +280,7 @@ public sealed class DocumentService
         _data.UpdateDocHeader(docId, partnerId, cleanedOrderRef, cleanedShippingRef);
     }
 
-    public void ApplyOrderToDoc(long docId, long orderId)
+    public int ApplyOrderToDoc(long docId, long orderId)
     {
         var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
         if (doc.Status != DocStatus.Draft)
@@ -291,11 +291,14 @@ public sealed class DocumentService
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         var cleanedOrderRef = order.OrderRef.Trim();
 
+        var addedLines = 0;
         _data.ExecuteInTransaction(store =>
         {
             store.UpdateDocHeader(docId, order.PartnerId, cleanedOrderRef, doc.ShippingRef);
             store.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
             store.DeleteDocLines(docId);
+
+            var orderedByItem = new Dictionary<long, double>();
             foreach (var line in store.GetOrderLines(orderId))
             {
                 if (line.QtyOrdered <= 0)
@@ -303,18 +306,36 @@ public sealed class DocumentService
                     continue;
                 }
 
+                orderedByItem[line.ItemId] = orderedByItem.TryGetValue(line.ItemId, out var current)
+                    ? current + line.QtyOrdered
+                    : line.QtyOrdered;
+            }
+
+            var shippedByItem = store.GetShippedTotalsByOrder(orderId);
+            foreach (var entry in orderedByItem)
+            {
+                var shipped = shippedByItem.TryGetValue(entry.Key, out var shippedQty) ? shippedQty : 0;
+                var remaining = entry.Value - shipped;
+                if (remaining <= 0)
+                {
+                    continue;
+                }
+
                 store.AddDocLine(new DocLine
                 {
                     DocId = docId,
-                    ItemId = line.ItemId,
-                    Qty = line.QtyOrdered,
+                    ItemId = entry.Key,
+                    Qty = remaining,
                     QtyInput = null,
                     UomCode = null,
                     FromLocationId = null,
                     ToLocationId = null
                 });
+                addedLines++;
             }
         });
+
+        return addedLines;
     }
 
     public void ClearDocOrder(long docId, long? partnerId)

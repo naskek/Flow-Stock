@@ -428,9 +428,13 @@ public partial class OperationDetailsWindow : Window
             {
                 if (!_isPartialShipment || _doc.OrderId != orderOption.Id)
                 {
-                    _services.Documents.ApplyOrderToDoc(_doc.Id, orderOption.Id);
+                    var added = _services.Documents.ApplyOrderToDoc(_doc.Id, orderOption.Id);
                     LoadOrderQuantities(orderOption.Id);
                     ResetPartialMode();
+                    if (added == 0)
+                    {
+                        MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                    }
                 }
             }
             else
@@ -697,9 +701,13 @@ public partial class OperationDetailsWindow : Window
 
         try
         {
-            _services.Documents.ApplyOrderToDoc(_doc.Id, selected.Id);
+            var added = _services.Documents.ApplyOrderToDoc(_doc.Id, selected.Id);
             LoadOrderQuantities(selected.Id);
             LoadDoc();
+            if (added == 0)
+            {
+                MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
         }
         catch (Exception ex)
         {
@@ -751,21 +759,30 @@ public partial class OperationDetailsWindow : Window
     private void LoadOrderQuantities(long orderId)
     {
         _orderedQtyByItem.Clear();
-        foreach (var line in _services.Orders.GetOrderLineViews(orderId))
+        var orderedByItem = new Dictionary<long, double>();
+        foreach (var line in _services.DataStore.GetOrderLines(orderId))
         {
             if (line.QtyOrdered <= 0)
             {
                 continue;
             }
 
-            if (_orderedQtyByItem.TryGetValue(line.ItemId, out var current))
+            orderedByItem[line.ItemId] = orderedByItem.TryGetValue(line.ItemId, out var current)
+                ? current + line.QtyOrdered
+                : line.QtyOrdered;
+        }
+
+        var shippedByItem = _services.DataStore.GetShippedTotalsByOrder(orderId);
+        foreach (var entry in orderedByItem)
+        {
+            var shipped = shippedByItem.TryGetValue(entry.Key, out var shippedQty) ? shippedQty : 0;
+            var remaining = entry.Value - shipped;
+            if (remaining <= 0)
             {
-                _orderedQtyByItem[line.ItemId] = current + line.QtyOrdered;
+                continue;
             }
-            else
-            {
-                _orderedQtyByItem[line.ItemId] = line.QtyOrdered;
-            }
+
+            _orderedQtyByItem[entry.Key] = remaining;
         }
     }
 
