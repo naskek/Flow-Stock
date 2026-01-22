@@ -119,6 +119,7 @@ public partial class OperationDetailsWindow : Window
         var locationLookup = _locations
             .GroupBy(location => location.Code)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var packagingLookup = new Dictionary<long, IReadOnlyList<ItemPackaging>>();
 
         var lines = _services.Documents.GetDocLines(_docId);
         var isOutbound = _doc?.Type == DocType.Outbound;
@@ -146,6 +147,10 @@ public partial class OperationDetailsWindow : Window
 
         foreach (var line in lines)
         {
+            var baseUom = string.IsNullOrWhiteSpace(line.BaseUom) ? "шт" : line.BaseUom;
+            var packagings = GetPackagings(line.ItemId, packagingLookup);
+            var selectedPackaging = ResolvePackaging(packagings, line.UomCode);
+            var inputQty = ResolveInputQty(line, selectedPackaging);
             var hasShortage = isOutbound && shortageByItem.ContainsKey(line.ItemId);
             _docLines.Add(new DocLineDisplay
             {
@@ -156,7 +161,9 @@ public partial class OperationDetailsWindow : Window
                 QtyInput = line.QtyInput,
                 UomCode = line.UomCode,
                 BaseUom = line.BaseUom,
-                QtyDisplay = FormatDocLineQty(line),
+                InputQtyDisplay = FormatQty(inputQty),
+                InputUomDisplay = FormatInputUomDisplay(line.UomCode, baseUom, selectedPackaging),
+                BaseQtyDisplay = FormatBaseQty(line),
                 AvailableQty = isOutbound
                     ? (availableByItem.TryGetValue(line.ItemId, out var qty) ? qty : 0)
                     : null,
@@ -309,7 +316,8 @@ public partial class OperationDetailsWindow : Window
 
         var packagings = _services.Packagings.GetPackagings(item.Id);
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
-        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode)
+        var (availableQty, showAvailableLabel) = GetAvailableQtyForDialog(item.Id);
+        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode, availableQty, showAvailableLabel)
         {
             Owner = this
         };
@@ -417,7 +425,8 @@ public partial class OperationDetailsWindow : Window
         var packagings = _services.Packagings.GetPackagings(item.Id);
         var defaultQty = _selectedDocLine.QtyInput ?? _selectedDocLine.QtyBase;
         var defaultUom = string.IsNullOrWhiteSpace(_selectedDocLine.UomCode) ? "BASE" : _selectedDocLine.UomCode;
-        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, defaultQty, defaultUom)
+        var (availableQty, showAvailableLabel) = GetAvailableQtyForDialog(item.Id);
+        var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, defaultQty, defaultUom, availableQty, showAvailableLabel)
         {
             Owner = this
         };
@@ -930,6 +939,27 @@ public partial class OperationDetailsWindow : Window
         return _orderedQtyByItem.TryGetValue(itemId, out orderedQty);
     }
 
+    private (double? AvailableQty, bool ShowAvailableLabel) GetAvailableQtyForDialog(long itemId)
+    {
+        if (_doc?.Type != DocType.Outbound)
+        {
+            if (_doc?.Type == DocType.Move)
+            {
+                if (DocFromCombo.SelectedItem is Location fromLocation)
+                {
+                    return (_services.DataStore.GetLedgerBalance(itemId, fromLocation.Id), true);
+                }
+
+                return (null, true);
+            }
+
+            return (null, false);
+        }
+
+        var availableByItem = _services.Orders.GetItemAvailability();
+        return (availableByItem.TryGetValue(itemId, out var qty) ? qty : 0, true);
+    }
+
     private bool TryValidateOutboundStock(long docId)
     {
         var lines = _services.Documents.GetDocLines(docId);
@@ -971,24 +1001,63 @@ public partial class OperationDetailsWindow : Window
         return false;
     }
 
-    private string FormatDocLineQty(DocLineView line)
+    private IReadOnlyList<ItemPackaging> GetPackagings(long itemId, IDictionary<long, IReadOnlyList<ItemPackaging>> lookup)
     {
-        var baseUom = string.IsNullOrWhiteSpace(line.BaseUom) ? "шт" : line.BaseUom;
-        var baseDisplay = $"{FormatQty(line.Qty)} {baseUom}";
-
-        if (line.QtyInput.HasValue && !string.IsNullOrWhiteSpace(line.UomCode) && !IsBaseUomCode(line.UomCode))
+        if (lookup.TryGetValue(itemId, out var cached))
         {
-            var packaging = _services.Packagings
-                .GetPackagings(line.ItemId, includeInactive: true)
-                .FirstOrDefault(p => string.Equals(p.Code, line.UomCode, StringComparison.OrdinalIgnoreCase));
-            if (packaging != null)
-            {
-                var inputDisplay = FormatQty(line.QtyInput.Value);
-                return $"{inputDisplay} × {packaging.Name} ({baseDisplay})";
-            }
+            return cached;
         }
 
-        return baseDisplay;
+        var packagings = _services.Packagings.GetPackagings(itemId, includeInactive: true);
+        lookup[itemId] = packagings;
+        return packagings;
+    }
+
+    private static ItemPackaging? ResolvePackaging(IReadOnlyList<ItemPackaging> packagings, string? uomCode)
+    {
+        if (string.IsNullOrWhiteSpace(uomCode) || IsBaseUomCode(uomCode))
+        {
+            return null;
+        }
+
+        return packagings.FirstOrDefault(packaging => string.Equals(packaging.Code, uomCode, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static double ResolveInputQty(DocLineView line, ItemPackaging? packaging)
+    {
+        if (line.QtyInput.HasValue)
+        {
+            return line.QtyInput.Value;
+        }
+
+        if (packaging != null && packaging.FactorToBase > 0)
+        {
+            return line.Qty / packaging.FactorToBase;
+        }
+
+        return line.Qty;
+    }
+
+    private static string FormatInputUomDisplay(string? uomCode, string baseUom, ItemPackaging? packaging)
+    {
+        if (packaging != null && !IsBaseUomCode(uomCode))
+        {
+            var factor = FormatQty(packaging.FactorToBase);
+            return $"{packaging.Code} — {packaging.Name} (×{factor})";
+        }
+
+        if (!string.IsNullOrWhiteSpace(uomCode) && !IsBaseUomCode(uomCode))
+        {
+            return uomCode.Trim();
+        }
+
+        return $"{baseUom} (база)";
+    }
+
+    private static string FormatBaseQty(DocLineView line)
+    {
+        var baseUom = string.IsNullOrWhiteSpace(line.BaseUom) ? "шт" : line.BaseUom;
+        return $"{FormatQty(line.Qty)} {baseUom}";
     }
 
     private static string ResolveDefaultUomCode(Item item, IReadOnlyList<ItemPackaging> packagings)
@@ -1137,7 +1206,9 @@ public partial class OperationDetailsWindow : Window
         public double? QtyInput { get; init; }
         public string? UomCode { get; init; }
         public string BaseUom { get; init; } = "шт";
-        public string QtyDisplay { get; init; } = string.Empty;
+        public string InputQtyDisplay { get; init; } = string.Empty;
+        public string InputUomDisplay { get; init; } = string.Empty;
+        public string BaseQtyDisplay { get; init; } = string.Empty;
         public double? AvailableQty { get; init; }
         public bool HasShortage { get; init; }
         public double? ShortageQty { get; init; }
