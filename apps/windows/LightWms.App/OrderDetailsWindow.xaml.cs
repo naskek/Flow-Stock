@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Globalization;
 using System.Linq;
 using System.Windows;
 using LightWms.Core.Models;
@@ -12,11 +14,13 @@ public partial class OrderDetailsWindow : Window
     private readonly ObservableCollection<OrderLineView> _lines = new();
     private readonly List<OrderStatusOption> _statusOptions = new()
     {
+        new OrderStatusOption(OrderStatus.Draft, OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft)),
         new OrderStatusOption(OrderStatus.Accepted, OrderStatusMapper.StatusToDisplayName(OrderStatus.Accepted)),
         new OrderStatusOption(OrderStatus.InProgress, OrderStatusMapper.StatusToDisplayName(OrderStatus.InProgress))
     };
     private readonly List<OrderStatusOption> _statusOptionsAll = new()
     {
+        new OrderStatusOption(OrderStatus.Draft, OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft)),
         new OrderStatusOption(OrderStatus.Accepted, OrderStatusMapper.StatusToDisplayName(OrderStatus.Accepted)),
         new OrderStatusOption(OrderStatus.InProgress, OrderStatusMapper.StatusToDisplayName(OrderStatus.InProgress)),
         new OrderStatusOption(OrderStatus.Shipped, OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped))
@@ -25,6 +29,9 @@ public partial class OrderDetailsWindow : Window
     private Order? _order;
     private OrderLineView? _selectedLine;
     private long? _orderId;
+    private bool _isLoading;
+    private bool _hasUnsavedChanges;
+    private bool _allowCloseWithoutPrompt;
 
     public OrderDetailsWindow(AppServices services)
     {
@@ -49,6 +56,12 @@ public partial class OrderDetailsWindow : Window
     {
         OrderLinesGrid.ItemsSource = _lines;
         PartnerCombo.ItemsSource = _partners;
+
+        OrderRefBox.TextChanged += OrderHeaderChanged;
+        PartnerCombo.SelectionChanged += OrderHeaderChanged;
+        DueDatePicker.SelectedDateChanged += OrderHeaderChanged;
+        StatusCombo.SelectionChanged += OrderHeaderChanged;
+        CommentBox.TextChanged += OrderHeaderChanged;
     }
 
     private void LoadPartners()
@@ -62,9 +75,11 @@ public partial class OrderDetailsWindow : Window
 
     private void PrepareNewOrder()
     {
+        BeginLoad();
         Title = "Новый заказ";
         _order = null;
-        OrderRefBox.Text = string.Empty;
+        _orderId = null;
+        OrderRefBox.Text = GenerateNextOrderRef();
         PartnerCombo.SelectedItem = null;
         DueDatePicker.SelectedDate = null;
         CommentBox.Text = string.Empty;
@@ -73,6 +88,8 @@ public partial class OrderDetailsWindow : Window
         _lines.Clear();
         RefreshLineMetrics();
         SetEditingEnabled(true);
+        SaveStatusText.Text = string.Empty;
+        EndLoad();
     }
 
     private void LoadOrder()
@@ -83,10 +100,12 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
+        BeginLoad();
         _order = _services.Orders.GetOrder(_orderId.Value);
         if (_order == null)
         {
             MessageBox.Show("Заказ не найден.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            EndLoad();
             Close();
             return;
         }
@@ -108,15 +127,28 @@ public partial class OrderDetailsWindow : Window
             _lines.Add(line);
         }
 
+        SaveStatusText.Text = string.Empty;
         RefreshLineMetrics();
         SetEditingEnabled(!isShipped);
+        UpdateDeleteButtonState();
+        EndLoad();
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
+        TrySaveOrder(showFeedback: true);
+    }
+
+    private bool TrySaveOrder(bool showFeedback)
+    {
         if (!TryGetHeaderValues(out var orderRef, out var partnerId, out var dueDate, out var status, out var comment))
         {
-            return;
+            return false;
+        }
+
+        if (!TryValidateOrderRefUnique(orderRef))
+        {
+            return false;
         }
 
         try
@@ -131,14 +163,22 @@ public partial class OrderDetailsWindow : Window
             }
 
             LoadOrder();
+            if (showFeedback)
+            {
+                SaveStatusText.Text = "Сохранено";
+            }
+
+            return true;
         }
         catch (ArgumentException ex)
         {
             MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
         }
     }
 
@@ -187,6 +227,7 @@ public partial class OrderDetailsWindow : Window
         }
 
         RefreshLineMetrics();
+        MarkDirty();
     }
 
     private void DeleteLine_Click(object sender, RoutedEventArgs e)
@@ -205,6 +246,7 @@ public partial class OrderDetailsWindow : Window
         _lines.Remove(_selectedLine);
         _selectedLine = null;
         RefreshLineMetrics();
+        MarkDirty();
     }
 
     private void OrderLinesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -269,6 +311,54 @@ public partial class OrderDetailsWindow : Window
         AddItemButton.IsEnabled = enabled;
         DeleteLineButton.IsEnabled = enabled && _selectedLine != null;
         SaveButton.IsEnabled = enabled;
+        UpdateDeleteButtonState();
+    }
+
+    private void OrderHeaderChanged(object sender, RoutedEventArgs e)
+    {
+        MarkDirty();
+    }
+
+    private void BeginLoad()
+    {
+        _isLoading = true;
+    }
+
+    private void EndLoad()
+    {
+        _isLoading = false;
+        _hasUnsavedChanges = false;
+    }
+
+    private void MarkDirty()
+    {
+        if (_isLoading)
+        {
+            return;
+        }
+
+        _hasUnsavedChanges = true;
+        SaveStatusText.Text = string.Empty;
+    }
+
+    private void UpdateDeleteButtonState()
+    {
+        if (!_orderId.HasValue || _order == null)
+        {
+            DeleteOrderButton.IsEnabled = false;
+            return;
+        }
+
+        if (_order.Status != OrderStatus.Draft)
+        {
+            DeleteOrderButton.IsEnabled = false;
+            return;
+        }
+
+        var hasOutbound = _services.DataStore.HasOutboundDocs(_order.Id);
+        var shippedTotals = _services.Orders.GetShippedTotals(_order.Id);
+        var hasShipped = shippedTotals.Values.Any(qty => qty > 0);
+        DeleteOrderButton.IsEnabled = !hasOutbound && !hasShipped;
     }
 
     private bool TryGetHeaderValues(out string orderRef, out long partnerId, out DateTime? dueDate, out OrderStatus status, out string? comment)
@@ -277,7 +367,7 @@ public partial class OrderDetailsWindow : Window
         partnerId = 0;
         dueDate = DueDatePicker.SelectedDate;
         comment = CommentBox.Text;
-        status = OrderStatus.Accepted;
+        status = OrderStatus.Draft;
 
         if (string.IsNullOrWhiteSpace(orderRef))
         {
@@ -302,6 +392,134 @@ public partial class OrderDetailsWindow : Window
         {
             MessageBox.Show("Статус \"Отгружен\" ставится автоматически.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
+        }
+
+        return true;
+    }
+
+    private bool TryValidateOrderRefUnique(string orderRef)
+    {
+        var normalized = orderRef.Trim();
+        var duplicate = _services.Orders.GetOrders()
+            .FirstOrDefault(order => string.Equals(order.OrderRef, normalized, StringComparison.OrdinalIgnoreCase)
+                                     && (!_orderId.HasValue || order.Id != _orderId.Value));
+        if (duplicate == null)
+        {
+            return true;
+        }
+
+        MessageBox.Show($"Заказ с номером {normalized} уже существует. Продолжить нельзя.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return false;
+    }
+
+    private void DeleteOrder_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_orderId.HasValue)
+        {
+            MessageBox.Show("Заказ не найден.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show("Удалить заказ?", "Заказы", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Orders.DeleteOrder(_orderId.Value);
+            _allowCloseWithoutPrompt = true;
+            Close();
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void Close_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryConfirmClose())
+        {
+            return;
+        }
+
+        _allowCloseWithoutPrompt = true;
+        Close();
+    }
+
+    private void OrderDetailsWindow_Closing(object? sender, CancelEventArgs e)
+    {
+        if (_allowCloseWithoutPrompt)
+        {
+            return;
+        }
+
+        if (!TryConfirmClose())
+        {
+            e.Cancel = true;
+        }
+    }
+
+    private bool TryConfirmClose()
+    {
+        if (!_hasUnsavedChanges)
+        {
+            return true;
+        }
+
+        var result = MessageBox.Show("Сохранить изменения?", "Заказы", MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Yes);
+        if (result == MessageBoxResult.Cancel)
+        {
+            return false;
+        }
+
+        if (result == MessageBoxResult.No)
+        {
+            return true;
+        }
+
+        return TrySaveOrder(showFeedback: true);
+    }
+
+    private string GenerateNextOrderRef()
+    {
+        var max = 0L;
+        foreach (var order in _services.Orders.GetOrders())
+        {
+            var orderRef = order.OrderRef?.Trim();
+            if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
+            {
+                continue;
+            }
+
+            if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value) && value > max)
+            {
+                max = value;
+            }
+        }
+
+        return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
+    }
+
+    private static bool IsDigitsOnly(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return false;
+        }
+
+        foreach (var ch in value)
+        {
+            if (!char.IsDigit(ch))
+            {
+                return false;
+            }
         }
 
         return true;

@@ -1079,6 +1079,17 @@ SELECT last_insert_rowid();
         });
     }
 
+    public void DeleteOrder(long orderId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM orders WHERE id = @id");
+            command.Parameters.AddWithValue("@id", orderId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public IReadOnlyDictionary<long, double> GetLedgerTotalsByItem()
     {
         return WithConnection(connection =>

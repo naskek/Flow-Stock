@@ -66,6 +66,7 @@ public interface IDataStore
     IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId);
     long AddOrderLine(OrderLine line);
     void DeleteOrderLines(long orderId);
+    void DeleteOrder(long orderId);
     IReadOnlyDictionary<long, double> GetLedgerTotalsByItem();
     IReadOnlyDictionary<long, double> GetShippedTotalsByOrder(long orderId);
     DateTime? GetOrderShippedAt(long orderId);
