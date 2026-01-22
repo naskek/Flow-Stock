@@ -545,10 +545,6 @@ public sealed class DocumentService
         {
             check.Errors.Add("Для отгрузки требуется контрагент.");
         }
-        if (doc.Type == DocType.Outbound && string.IsNullOrWhiteSpace(doc.OrderRef))
-        {
-            check.Errors.Add("Для отгрузки требуется номер заказа.");
-        }
         return check;
     }
 
