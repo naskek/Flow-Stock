@@ -1275,13 +1275,9 @@
       '    <div id="dataStatus" class="status"></div>' +
       '    <div id="dataCounts" class="status status-muted"></div>' +
       '    <button id="exportFromSettingsBtn" class="btn btn-outline" type="button">' +
-      "      Экспорт JSONL" +
+      "      Экспорт JSONL (операции + товары)" +
       "    </button>" +
       '    <div id="exportStatus" class="status"></div>' +
-      '    <button id="exportItemsBtn" class="btn btn-outline" type="button">' +
-      "      Экспорт новых товаров (JSONL)" +
-      "    </button>" +
-      '    <div id="itemsExportStatus" class="status"></div>' +
       '    <div class="version">Версия приложения: 0.1</div>' +
       "  </div>" +
       "</section>"
@@ -2785,7 +2781,7 @@
           valid = false;
         }
         if (!normalizeValue(doc.header.to) && !doc.header.to_id) {
-          setLocationError("to", "Укажите место хранения");
+          setLocationError("to", "Для приемки выберите место хранения (Куда).");
           valid = false;
         }
       } else if (doc.op === "OUTBOUND") {
@@ -3251,6 +3247,10 @@
           return;
         }
         if (!validateBeforeFinish()) {
+          var missingFields = getMissingLocationFields(doc);
+          if (doc.op === "INBOUND" && missingFields.indexOf("to") >= 0) {
+            alert("Для приемки выберите место хранения (Куда).");
+          }
           return;
         }
         doc.status = "READY";
@@ -3433,7 +3433,6 @@
     var deviceIdValue = document.getElementById("deviceIdValue");
     var deviceIdHint = document.getElementById("deviceIdHint");
     var exportBtn = document.getElementById("exportFromSettingsBtn");
-    var exportItemsBtn = document.getElementById("exportItemsBtn");
     var importBtn = document.getElementById("importDataBtn");
     var fileInput = document.getElementById("dataFileInput");
     var dataStatusText = document.getElementById("dataStatus");
@@ -3545,13 +3544,7 @@
 
     if (exportBtn) {
       exportBtn.addEventListener("click", function () {
-        exportReadyDocs("exportStatus");
-      });
-    }
-
-    if (exportItemsBtn) {
-      exportItemsBtn.addEventListener("click", function () {
-        exportLocalItems("itemsExportStatus");
+        exportAllJsonl("exportStatus");
       });
     }
   }
@@ -3654,6 +3647,53 @@
     return trimmed ? trimmed : "";
   }
 
+  function getMissingLocationFields(doc) {
+    var header = (doc && doc.header) || {};
+    var missing = [];
+
+    if (doc.op === "INBOUND") {
+      if (!normalizeValue(header.to) && !header.to_id) {
+        missing.push("to");
+      }
+      return missing;
+    }
+
+    if (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF") {
+      if (!normalizeValue(header.from) && !header.from_id) {
+        missing.push("from");
+      }
+      return missing;
+    }
+
+    if (doc.op === "MOVE") {
+      if (!normalizeValue(header.from) && !header.from_id) {
+        missing.push("from");
+      }
+      if (!normalizeValue(header.to) && !header.to_id) {
+        missing.push("to");
+      }
+      return missing;
+    }
+
+    if (doc.op === "INVENTORY") {
+      if (!normalizeValue(header.location) && !header.location_id) {
+        missing.push("location");
+      }
+    }
+
+    return missing;
+  }
+
+  function logExportWarning(doc, missingFields) {
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("TSD export skipped: missing fields", {
+        doc_ref: doc && doc.doc_ref,
+        op: doc && doc.op,
+        missing: missingFields,
+      });
+    }
+  }
+
   function buildLineData(op, header) {
     var from = null;
     var to = null;
@@ -3717,6 +3757,203 @@
     }
     return true;
   }
+  function exportAllJsonl(statusElementId) {
+    var statusEl = statusElementId ? document.getElementById(statusElementId) : null;
+
+    function setStatus(text) {
+      if (statusEl) {
+        statusEl.textContent = text;
+      }
+    }
+
+    function downloadJsonl(filename, lines, errorText) {
+      if (!lines.length) {
+        return false;
+      }
+
+      try {
+        var blob = new Blob([lines.join("\n")], { type: "application/jsonl" });
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        setStatus(errorText);
+        return false;
+      }
+
+      return true;
+    }
+
+    Promise.all([
+      TsdStorage.listDocs(),
+      TsdStorage.listLocalItemsForExport(),
+      TsdStorage.getSetting("device_id"),
+    ])
+      .then(function (results) {
+        var docs = results[0] || [];
+        var items = results[1] || [];
+        var deviceId = results[2] || "CT48-01";
+        var readyDocs = docs.filter(function (doc) {
+          return doc.status === "READY";
+        });
+        var exportableDocs = [];
+        var skippedDocs = [];
+        readyDocs.forEach(function (doc) {
+          var missingFields = getMissingLocationFields(doc);
+          if (missingFields.length) {
+            logExportWarning(doc, missingFields);
+            skippedDocs.push({ doc: doc, missing: missingFields });
+            return;
+          }
+          exportableDocs.push(doc);
+        });
+
+        if (!exportableDocs.length && !items.length) {
+          if (skippedDocs.length) {
+            setStatus("Есть документы без обязательных полей. Проверьте Куда/Откуда.");
+            return;
+          }
+          setStatus("Нет данных для экспорта");
+          return;
+        }
+
+        var now = new Date();
+        var nowIso = now.toISOString();
+        var dateKey = getDateKey(now);
+        var timeKey = getTimeKey(now);
+
+        var opLines = [];
+        exportableDocs.forEach(function (doc) {
+          var header = doc.header || {};
+          var fallbackFrom = normalizeValue(header.from) || null;
+          var fallbackTo = normalizeValue(header.to) || null;
+          var fallbackReason = normalizeValue(header.reason_code) || null;
+          if (doc.op === "INVENTORY") {
+            fallbackTo = normalizeValue(header.location) || null;
+          }
+
+          (doc.lines || []).forEach(function (line) {
+            var record = {
+              event_id: createUuid(),
+              ts: nowIso,
+              device_id: deviceId,
+              op: doc.op,
+              doc_ref: doc.doc_ref,
+              barcode: line.barcode,
+              qty: line.qty,
+              from: line.from || fallbackFrom,
+              to: line.to || fallbackTo,
+              partner_id: header.partner_id ? header.partner_id : null,
+              order_id: header.order_id ? header.order_id : null,
+              order_ref: header.order_ref ? header.order_ref : null,
+              reason_code: line.reason_code || fallbackReason,
+            };
+            opLines.push(JSON.stringify(record));
+          });
+        });
+
+        var itemLines = items.map(function (item) {
+          var barcode =
+            item.barcode ||
+            (Array.isArray(item.barcodes) && item.barcodes[0]) ||
+            "";
+          var record = {
+            event: "ITEM_UPSERT",
+            ts: nowIso,
+            device_id: deviceId,
+            item: {
+              item_id: item.itemId,
+              name: item.name || "",
+              barcode: barcode || "",
+              gtin: item.gtin || "",
+              base_uom: item.base_uom || "",
+            },
+          };
+          return JSON.stringify(record);
+        });
+
+        var opsExported = false;
+        var itemsExported = false;
+        var opsWarning = "";
+
+        if (opLines.length) {
+          var opsFilename = "SHIFT_" + dateKey + "_" + deviceId + "_" + timeKey + ".jsonl";
+          opsExported = downloadJsonl(opsFilename, opLines, "Ошибка экспорта операций");
+        } else if (exportableDocs.length) {
+          opsWarning = "Нет строк для экспорта операций";
+        } else if (skippedDocs.length) {
+          opsWarning = "Пропущено операций: " + skippedDocs.length + " (нет Куда/Откуда)";
+        }
+
+        if (itemLines.length) {
+          var itemsFilename = "ITEMS_" + dateKey + "_" + timeKey + "_" + deviceId + ".jsonl";
+          itemsExported = downloadJsonl(itemsFilename, itemLines, "Ошибка экспорта товаров");
+        }
+
+        if (!opsExported && !itemsExported) {
+          if (opsWarning) {
+            setStatus(opsWarning);
+            return;
+          }
+          if (!items.length) {
+            setStatus("Нет данных для экспорта");
+            return;
+          }
+          setStatus("Нет новых товаров для экспорта");
+          return;
+        }
+
+        var exportedAt = new Date().toISOString();
+        var saveTasks = [];
+
+        if (opsExported) {
+          var saveDocs = exportableDocs.map(function (doc) {
+            doc.status = "EXPORTED";
+            doc.exportedAt = exportedAt;
+            doc.updatedAt = exportedAt;
+            return TsdStorage.saveDoc(doc);
+          });
+          saveTasks.push(Promise.all(saveDocs));
+        }
+
+        if (itemsExported) {
+          var ids = items.map(function (item) {
+            return item.itemId;
+          });
+          saveTasks.push(TsdStorage.markLocalItemsExported(ids, exportedAt));
+        }
+
+        Promise.all(saveTasks)
+          .then(function () {
+            var parts = [];
+            if (opsExported) {
+              parts.push(
+                "Операции: " + exportableDocs.length + " (" + opLines.length + " строк)"
+              );
+            } else if (opsWarning) {
+              parts.push(opsWarning);
+            }
+            if (itemsExported) {
+              parts.push("Товары: " + items.length);
+            }
+            setStatus("Экспортировано: " + parts.join(" · "));
+            if (opsExported && currentRoute && currentRoute.name === "docs") {
+              renderRoute();
+            }
+          })
+          .catch(function () {
+            setStatus("Ошибка сохранения статусов");
+          });
+      })
+      .catch(function () {
+        setStatus("Ошибка экспорта");
+      });
+  }
   function exportReadyDocs(statusElementId) {
     var statusEl = statusElementId ? document.getElementById(statusElementId) : null;
 
@@ -3733,8 +3970,23 @@
         var readyDocs = docs.filter(function (doc) {
           return doc.status === "READY";
         });
+        var exportableDocs = [];
+        var skippedDocs = [];
+        readyDocs.forEach(function (doc) {
+          var missingFields = getMissingLocationFields(doc);
+          if (missingFields.length) {
+            logExportWarning(doc, missingFields);
+            skippedDocs.push({ doc: doc, missing: missingFields });
+            return;
+          }
+          exportableDocs.push(doc);
+        });
 
-        if (!readyDocs.length) {
+        if (!exportableDocs.length) {
+          if (skippedDocs.length) {
+            setStatus("Есть операции без обязательных полей. Проверьте Куда/Откуда.");
+            return;
+          }
           setStatus("Нет готовых операций для экспорта");
           return;
         }
@@ -3746,7 +3998,7 @@
         var filename = "SHIFT_" + dateKey + "_" + deviceId + "_" + timeKey + ".jsonl";
         var lines = [];
 
-        readyDocs.forEach(function (doc) {
+        exportableDocs.forEach(function (doc) {
           var header = doc.header || {};
           var fallbackFrom = normalizeValue(header.from) || null;
           var fallbackTo = normalizeValue(header.to) || null;
@@ -3796,7 +4048,7 @@
         }
 
         var exportedAt = new Date().toISOString();
-        var saveTasks = readyDocs.map(function (doc) {
+        var saveTasks = exportableDocs.map(function (doc) {
           doc.status = "EXPORTED";
           doc.exportedAt = exportedAt;
           doc.updatedAt = exportedAt;
@@ -3805,7 +4057,11 @@
 
         Promise.all(saveTasks)
           .then(function () {
-            setStatus("Экспортировано: " + readyDocs.length + " операций");
+            var message = "Экспортировано: " + exportableDocs.length + " операций";
+            if (skippedDocs.length) {
+              message += " (пропущено: " + skippedDocs.length + ")";
+            }
+            setStatus(message);
             if (currentRoute && currentRoute.name === "docs") {
               renderRoute();
             }
