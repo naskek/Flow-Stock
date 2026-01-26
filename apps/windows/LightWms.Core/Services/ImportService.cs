@@ -329,13 +329,16 @@ public sealed class ImportService
                 return;
             }
 
+            var (fromHu, toHu) = ResolveLineHu(importEvent.Type, huCode);
             store.AddDocLine(new DocLine
             {
                 DocId = doc.Id,
                 ItemId = item.Id,
                 Qty = importEvent.Qty,
                 FromLocationId = fromLocation?.Id,
-                ToLocationId = toLocation?.Id
+                ToLocationId = toLocation?.Id,
+                FromHu = fromHu,
+                ToHu = toHu
             });
 
             store.AddImportedEvent(new ImportedEvent
@@ -843,6 +846,20 @@ public sealed class ImportService
         }
 
         return !string.Equals(existingHu.Trim(), incomingHu.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static (string? fromHu, string? toHu) ResolveLineHu(DocType type, string? huCode)
+    {
+        var normalized = NormalizeHuCode(huCode);
+        return type switch
+        {
+            DocType.Inbound => (null, normalized),
+            DocType.Inventory => (null, normalized),
+            DocType.Outbound => (normalized, null),
+            DocType.WriteOff => (normalized, null),
+            DocType.Move => (null, normalized),
+            _ => (null, null)
+        };
     }
 
     private static string? NormalizeHuCode(string? value)
