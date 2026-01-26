@@ -4,6 +4,7 @@
   var app = document.getElementById("app");
   var appHeader = document.querySelector(".app-header");
   var appTitle = document.querySelector(".app-title");
+  var appTitleWrap = document.querySelector(".app-title-wrap");
   var backBtn = document.getElementById("backBtn");
   var settingsBtn = document.getElementById("settingsBtn");
   var networkStatus = document.getElementById("networkStatus");
@@ -334,7 +335,12 @@
         backBtn.parentNode.removeChild(backBtn);
       }
     } else if (!backBtn.parentNode) {
-      appHeader.insertBefore(backBtn, appTitle || appHeader.firstChild);
+      var anchor = appTitleWrap || appTitle;
+      if (anchor && anchor.parentNode === appHeader) {
+        appHeader.insertBefore(backBtn, anchor);
+      } else {
+        appHeader.insertBefore(backBtn, appHeader.firstChild);
+      }
     }
 
     if (settingsBtn) {
@@ -1291,7 +1297,7 @@
       '    <div id="dataStatus" class="status"></div>' +
       '    <div id="dataCounts" class="status status-muted"></div>' +
       '    <button id="exportFromSettingsBtn" class="btn btn-outline" type="button">' +
-      "      Экспорт JSONL (операции + товары)" +
+      "      Экспорт смены (SHIFT)" +
       "    </button>" +
       '    <div id="exportStatus" class="status"></div>' +
       '    <div class="version">Версия приложения: 0.1</div>' +
@@ -4107,6 +4113,7 @@
         URL.revokeObjectURL(url);
       } catch (error) {
         setStatus(errorText);
+        console.error("TSD shift export failed", error);
         return false;
       }
 
@@ -4151,6 +4158,27 @@
         var dateKey = getDateKey(now);
         var timeKey = getTimeKey(now);
 
+        var itemLines = items.map(function (item) {
+          var barcode =
+            item.barcode ||
+            (Array.isArray(item.barcodes) && item.barcodes[0]) ||
+            "";
+          var record = {
+            schema_version: 1,
+            event_id: createUuid(),
+            ts: nowIso,
+            device_id: deviceId,
+            event: "ITEM_UPSERT",
+            item: {
+              name: item.name || "",
+              barcode: barcode || "",
+              gtin: item.gtin || "",
+              base_uom: item.base_uom || "",
+            },
+          };
+          return JSON.stringify(record);
+        });
+
         var opLines = [];
         exportableDocs.forEach(function (doc) {
           var header = doc.header || {};
@@ -4164,9 +4192,11 @@
 
           (doc.lines || []).forEach(function (line) {
             var record = {
+              schema_version: 1,
               event_id: createUuid(),
               ts: nowIso,
               device_id: deviceId,
+              event: "OP",
               op: doc.op,
               doc_ref: doc.doc_ref,
               barcode: line.barcode,
@@ -4174,7 +4204,6 @@
               from: line.from || fallbackFrom,
               to: line.to || fallbackTo,
               partner_id: header.partner_id ? header.partner_id : null,
-              order_id: header.order_id ? header.order_id : null,
               order_ref: header.order_ref ? header.order_ref : null,
               reason_code: line.reason_code || fallbackReason,
               hu_code: huCode || null,
@@ -4183,61 +4212,35 @@
           });
         });
 
-        var itemLines = items.map(function (item) {
-          var barcode =
-            item.barcode ||
-            (Array.isArray(item.barcodes) && item.barcodes[0]) ||
-            "";
-          var record = {
-            event: "ITEM_UPSERT",
-            ts: nowIso,
-            device_id: deviceId,
-            item: {
-              item_id: item.itemId,
-              name: item.name || "",
-              barcode: barcode || "",
-              gtin: item.gtin || "",
-              base_uom: item.base_uom || "",
-            },
-          };
-          return JSON.stringify(record);
-        });
-
-        var opsExported = false;
-        var itemsExported = false;
         var opsWarning = "";
-
-        if (opLines.length) {
-          var opsFilename = "SHIFT_" + dateKey + "_" + deviceId + "_" + timeKey + ".jsonl";
-          opsExported = downloadJsonl(opsFilename, opLines, "Ошибка экспорта операций");
-        } else if (exportableDocs.length) {
-          opsWarning = "Нет строк для экспорта операций";
-        } else if (skippedDocs.length) {
-          opsWarning = "Пропущено операций: " + skippedDocs.length + " (нет Куда/Откуда)";
+        if (!opLines.length) {
+          if (exportableDocs.length) {
+            opsWarning = "Нет строк для экспорта операций";
+          } else if (skippedDocs.length) {
+            opsWarning = "Пропущено операций: " + skippedDocs.length + " (нет Куда/Откуда)";
+          }
         }
 
-        if (itemLines.length) {
-          var itemsFilename = "ITEMS_" + dateKey + "_" + timeKey + "_" + deviceId + ".jsonl";
-          itemsExported = downloadJsonl(itemsFilename, itemLines, "Ошибка экспорта товаров");
-        }
-
-        if (!opsExported && !itemsExported) {
+        if (!opLines.length && !itemLines.length) {
           if (opsWarning) {
             setStatus(opsWarning);
             return;
           }
-          if (!items.length) {
-            setStatus("Нет данных для экспорта");
-            return;
-          }
-          setStatus("Нет новых товаров для экспорта");
+          setStatus("Нет данных для экспорта");
+          return;
+        }
+
+        var lines = itemLines.concat(opLines);
+        var filename = "SHIFT_" + dateKey + "_" + deviceId + "_" + timeKey + ".jsonl";
+        if (!downloadJsonl(filename, lines, "Ошибка экспорта смены")) {
+          setStatus("Ошибка экспорта смены");
           return;
         }
 
         var exportedAt = new Date().toISOString();
         var saveTasks = [];
 
-        if (opsExported) {
+        if (opLines.length) {
           var saveDocs = exportableDocs.map(function (doc) {
             doc.status = "EXPORTED";
             doc.exportedAt = exportedAt;
@@ -4247,7 +4250,7 @@
           saveTasks.push(Promise.all(saveDocs));
         }
 
-        if (itemsExported) {
+        if (itemLines.length) {
           var ids = items.map(function (item) {
             return item.itemId;
           });
@@ -4257,26 +4260,34 @@
         Promise.all(saveTasks)
           .then(function () {
             var parts = [];
-            if (opsExported) {
+            if (itemLines.length) {
+              parts.push("Товары: " + items.length);
+            }
+            if (opLines.length) {
               parts.push(
                 "Операции: " + exportableDocs.length + " (" + opLines.length + " строк)"
               );
             } else if (opsWarning) {
               parts.push(opsWarning);
             }
-            if (itemsExported) {
-              parts.push("Товары: " + items.length);
-            }
             setStatus("Экспортировано: " + parts.join(" · "));
-            if (opsExported && currentRoute && currentRoute.name === "docs") {
+            console.info("TSD shift export complete", {
+              items: itemLines.length,
+              ops: opLines.length,
+              device_id: deviceId,
+              file: filename,
+            });
+            if (opLines.length && currentRoute && currentRoute.name === "docs") {
               renderRoute();
             }
           })
-          .catch(function () {
+          .catch(function (error) {
+            console.error("TSD shift export status save failed", error);
             setStatus("Ошибка сохранения статусов");
           });
       })
-      .catch(function () {
+      .catch(function (error) {
+        console.error("TSD shift export failed", error);
         setStatus("Ошибка экспорта");
       });
   }
