@@ -232,6 +232,8 @@ public sealed class DocumentService
                         }
                         break;
                     case DocType.Move:
+                        var moveFromHu = NormalizeHuValue(line.FromHu);
+                        var moveToHu = NormalizeHuValue(line.ToHu);
                         if (line.FromLocationId.HasValue)
                         {
                             store.AddLedgerEntry(new LedgerEntry
@@ -241,7 +243,7 @@ public sealed class DocumentService
                                 ItemId = line.ItemId,
                                 LocationId = line.FromLocationId.Value,
                                 QtyDelta = -line.Qty,
-                                Hu = NormalizeHuValue(line.FromHu)
+                                Hu = moveFromHu
                             });
                         }
                         if (line.ToLocationId.HasValue)
@@ -253,7 +255,7 @@ public sealed class DocumentService
                                 ItemId = line.ItemId,
                                 LocationId = line.ToLocationId.Value,
                                 QtyDelta = line.Qty,
-                                Hu = NormalizeHuValue(line.ToHu)
+                                Hu = moveToHu
                             });
                         }
                         break;
