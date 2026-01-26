@@ -6,6 +6,7 @@
   var appTitle = document.querySelector(".app-title");
   var backBtn = document.getElementById("backBtn");
   var settingsBtn = document.getElementById("settingsBtn");
+  var networkStatus = document.getElementById("networkStatus");
   var scanSink = document.getElementById("scanSink");
   var currentRoute = null;
   var scanKeydownHandler = null;
@@ -17,6 +18,16 @@
   };
 
   var NAV_ORIGIN_KEY = "tsdNavOrigin";
+
+  function updateNetworkStatus() {
+    if (!networkStatus) {
+      return;
+    }
+
+    var online = navigator.onLine;
+    networkStatus.textContent = online ? "Онлайн" : "Оффлайн";
+    networkStatus.classList.toggle("is-offline", !online);
+  }
 
   function setNavOrigin(value) {
     if (!window.sessionStorage) {
@@ -1459,6 +1470,7 @@
   function buildOverlay(title) {
     var overlay = document.createElement("div");
     overlay.className = "overlay";
+    overlay.setAttribute("tabindex", "-1");
     overlay.innerHTML =
       '<div class="overlay-card">' +
       '  <div class="overlay-header">' +
@@ -1477,6 +1489,46 @@
       "</div>";
     overlay.querySelector(".overlay-title").textContent = title;
     return overlay;
+  }
+
+  var overlayOpenCount = 0;
+
+  function overlayTouchBlocker(event) {
+    if (!event.target.closest(".overlay-card")) {
+      event.preventDefault();
+    }
+  }
+
+  function lockOverlayScroll() {
+    overlayOpenCount += 1;
+    if (overlayOpenCount !== 1) {
+      return;
+    }
+
+    document.body.classList.add("modal-open");
+    document.addEventListener("touchmove", overlayTouchBlocker, { passive: false });
+  }
+
+  function unlockOverlayScroll() {
+    if (overlayOpenCount > 0) {
+      overlayOpenCount -= 1;
+    }
+
+    if (overlayOpenCount !== 0) {
+      return;
+    }
+
+    document.body.classList.remove("modal-open");
+    document.removeEventListener("touchmove", overlayTouchBlocker);
+  }
+
+  function focusOverlay(overlay) {
+    var closeBtn = overlay.querySelector(".overlay-close");
+    if (closeBtn) {
+      closeBtn.focus();
+    } else {
+      overlay.focus();
+    }
   }
 
   function renderOverlayList(listEl, items, renderLabel, onSelect) {
@@ -1518,6 +1570,7 @@
     var closeBtn = overlay.querySelector(".overlay-close");
 
     function close() {
+      unlockOverlayScroll();
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
       enterScanMode();
@@ -1600,6 +1653,7 @@
     }
 
     document.body.appendChild(overlay);
+    lockOverlayScroll();
     document.addEventListener("keydown", onKeyDown);
 
     overlay.addEventListener("click", function (event) {
@@ -1615,7 +1669,7 @@
 
     loadRecents();
     runSearch("");
-    input.focus();
+    focusOverlay(overlay);
   }
 
   function openLocationPicker(onSelect) {
@@ -1627,6 +1681,7 @@
     var closeBtn = overlay.querySelector(".overlay-close");
 
     function close() {
+      unlockOverlayScroll();
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
       enterScanMode();
@@ -1713,7 +1768,7 @@
 
     loadRecents();
     runSearch("");
-    input.focus();
+    focusOverlay(overlay);
   }
 
   function openOrderPicker(onSelect) {
@@ -1731,6 +1786,7 @@
     }
 
     function close() {
+      unlockOverlayScroll();
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
       enterScanMode();
@@ -1778,6 +1834,7 @@
     }
 
     document.body.appendChild(overlay);
+    lockOverlayScroll();
     document.addEventListener("keydown", onKeyDown);
 
     overlay.addEventListener("click", function (event) {
@@ -1792,7 +1849,7 @@
     });
 
     runSearch("");
-    input.focus();
+    focusOverlay(overlay);
   }
 
   function openReasonPicker(onSelect) {
@@ -1810,6 +1867,7 @@
     }
 
     function close() {
+      unlockOverlayScroll();
       document.body.removeChild(overlay);
       document.removeEventListener("keydown", onKeyDown);
       enterScanMode();
@@ -1868,9 +1926,7 @@
     }
 
     runSearch("");
-    if (searchInput) {
-      searchInput.focus();
-    }
+    focusOverlay(overlay);
   }
 
   function openConfirmOverlay(title, message, confirmLabel, onConfirm) {
@@ -1989,6 +2045,7 @@
     }
 
     document.body.appendChild(overlay);
+    lockOverlayScroll();
     document.addEventListener("keydown", onKeyDown);
 
     overlay.addEventListener("click", function (event) {
@@ -2153,6 +2210,7 @@
     }
 
     document.body.appendChild(overlay);
+    lockOverlayScroll();
     document.addEventListener("keydown", onKeyDown);
 
     overlay.addEventListener("click", function (event) {
@@ -2264,7 +2322,7 @@
     var reasonPickBtn = document.getElementById("reasonPickBtn");
     var reasonErrorEl = document.getElementById("reasonError");
     var partnerErrorEl = document.getElementById("partnerError");
-    var huInput = document.getElementById("huInput");
+    var huValueEl = document.getElementById("huValue");
     var huScanBtn = document.getElementById("huScanBtn");
     var huErrorEl = document.getElementById("huError");
     var orderHint = document.getElementById("orderHint");
@@ -2281,6 +2339,12 @@
     var incBtn = null;
     var incHoldTimer = null;
     var incHoldTriggered = false;
+    var huOverlay = null;
+    var huModalInput = null;
+    var huModalError = null;
+    var huModalConfirm = null;
+    var huModalValue = null;
+    var huModalKeyListener = null;
 
     function setDocStatus(text) {
       if (!docActionStatus) {
@@ -2784,7 +2848,7 @@
       setLocationError("from", "");
       setLocationError("to", "");
       setLocationError("location", "");
-      if (!applyHuValue(doc.header.hu, true)) {
+      if (!validateHuHeader(true)) {
         valid = false;
       }
       if (doc.op === "INBOUND") {
@@ -2961,27 +3025,168 @@
       }
     }
 
-    function applyHuValue(rawValue, showAlert) {
-      var normalized = normalizeHuCode(rawValue);
+    function setHuDisplay(value) {
+      if (!huValueEl) {
+        return;
+      }
+      var current = normalizeValue(value != null ? value : doc.header.hu);
+      var normalized = normalizeHuCode(current);
+      var labelValue = normalized || current;
+      var label = labelValue ? "HU: " + labelValue : "HU: не задан";
+      huValueEl.textContent = label;
+    }
+
+    function validateHuHeader(showAlert) {
+      var current = normalizeValue(doc.header.hu);
+      if (!current) {
+        setHuError("");
+        setHuDisplay("");
+        return true;
+      }
+
+      var normalized = normalizeHuCode(current);
       if (normalized === null) {
-        var message = "Это товарный код. Для контейнера нужен HU-...";
+        var message = "Это не HU-код. HU должен начинаться с HU-.";
         setHuError(message);
         if (showAlert) {
           alert(message);
-        }
-        if (huInput) {
-          huInput.value = normalizeValue(doc.header.hu);
         }
         return false;
       }
 
       setHuError("");
-      doc.header.hu = normalized;
-      if (huInput) {
-        huInput.value = normalized;
+      if (normalized !== doc.header.hu) {
+        doc.header.hu = normalized;
+        saveDocState();
       }
-      saveDocState();
+      setHuDisplay(normalized);
       return true;
+    }
+
+    function setHuModalValue(rawValue, showError) {
+      if (!huModalInput) {
+        return;
+      }
+      var trimmed = normalizeValue(rawValue);
+      var normalized = normalizeHuCode(trimmed);
+      if (normalized === null) {
+        huModalValue = null;
+        if (huModalError) {
+          huModalError.textContent =
+            showError && trimmed ? "Это не HU-код. HU должен начинаться с HU-." : "";
+        }
+        if (huModalConfirm) {
+          huModalConfirm.disabled = true;
+        }
+        return;
+      }
+
+      huModalValue = normalized;
+      huModalInput.value = normalized;
+      if (huModalError) {
+        huModalError.textContent = "Найден HU: " + normalized;
+      }
+      if (huModalConfirm) {
+        huModalConfirm.disabled = false;
+      }
+    }
+
+    function openHuOverlay() {
+      if (!isDraftDoc || huOverlay) {
+        return;
+      }
+
+      setScanHighlight(false);
+      huOverlay = document.createElement("div");
+      huOverlay.className = "overlay hu-overlay";
+      huOverlay.setAttribute("tabindex", "-1");
+      huOverlay.innerHTML =
+        '<div class="overlay-card">' +
+        '  <div class="overlay-header">' +
+        '    <div class="overlay-title">Сканировать HU</div>' +
+        '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+        "  </div>" +
+        '  <div class="overlay-body">' +
+        '    <div class="form-label">Отсканируйте HU-код</div>' +
+        '    <input class="form-input" id="huModalInput" type="text" placeholder="HU-..." inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly />' +
+        '    <div class="field-error" id="huModalError"></div>' +
+        '    <div class="overlay-actions">' +
+        '      <button class="btn btn-outline" type="button" id="huModalCancel">Отмена</button>' +
+        '      <button class="btn primary-btn" type="button" id="huModalConfirm" disabled>Подтвердить</button>' +
+        "    </div>" +
+        "  </div>" +
+        "</div>";
+
+      document.body.appendChild(huOverlay);
+      lockOverlayScroll();
+      focusOverlay(huOverlay);
+
+      huModalInput = huOverlay.querySelector("#huModalInput");
+      huModalError = huOverlay.querySelector("#huModalError");
+      huModalConfirm = huOverlay.querySelector("#huModalConfirm");
+      var cancelBtn = huOverlay.querySelector("#huModalCancel");
+      var closeBtn = huOverlay.querySelector(".overlay-close");
+
+      function closeOverlay() {
+        unlockOverlayScroll();
+        document.body.removeChild(huOverlay);
+        huOverlay = null;
+        huModalInput = null;
+        huModalError = null;
+        huModalConfirm = null;
+        huModalValue = null;
+        if (huModalKeyListener) {
+          document.removeEventListener("keydown", huModalKeyListener);
+          huModalKeyListener = null;
+        }
+        setDocStatus("");
+        setScanTarget("barcode");
+        enterScanMode();
+      }
+
+      function confirmHu() {
+        if (!huModalValue) {
+          return;
+        }
+        doc.header.hu = huModalValue;
+        setHuError("");
+        setHuDisplay(huModalValue);
+        saveDocState();
+        closeOverlay();
+      }
+
+      huOverlay.addEventListener("click", function (event) {
+        if (event.target === huOverlay) {
+          closeOverlay();
+        }
+      });
+
+      if (cancelBtn) {
+        cancelBtn.addEventListener("click", closeOverlay);
+      }
+      if (closeBtn) {
+        closeBtn.addEventListener("click", closeOverlay);
+      }
+      if (huModalConfirm) {
+        huModalConfirm.addEventListener("click", confirmHu);
+      }
+
+      huModalKeyListener = function (event) {
+        if (event.key === "Escape") {
+          closeOverlay();
+        }
+        if (event.key === "Enter" && huModalConfirm && !huModalConfirm.disabled) {
+          event.preventDefault();
+          confirmHu();
+        }
+      };
+      document.addEventListener("keydown", huModalKeyListener);
+
+      setHuModalValue(doc.header.hu, false);
+      setScanTarget("hu");
+      setDocStatus("Сканируйте HU");
+      clearScanBuffer();
+      enterScanMode();
     }
 
     function clearScanBuffer() {
@@ -3011,16 +3216,14 @@
         return;
       }
       if (scanTarget.type === "hu") {
-        applyHuValue(trimmed, true);
-        setScanTarget("barcode");
-        enterScanMode();
+        setHuModalValue(trimmed, true);
         return;
       }
       handleAddLine(trimmed);
     }
 
     function handleScanKeydown(event) {
-      if (isManualOverlayOpen()) {
+      if (isManualOverlayOpen() && scanTarget.type !== "hu") {
         return;
       }
       if (!isDraftDoc) {
@@ -3047,8 +3250,8 @@
         if (barcodeInput && scanTarget.type === "barcode") {
           barcodeInput.value = scanBuffer;
           updateScanInfoByBarcode(scanBuffer);
-        } else if (huInput && scanTarget.type === "hu") {
-          huInput.value = scanBuffer;
+        } else if (huModalInput && scanTarget.type === "hu") {
+          huModalInput.value = scanBuffer;
         }
       }
     }
@@ -3386,37 +3589,12 @@
       }
     });
 
-    if (huInput) {
-      huInput.addEventListener("input", function () {
-        setHuError("");
-      });
-      huInput.addEventListener("blur", function () {
-        applyHuValue(huInput.value, true);
-      });
-      huInput.addEventListener("focus", function () {
-        setScanTarget("hu");
-        enterScanMode();
-      });
-      huInput.addEventListener("click", function () {
-        setScanTarget("hu");
-        enterScanMode();
-      });
-      huInput.addEventListener("keydown", function (event) {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          applyHuValue(huInput.value, true);
-        }
-      });
-    }
-
     if (huScanBtn) {
       huScanBtn.addEventListener("click", function () {
         if (!isDraftDoc) {
           return;
         }
-        setScanTarget("hu");
-        setDocStatus("Сканируйте HU");
-        enterScanMode();
+        openHuOverlay();
       });
     }
 
@@ -3512,6 +3690,7 @@
         applyCatalogState(null);
       });
 
+    setHuDisplay(doc.header.hu);
     focusFirstLocationOrBarcode();
   }
 
@@ -4213,17 +4392,16 @@
 
   function renderHuField(header, isDraft) {
     var huValue = normalizeValue(header.hu);
+    var huLabel = huValue ? "HU: " + huValue : "HU: не задан";
     return (
-      '  <div class="field-row field-row-4" id="huPickerRow">' +
+      '  <div class="field-row field-row-hu" id="huPickerRow">' +
       '    <div class="field-label">HU</div>' +
-      '    <input class="form-input" id="huInput" data-header="hu" type="text" placeholder="HU-..." value="' +
-      escapeHtml(huValue) +
-      '" ' +
+      '    <div class="field-value" id="huValue">' +
+      escapeHtml(huLabel) +
+      "</div>" +
+      '    <button class="btn btn-outline field-action" id="huScanBtn" type="button" ' +
       (isDraft ? "" : "disabled") +
-      " />" +
-      '    <button class="btn btn-outline field-pick" id="huScanBtn" type="button" ' +
-      (isDraft ? "" : "disabled") +
-      ">Сканировать</button>" +
+      ">Сканировать HU</button>" +
       "  </div>" +
       '  <div class="field-error" id="huError"></div>'
     );
@@ -4310,6 +4488,10 @@
         return TsdStorage.ensureDefaults();
       })
       .then(function () {
+        updateNetworkStatus();
+        window.addEventListener("online", updateNetworkStatus);
+        window.addEventListener("offline", updateNetworkStatus);
+
         if (backBtn) {
           backBtn.addEventListener("click", function () {
             if (!currentRoute) {
