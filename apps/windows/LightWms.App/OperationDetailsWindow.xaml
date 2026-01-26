@@ -47,6 +47,14 @@
                     <TextBlock x:Name="DocToLabel" Text="Куда" />
                     <ComboBox x:Name="DocToCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />
                 </StackPanel>
+                <StackPanel x:Name="DocMoveInternalPanel" Margin="0,0,12,0">
+                    <TextBlock Text="Перемещение" />
+                    <CheckBox x:Name="DocMoveInternalCheck"
+                              Content="Внутри склада"
+                              Margin="0,6,0,0"
+                              Checked="DocMoveInternalCheck_Changed"
+                              Unchecked="DocMoveInternalCheck_Changed" />
+                </StackPanel>
                 <StackPanel x:Name="DocHuFromPanel" Margin="0,0,12,0">
                     <TextBlock Text="HU (откуда)" />
                     <ComboBox x:Name="DocHuFromCombo"
@@ -60,7 +68,8 @@
                               Width="220"
                               Margin="0,4,0,0"
                               DisplayMemberPath="DisplayName"
-                              SelectionChanged="DocHuCombo_SelectionChanged" />
+                              SelectionChanged="DocHuCombo_SelectionChanged"
+                              TextChanged="DocHuCombo_TextChanged" />
                 </StackPanel>
             </WrapPanel>
         </StackPanel>

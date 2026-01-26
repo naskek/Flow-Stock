@@ -17,7 +17,8 @@ public partial class OperationDetailsWindow : Window
     private readonly ObservableCollection<DocLineDisplay> _docLines = new();
     private readonly ObservableCollection<OrderOption> _orders = new();
     private readonly List<OrderOption> _ordersAll = new();
-    private readonly ObservableCollection<HuOption> _huOptions = new();
+    private readonly ObservableCollection<HuOption> _huToOptions = new();
+    private readonly ObservableCollection<HuOption> _huFromOptions = new();
     private readonly Dictionary<long, double> _orderedQtyByItem = new();
     private readonly long _docId;
     private Doc? _doc;
@@ -42,8 +43,9 @@ public partial class OperationDetailsWindow : Window
         DocPartnerCombo.ItemsSource = _partners;
         DocPartnerCombo.SelectionChanged += DocPartnerCombo_SelectionChanged;
         DocOrderCombo.ItemsSource = _orders;
-        DocHuCombo.ItemsSource = _huOptions;
-        DocHuFromCombo.ItemsSource = _huOptions;
+        DocHuCombo.ItemsSource = _huToOptions;
+        DocHuFromCombo.ItemsSource = _huFromOptions;
+        DocFromCombo.SelectionChanged += DocFromCombo_SelectionChanged;
 
         LoadCatalog();
         LoadOrders();
@@ -351,7 +353,25 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var picker = new ItemPickerWindow(_services)
+        IEnumerable<Item>? filteredItems = null;
+        if (_doc?.Type == DocType.Move)
+        {
+            if (DocFromCombo.SelectedItem is not Location fromLocation)
+            {
+                MessageBox.Show("Выберите место хранения (откуда).", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var fromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
+            filteredItems = _services.DataStore.GetItemsByLocationAndHu(fromLocation.Id, NormalizeHuValue(fromHu));
+            if (!filteredItems.Any())
+            {
+                MessageBox.Show("Нет доступных товаров для выбранного места хранения и HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+        }
+
+        var picker = new ItemPickerWindow(_services, filteredItems)
         {
             Owner = this
         };
@@ -597,6 +617,16 @@ public partial class OperationDetailsWindow : Window
         MarkHeaderDirty();
     }
 
+    private void DocHuCombo_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        if (_suppressDirtyTracking || _doc?.Status != DocStatus.Draft)
+        {
+            return;
+        }
+
+        MarkHeaderDirty();
+    }
+
     private void DocOrderCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         if (_suppressOrderSync)
@@ -683,6 +713,45 @@ public partial class OperationDetailsWindow : Window
         UpdateActionButtons();
     }
 
+    private void DocMoveInternalCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_doc?.Type != DocType.Move)
+        {
+            return;
+        }
+
+        if (DocMoveInternalCheck.IsChecked == true)
+        {
+            if (DocFromCombo.SelectedItem is Location fromLocation)
+            {
+                DocToCombo.SelectedItem = fromLocation;
+            }
+
+            DocToCombo.IsEnabled = false;
+        }
+        else
+        {
+            DocToCombo.IsEnabled = true;
+        }
+
+        RefreshHuOptions();
+    }
+
+    private void DocFromCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_doc?.Type != DocType.Move)
+        {
+            return;
+        }
+
+        if (DocMoveInternalCheck.IsChecked == true)
+        {
+            DocToCombo.SelectedItem = DocFromCombo.SelectedItem;
+        }
+
+        RefreshHuOptions();
+    }
+
     private void UpdatePartnerLock()
     {
         DocPartnerCombo.IsEnabled = DocOrderCombo.SelectedItem == null;
@@ -734,6 +803,7 @@ public partial class OperationDetailsWindow : Window
         DocToPanel.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
         DocHuPanel.Visibility = showHu ? Visibility.Visible : Visibility.Collapsed;
         DocHuFromPanel.Visibility = doc.Type == DocType.Move ? Visibility.Visible : Visibility.Collapsed;
+        DocMoveInternalPanel.Visibility = doc.Type == DocType.Move ? Visibility.Visible : Visibility.Collapsed;
 
         DocPartnerLabel.Text = partnerLabel;
         DocFromLabel.Text = fromLabel;
@@ -742,6 +812,8 @@ public partial class OperationDetailsWindow : Window
         DocPartialCheck.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
         DocHuCombo.IsEnabled = isDraft;
         DocHuFromCombo.IsEnabled = isDraft;
+        DocHuCombo.IsEditable = doc.Type == DocType.Move;
+        DocMoveInternalCheck.IsEnabled = isDraft;
 
         if (!showFrom)
         {
@@ -751,6 +823,10 @@ public partial class OperationDetailsWindow : Window
         if (!showTo)
         {
             DocToCombo.SelectedItem = null;
+        }
+        if (doc.Type != DocType.Move)
+        {
+            DocMoveInternalCheck.IsChecked = false;
         }
 
         DocHeaderSaveButton.Visibility = showPartner || showOrder || showHu
@@ -875,7 +951,7 @@ public partial class OperationDetailsWindow : Window
         }
 
         var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
-        var huCode = (DocHuCombo.SelectedItem as HuOption)?.Code;
+        var huCode = GetSelectedHuCode(DocHuCombo);
         try
         {
             if (!TryResolveOrder(out var orderOption))
@@ -1016,7 +1092,8 @@ public partial class OperationDetailsWindow : Window
             {
                 if (DocFromCombo.SelectedItem is Location fromLocation)
                 {
-                    return (_services.DataStore.GetLedgerBalance(itemId, fromLocation.Id), true);
+                    var fromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
+                    return (_services.DataStore.GetAvailableQty(itemId, fromLocation.Id, NormalizeHuValue(fromHu)), true);
                 }
 
                 return (null, true);
@@ -1165,36 +1242,59 @@ public partial class OperationDetailsWindow : Window
 
     private void LoadHuOptions()
     {
-        _huOptions.Clear();
-        _huOptions.Add(new HuOption(null, "—"));
+        RefreshHuOptions();
+    }
 
-        if (!_services.HuRegistry.TryGetItems(out var items, out var error))
-        {
-            MessageBox.Show(error ?? "Не удалось прочитать реестр HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        foreach (var item in items
-                     .Where(entry => string.Equals(entry.State, HuRegistryStates.Issued, StringComparison.OrdinalIgnoreCase))
-                     .OrderBy(entry => entry.Code, StringComparer.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrWhiteSpace(item.Code))
-            {
-                continue;
-            }
-
-            _huOptions.Add(new HuOption(item.Code, item.Code));
-        }
+    private void RefreshHuOptions()
+    {
+        _huToOptions.Clear();
+        _huFromOptions.Clear();
+        _huToOptions.Add(new HuOption(null, "—"));
 
         if (_doc == null)
         {
             return;
         }
 
-        var current = NormalizeHuCode(_doc.ShippingRef);
-        if (!string.IsNullOrWhiteSpace(current) && _huOptions.All(option => !string.Equals(option.Code, current, StringComparison.OrdinalIgnoreCase)))
+        if (_doc.Type == DocType.Move)
         {
-            _huOptions.Add(new HuOption(current, $"{current} (занят)"));
+            var fromLocation = DocFromCombo.SelectedItem as Location;
+            if (fromLocation != null)
+            {
+                var codes = _services.DataStore.GetHuCodesByLocation(fromLocation.Id);
+                if (codes.Any(code => code == null))
+                {
+                    _huFromOptions.Add(new HuOption(null, "—"));
+                }
+                foreach (var code in codes.Where(code => !string.IsNullOrWhiteSpace(code)))
+                {
+                    _huFromOptions.Add(new HuOption(code, code!));
+                }
+            }
+            else
+            {
+                _huFromOptions.Add(new HuOption(null, "—"));
+            }
+
+            foreach (var code in _services.DataStore.GetAllHuCodes())
+            {
+                _huToOptions.Add(new HuOption(code, code));
+            }
+        }
+        else
+        {
+            foreach (var code in _services.DataStore.GetAllHuCodes())
+            {
+                _huToOptions.Add(new HuOption(code, code));
+            }
+            _huFromOptions.Add(new HuOption(null, "—"));
+        }
+
+        var current = NormalizeHuCode(_doc.ShippingRef);
+        if (!string.IsNullOrWhiteSpace(current)
+            && _huToOptions.All(option => !string.Equals(option.Code, current, StringComparison.OrdinalIgnoreCase)))
+        {
+            _huToOptions.Add(new HuOption(current, $"{current} (занят)"));
         }
     }
 
@@ -1204,16 +1304,16 @@ public partial class OperationDetailsWindow : Window
         _suppressDirtyTracking = true;
         if (!string.IsNullOrWhiteSpace(normalized))
         {
-            DocHuCombo.SelectedItem = _huOptions.FirstOrDefault(option =>
+            DocHuCombo.SelectedItem = _huToOptions.FirstOrDefault(option =>
                 string.Equals(option.Code, normalized, StringComparison.OrdinalIgnoreCase));
         }
         else
         {
-            DocHuCombo.SelectedItem = _huOptions.FirstOrDefault(option => option.Code == null)
-                                      ?? _huOptions.FirstOrDefault();
+            DocHuCombo.SelectedItem = _huToOptions.FirstOrDefault(option => option.Code == null)
+                                      ?? _huToOptions.FirstOrDefault();
         }
-        DocHuFromCombo.SelectedItem = _huOptions.FirstOrDefault(option => option.Code == null)
-                                      ?? _huOptions.FirstOrDefault();
+        DocHuFromCombo.SelectedItem = _huFromOptions.FirstOrDefault(option => option.Code == null)
+                                      ?? _huFromOptions.FirstOrDefault();
         _suppressDirtyTracking = false;
     }
 
@@ -1231,6 +1331,17 @@ public partial class OperationDetailsWindow : Window
         }
 
         return trimmed.ToUpperInvariant();
+    }
+
+    private static string? GetSelectedHuCode(System.Windows.Controls.ComboBox combo)
+    {
+        if (combo.SelectedItem is HuOption option)
+        {
+            return option.Code;
+        }
+
+        var text = combo.Text?.Trim();
+        return string.IsNullOrWhiteSpace(text) ? null : NormalizeHuCode(text);
     }
 
     private sealed class HuOption
@@ -1269,11 +1380,11 @@ public partial class OperationDetailsWindow : Window
         if (_doc.Type == DocType.Move)
         {
             fromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
-            toHu = (DocHuCombo.SelectedItem as HuOption)?.Code;
+            toHu = GetSelectedHuCode(DocHuCombo);
         }
         else
         {
-            ApplyLineHu(_doc.Type, (DocHuCombo.SelectedItem as HuOption)?.Code, ref fromHu, ref toHu);
+            ApplyLineHu(_doc.Type, GetSelectedHuCode(DocHuCombo), ref fromHu, ref toHu);
         }
         return ValidateLineLocations(_doc, fromLocation, toLocation, fromHu, toHu);
     }
@@ -1348,14 +1459,34 @@ public partial class OperationDetailsWindow : Window
                     MessageBox.Show("Для перемещения выберите места хранения откуда/куда.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
-                if (fromLocation.Id == toLocation.Id)
+                if (DocMoveInternalCheck.IsChecked == true)
                 {
-                    if (string.Equals(NormalizeHuValue(fromHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase))
+                    if (fromLocation.Id != toLocation.Id)
                     {
-                        MessageBox.Show("Для перемещения места хранения должны быть разными. Если вы хотите упаковать в HU в том же месте - заполните HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        MessageBox.Show("Для внутреннего перемещения выберите одинаковые места хранения.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
                         return false;
                     }
+
+                    if (string.IsNullOrWhiteSpace(fromHu) || string.IsNullOrWhiteSpace(toHu))
+                    {
+                        MessageBox.Show("Для внутреннего перемещения выберите HU-источник и HU-назначение.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return false;
+                    }
+
+                    if (string.Equals(NormalizeHuValue(fromHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase))
+                    {
+                        MessageBox.Show("HU-источник и HU-назначение должны быть разными.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return false;
+                    }
+
                     return true;
+                }
+
+                if (fromLocation.Id == toLocation.Id
+                    && string.Equals(NormalizeHuValue(fromHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase))
+                {
+                    MessageBox.Show("Для перемещения места хранения должны быть разными. Если вы хотите упаковать в HU в том же месте - заполните HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
                 }
                 return true;
             default:
