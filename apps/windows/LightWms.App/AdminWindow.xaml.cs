@@ -46,6 +46,24 @@ public partial class AdminWindow : Window
         ["partners"] = new[] { "orders", "docs" }
     };
     private static readonly HashSet<string> AllowedTables = new(TableOrder, StringComparer.OrdinalIgnoreCase);
+    private static readonly string[] MovementResetTables =
+    {
+        "docs",
+        "doc_lines",
+        "ledger",
+        "orders",
+        "order_lines",
+        "imported_events",
+        "import_errors"
+    };
+    private static readonly HashSet<string> HuImpactTables = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "docs",
+        "doc_lines",
+        "ledger",
+        "orders",
+        "order_lines"
+    };
 
     private readonly AppServices _services;
     private readonly Action? _onReset;
@@ -99,6 +117,52 @@ public partial class AdminWindow : Window
         catch (Exception ex)
         {
             _services.AdminLogger.Error("admin_backup failed", ex);
+            MessageBox.Show(ex.Message, "Администрирование", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void DeleteIssuedHu_Click(object sender, RoutedEventArgs e)
+    {
+        var confirm = MessageBox.Show(
+            "Удалить все HU со статусом ISSUED?",
+            "Администрирование",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!_services.HuRegistry.TryDeleteIssued(out var removed, out var error))
+            {
+                MessageBox.Show(error ?? "Не удалось обновить реестр HU.", "Администрирование", MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var settings = _services.Settings.Load();
+                settings.HuNextSequence = 1;
+                _services.Settings.Save(settings);
+            }
+            catch (Exception ex)
+            {
+                _services.AdminLogger.Error("admin_hu_reset_sequence failed", ex);
+                MessageBox.Show("HU удалены, но не удалось сбросить счетчик. Проверьте доступ к файлу настроек.",
+                    "Администрирование", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            _services.AdminLogger.Info($"admin_hu_delete_issued removed={removed}");
+            MessageBox.Show($"Удалено HU: {removed}. Счетчик HU сброшен.", "Администрирование", MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            _services.AdminLogger.Error("admin_hu_delete_issued failed", ex);
             MessageBox.Show(ex.Message, "Администрирование", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -181,8 +245,20 @@ public partial class AdminWindow : Window
         {
             if (ResetMovementsRadio.IsChecked == true)
             {
+                var counts = _services.Admin.GetTableCounts();
+                if (!ConfirmHuPurgeIfNeeded(MovementResetTables))
+                {
+                    return;
+                }
+
                 _services.Admin.ResetMovements();
-                MessageBox.Show("Сброс движений выполнен.", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Information);
+                var huRemoved = TryPurgeNonIssuedHu(out var huError);
+                var summary = BuildDeleteSummary(counts, MovementResetTables, huRemoved);
+                if (!string.IsNullOrWhiteSpace(huError))
+                {
+                    summary += $"\n{huError}";
+                }
+                MessageBox.Show($"Сброс движений выполнен.\n{summary}", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             else if (SelectiveResetRadio.IsChecked == true)
             {
@@ -193,8 +269,14 @@ public partial class AdminWindow : Window
                     return;
                 }
 
+                var confirmText = $"Будут удалены данные из таблиц: {string.Join(", ", plan)}.";
+                if (ShouldPurgeHu(plan))
+                {
+                    confirmText += "\nТакже будут удалены все HU со статусом отличным от ISSUED.";
+                }
+                confirmText += " Продолжить?";
                 var confirm = MessageBox.Show(
-                    $"Будут удалены данные из таблиц: {string.Join(", ", plan)}. Продолжить?",
+                    confirmText,
                     "Администрирование",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Warning,
@@ -204,14 +286,33 @@ public partial class AdminWindow : Window
                     return;
                 }
 
+                var counts = _services.Admin.GetTableCounts();
                 _services.Admin.DeleteTables(plan);
-                MessageBox.Show("Удаление выполнено.", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Information);
+                var huRemoved = TryPurgeNonIssuedHu(out var huError, plan);
+                var summary = BuildDeleteSummary(counts, plan, huRemoved);
+                if (!string.IsNullOrWhiteSpace(huError))
+                {
+                    summary += $"\n{huError}";
+                }
+                MessageBox.Show($"Удаление выполнено.\n{summary}", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             else
             {
+                var counts = _services.Admin.GetTableCounts();
+                if (!ConfirmHuPurgeIfNeeded(TableOrder))
+                {
+                    return;
+                }
+
                 var archive = _services.Admin.FullReset();
+                var huRemoved = TryPurgeNonIssuedHu(out var huError);
+                var summary = BuildDeleteSummary(counts, TableOrder, huRemoved);
+                if (!string.IsNullOrWhiteSpace(huError))
+                {
+                    summary += $"\n{huError}";
+                }
                 MessageBox.Show(
-                    $"Полный сброс выполнен.\nАрхив: {archive}\nРекомендуется перезапустить приложение.",
+                    $"Полный сброс выполнен.\nАрхив: {archive}\n{summary}\nРекомендуется перезапустить приложение.",
                     "Администрирование",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -230,6 +331,57 @@ public partial class AdminWindow : Window
             _services.AdminLogger.Error("admin_reset failed", ex);
             MessageBox.Show(ex.Message, "Администрирование", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private bool ConfirmHuPurgeIfNeeded(IEnumerable<string> tables)
+    {
+        if (!ShouldPurgeHu(tables))
+        {
+            return true;
+        }
+
+        var confirm = MessageBox.Show(
+            "Сброс удалит также все HU со статусом отличным от ISSUED. Продолжить?",
+            "Администрирование",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        return confirm == MessageBoxResult.Yes;
+    }
+
+    private bool ShouldPurgeHu(IEnumerable<string> tables)
+    {
+        return tables.Any(table => HuImpactTables.Contains(table));
+    }
+
+    private int? TryPurgeNonIssuedHu(out string? error, IEnumerable<string>? tables = null)
+    {
+        error = null;
+        if (tables != null && !ShouldPurgeHu(tables))
+        {
+            return null;
+        }
+
+        if (!_services.HuRegistry.TryDeleteNonIssued(out var removed, out var huError))
+        {
+            error = huError ?? "Не удалось обновить реестр HU.";
+            return null;
+        }
+
+        return removed;
+    }
+
+    private static string BuildDeleteSummary(Dictionary<string, long> counts, IEnumerable<string> tables, int? huRemoved)
+    {
+        var parts = tables
+            .Select(table => counts.TryGetValue(table, out var count) ? $"{table}={count}" : $"{table}=0");
+        var summary = $"Удалено: {string.Join(", ", parts)}.";
+        if (huRemoved.HasValue)
+        {
+            summary += $" HU удалено (не ISSUED): {huRemoved.Value}.";
+        }
+
+        return summary;
     }
 
     private List<string> GetSelectedTables()

@@ -240,6 +240,68 @@ public sealed class HuRegistryService : IHuRegistryUpdater
         }
     }
 
+    public bool TryDeleteIssued(out int removed, out string? error)
+    {
+        removed = 0;
+        error = null;
+
+        lock (_sync)
+        {
+            if (!TryLoadInternal(out var snapshot, out error))
+            {
+                return false;
+            }
+
+            var issued = snapshot.Items
+                .Where(item => string.Equals(item.State, HuRegistryStates.Issued, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            removed = issued.Count;
+            if (removed == 0)
+            {
+                return true;
+            }
+
+            foreach (var item in issued)
+            {
+                snapshot.Items.Remove(item);
+            }
+
+            snapshot.UpdatedAt = NowIso();
+            return TrySaveInternal(snapshot, out error);
+        }
+    }
+
+    public bool TryDeleteNonIssued(out int removed, out string? error)
+    {
+        removed = 0;
+        error = null;
+
+        lock (_sync)
+        {
+            if (!TryLoadInternal(out var snapshot, out error))
+            {
+                return false;
+            }
+
+            var toRemove = snapshot.Items
+                .Where(item => !string.Equals(item.State, HuRegistryStates.Issued, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            removed = toRemove.Count;
+            if (removed == 0)
+            {
+                return true;
+            }
+
+            foreach (var item in toRemove)
+            {
+                snapshot.Items.Remove(item);
+            }
+
+            snapshot.UpdatedAt = NowIso();
+            return TrySaveInternal(snapshot, out error);
+        }
+    }
+
     private static void ApplyOutbound(HuRegistryItem entry, double qty)
     {
         var newQty = entry.QtyBase - qty;
