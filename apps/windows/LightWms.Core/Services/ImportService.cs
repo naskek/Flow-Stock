@@ -13,6 +13,7 @@ public sealed class ImportService
     private const string ReasonUnknownOp = "UNKNOWN_OP";
     private const string ReasonMissingField = "MISSING_FIELD";
     private const string ReasonUnknownLocation = "UNKNOWN_LOCATION";
+    private const string ReasonHuMismatch = "HU_MISMATCH";
 
     private readonly IDataStore _data;
     private readonly JsonSerializerOptions _jsonOptions;
@@ -181,6 +182,7 @@ public sealed class ImportService
                 return;
             }
 
+            var huCode = NormalizeHuCode(importEvent.HuCode);
             var docRef = string.IsNullOrWhiteSpace(importEvent.DocRef)
                 ? DocRefGenerator.Generate(store, importEvent.Type, importEvent.Timestamp.Date)
                 : importEvent.DocRef;
@@ -197,14 +199,32 @@ public sealed class ImportService
                     CreatedAt = importEvent.Timestamp,
                     ClosedAt = null,
                     PartnerId = partnerId,
-                    OrderRef = NormalizeOrderRef(importEvent.OrderRef)
+                    OrderRef = NormalizeOrderRef(importEvent.OrderRef),
+                    ShippingRef = huCode
                 });
                 doc = store.GetDoc(docId);
                 created = true;
             }
             else
             {
-                TryUpdateDocHeader(store, doc, importEvent);
+                if (HasHuMismatch(doc.ShippingRef, huCode))
+                {
+                    if (allowErrorInsert)
+                    {
+                        store.AddImportError(new ImportError
+                        {
+                            EventId = importEvent.EventId,
+                            Reason = ReasonHuMismatch,
+                            RawJson = rawJson,
+                            CreatedAt = DateTime.Now
+                        });
+                    }
+
+                    outcome = ImportOutcome.Error;
+                    return;
+                }
+
+                TryUpdateDocHeader(store, doc, importEvent, huCode);
             }
 
             if (doc == null)
@@ -265,7 +285,7 @@ public sealed class ImportService
         return string.IsNullOrWhiteSpace(orderRef) ? null : orderRef.Trim();
     }
 
-    private static void TryUpdateDocHeader(IDataStore store, Doc doc, ImportEvent importEvent)
+    private static void TryUpdateDocHeader(IDataStore store, Doc doc, ImportEvent importEvent, string? huCode)
     {
         if (doc.Status != DocStatus.Draft)
         {
@@ -274,13 +294,20 @@ public sealed class ImportService
 
         var partnerId = doc.PartnerId ?? ResolvePartnerId(store, importEvent);
         var orderRef = doc.OrderRef ?? NormalizeOrderRef(importEvent.OrderRef);
+        var shippingRef = doc.ShippingRef;
+        if (string.IsNullOrWhiteSpace(shippingRef) && !string.IsNullOrWhiteSpace(huCode))
+        {
+            shippingRef = huCode;
+        }
 
-        if (partnerId == doc.PartnerId && string.Equals(orderRef, doc.OrderRef, StringComparison.Ordinal))
+        if (partnerId == doc.PartnerId
+            && string.Equals(orderRef, doc.OrderRef, StringComparison.Ordinal)
+            && string.Equals(shippingRef, doc.ShippingRef, StringComparison.Ordinal))
         {
             return;
         }
 
-        store.UpdateDocHeader(doc.Id, partnerId, orderRef, doc.ShippingRef);
+        store.UpdateDocHeader(doc.Id, partnerId, orderRef, shippingRef);
     }
 
     private (Location? from, Location? to, bool valid) ResolveLocations(IDataStore store, ImportEvent importEvent)
@@ -386,7 +413,8 @@ public sealed class ImportService
             PartnerId = dto.PartnerId,
             PartnerCode = partnerCode,
             OrderRef = dto.OrderRef?.Trim(),
-            ReasonCode = dto.ReasonCode?.Trim()
+            ReasonCode = dto.ReasonCode?.Trim(),
+            HuCode = NormalizeHuCode(dto.HuCode)
         };
 
         return true;
@@ -453,6 +481,37 @@ public sealed class ImportService
         }
 
         return null;
+    }
+
+    private static bool HasHuMismatch(string? existingHu, string? incomingHu)
+    {
+        if (string.IsNullOrWhiteSpace(incomingHu))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(existingHu))
+        {
+            return false;
+        }
+
+        return !string.Equals(existingHu.Trim(), incomingHu.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? NormalizeHuCode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (!trimmed.StartsWith("HU-", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return trimmed.ToUpperInvariant();
     }
 
     private static IEnumerable<string> GetBarcodeVariants(string? barcode)
@@ -525,5 +584,8 @@ public sealed class ImportService
 
         [JsonPropertyName("reason_code")]
         public string? ReasonCode { get; set; }
+
+        [JsonPropertyName("hu_code")]
+        public string? HuCode { get; set; }
     }
 }

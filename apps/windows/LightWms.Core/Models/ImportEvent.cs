@@ -15,4 +15,5 @@ public sealed class ImportEvent
     public string? PartnerCode { get; init; }
     public string? OrderRef { get; init; }
     public string? ReasonCode { get; init; }
+    public string? HuCode { get; init; }
 }
