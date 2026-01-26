@@ -36,6 +36,7 @@ public partial class TsSyncWindow : Window
         LoadSettings();
         UpdateFolderText();
         LoadDevices();
+        Activated += Window_Activated;
     }
 
     private void LoadSettings()
@@ -45,6 +46,7 @@ public partial class TsSyncWindow : Window
 
     private void LoadDevices()
     {
+        var currentId = (TsdDeviceCombo.SelectedItem as TsdDeviceOption)?.Id;
         _devices.Clear();
         var devices = _settings.Tsd?.Devices ?? new List<TsdDevice>();
         foreach (var device in devices)
@@ -64,11 +66,24 @@ public partial class TsSyncWindow : Window
             return;
         }
 
-        var lastId = _settings.Tsd?.LastDeviceId;
-        var selected = !string.IsNullOrWhiteSpace(lastId)
-            ? _devices.FirstOrDefault(device => string.Equals(device.Id, lastId, StringComparison.OrdinalIgnoreCase))
+        var selected = !string.IsNullOrWhiteSpace(currentId)
+            ? _devices.FirstOrDefault(device => string.Equals(device.Id, currentId, StringComparison.OrdinalIgnoreCase))
             : null;
+        if (selected == null)
+        {
+            var lastId = _settings.Tsd?.LastDeviceId;
+            selected = !string.IsNullOrWhiteSpace(lastId)
+                ? _devices.FirstOrDefault(device => string.Equals(device.Id, lastId, StringComparison.OrdinalIgnoreCase))
+                : null;
+        }
         TsdDeviceCombo.SelectedItem = selected ?? _devices.FirstOrDefault();
+    }
+
+    private void Window_Activated(object? sender, EventArgs e)
+    {
+        LoadSettings();
+        UpdateFolderText();
+        LoadDevices();
     }
 
     private void UpdateFolderText()

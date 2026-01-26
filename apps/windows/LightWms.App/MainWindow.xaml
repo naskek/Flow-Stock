@@ -19,11 +19,11 @@
             </MenuItem>
             <MenuItem Header="Сервис">
                 <MenuItem Header="Синхронизация с ТСД..." Click="OpenTsdSync_Click" />
+                <MenuItem Header="Устройства ТСД..." Click="OpenTsdDevices_Click" />
                 <Separator />
                 <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
                 <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
                 <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
-                <MenuItem Header="Генератор HU..." Click="OpenHuGenerator_Click" />
                 <Separator />
                 <MenuItem Header="Открыть папку данных" Click="OpenDataFolder_Click" />
                 <MenuItem Header="Открыть папку логов" Click="OpenLogsFolder_Click" />

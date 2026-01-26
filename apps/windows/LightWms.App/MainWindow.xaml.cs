@@ -1041,15 +1041,6 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
-    private void OpenHuGenerator_Click(object sender, RoutedEventArgs e)
-    {
-        var window = new HuGeneratorWindow(_services)
-        {
-            Owner = this
-        };
-        window.ShowDialog();
-    }
-
     private void OpenHuRegistry_Click(object sender, RoutedEventArgs e)
     {
         var window = new HuRegistryWindow(_services)
@@ -1091,6 +1082,15 @@ public partial class MainWindow : Window
     private void OpenTsdSync_Click(object sender, RoutedEventArgs e)
     {
         OpenTsdSyncWindow();
+    }
+
+    private void OpenTsdDevices_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new TsdDevicesWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
     }
 
     private void OpenTsdSyncWindow()
