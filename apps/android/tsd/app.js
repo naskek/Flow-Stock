@@ -1054,6 +1054,7 @@
           disabled: !isDraft,
         }) +
         '  <div class="field-error" id="toError"></div>' +
+        renderHuField(header, isDraft) +
         "</div>"
       );
     }
@@ -1093,7 +1094,8 @@
         (isDraft ? "" : "disabled") +
         ">+</button>" +
         "  </div>" +
-        '  <div class="field-hint is-hidden" id="orderHint">Нет списка заказов — импортируйте с ПК</div>' +
+        '  <div class="field-hint is-hidden" id="orderHint">Нет списка заказов - импортируйте с ПК</div>' +
+        renderHuField(header, isDraft) +
         "</div>"
       );
     }
@@ -1119,6 +1121,7 @@
           disabled: !isDraft,
         }) +
         '  <div class="field-error" id="toError"></div>' +
+        renderHuField(header, isDraft) +
         "</div>"
       );
     }
@@ -1143,6 +1146,7 @@
           disabled: !isDraft,
         }) +
         '  <div class="field-error" id="reasonError"></div>' +
+        renderHuField(header, isDraft) +
         "</div>"
       );
     }
@@ -1159,6 +1163,7 @@
           disabled: !isDraft,
         }) +
         '  <div class="field-error" id="locationError"></div>' +
+        renderHuField(header, isDraft) +
         "</div>"
       );
     }
@@ -2259,6 +2264,9 @@
     var reasonPickBtn = document.getElementById("reasonPickBtn");
     var reasonErrorEl = document.getElementById("reasonError");
     var partnerErrorEl = document.getElementById("partnerError");
+    var huInput = document.getElementById("huInput");
+    var huScanBtn = document.getElementById("huScanBtn");
+    var huErrorEl = document.getElementById("huError");
     var orderHint = document.getElementById("orderHint");
     var dataStatus = null;
     var lookupToken = 0;
@@ -2772,9 +2780,13 @@
     function validateBeforeFinish() {
       var valid = true;
       setPartnerError("");
+      setHuError("");
       setLocationError("from", "");
       setLocationError("to", "");
       setLocationError("location", "");
+      if (!applyHuValue(doc.header.hu, true)) {
+        valid = false;
+      }
       if (doc.op === "INBOUND") {
         if (!doc.header.partner_id) {
           setPartnerError("Выберите поставщика");
@@ -2943,6 +2955,35 @@
       }
     }
 
+    function setHuError(message) {
+      if (huErrorEl) {
+        huErrorEl.textContent = message || "";
+      }
+    }
+
+    function applyHuValue(rawValue, showAlert) {
+      var normalized = normalizeHuCode(rawValue);
+      if (normalized === null) {
+        var message = "Это товарный код. Для контейнера нужен HU-...";
+        setHuError(message);
+        if (showAlert) {
+          alert(message);
+        }
+        if (huInput) {
+          huInput.value = normalizeValue(doc.header.hu);
+        }
+        return false;
+      }
+
+      setHuError("");
+      doc.header.hu = normalized;
+      if (huInput) {
+        huInput.value = normalized;
+      }
+      saveDocState();
+      return true;
+    }
+
     function clearScanBuffer() {
       scanBuffer = "";
       if (scanBufferTimer) {
@@ -2967,6 +3008,12 @@
     function handleScannedValue(value) {
       var trimmed = normalizeValue(value);
       if (!trimmed) {
+        return;
+      }
+      if (scanTarget.type === "hu") {
+        applyHuValue(trimmed, true);
+        setScanTarget("barcode");
+        enterScanMode();
         return;
       }
       handleAddLine(trimmed);
@@ -3000,6 +3047,8 @@
         if (barcodeInput && scanTarget.type === "barcode") {
           barcodeInput.value = scanBuffer;
           updateScanInfoByBarcode(scanBuffer);
+        } else if (huInput && scanTarget.type === "hu") {
+          huInput.value = scanBuffer;
         }
       }
     }
@@ -3308,6 +3357,9 @@
         if (!field) {
           return;
         }
+        if (field === "hu") {
+          return;
+        }
         doc.header[field] = input.value;
         if (field === "partner") {
           doc.header.partner_id = null;
@@ -3333,6 +3385,40 @@
         input.addEventListener("input", handler);
       }
     });
+
+    if (huInput) {
+      huInput.addEventListener("input", function () {
+        setHuError("");
+      });
+      huInput.addEventListener("blur", function () {
+        applyHuValue(huInput.value, true);
+      });
+      huInput.addEventListener("focus", function () {
+        setScanTarget("hu");
+        enterScanMode();
+      });
+      huInput.addEventListener("click", function () {
+        setScanTarget("hu");
+        enterScanMode();
+      });
+      huInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          applyHuValue(huInput.value, true);
+        }
+      });
+    }
+
+    if (huScanBtn) {
+      huScanBtn.addEventListener("click", function () {
+        if (!isDraftDoc) {
+          return;
+        }
+        setScanTarget("hu");
+        setDocStatus("Сканируйте HU");
+        enterScanMode();
+      });
+    }
 
     locationFieldInputs.forEach(function (input) {
       var field = input.getAttribute("data-location-field");
@@ -3592,6 +3678,7 @@
       return {
         partner: "",
         partner_id: null,
+        hu: "",
         to: "",
         to_name: null,
         to_id: null,
@@ -3602,6 +3689,7 @@
       return {
         partner: "",
         partner_id: null,
+        hu: "",
         order_id: null,
         order_ref: "",
         from: "",
@@ -3612,6 +3700,7 @@
     }
     if (op === "MOVE") {
       return {
+        hu: "",
         from: "",
         from_name: null,
         from_id: null,
@@ -3623,6 +3712,7 @@
     }
     if (op === "WRITE_OFF") {
       return {
+        hu: "",
         from: "",
         from_name: null,
         from_id: null,
@@ -3633,6 +3723,7 @@
     }
     if (op === "INVENTORY") {
       return {
+        hu: "",
         location: "",
         location_name: null,
         location_id: null,
@@ -3645,6 +3736,17 @@
   function normalizeValue(value) {
     var trimmed = String(value || "").trim();
     return trimmed ? trimmed : "";
+  }
+
+  function normalizeHuCode(value) {
+    var trimmed = normalizeValue(value);
+    if (!trimmed) {
+      return "";
+    }
+    if (trimmed.toUpperCase().indexOf("HU-") !== 0) {
+      return null;
+    }
+    return trimmed.toUpperCase();
   }
 
   function getMissingLocationFields(doc) {
@@ -3833,6 +3935,7 @@
           var fallbackFrom = normalizeValue(header.from) || null;
           var fallbackTo = normalizeValue(header.to) || null;
           var fallbackReason = normalizeValue(header.reason_code) || null;
+          var huCode = normalizeHuCode(header.hu);
           if (doc.op === "INVENTORY") {
             fallbackTo = normalizeValue(header.location) || null;
           }
@@ -3852,6 +3955,7 @@
               order_id: header.order_id ? header.order_id : null,
               order_ref: header.order_ref ? header.order_ref : null,
               reason_code: line.reason_code || fallbackReason,
+              hu_code: huCode || null,
             };
             opLines.push(JSON.stringify(record));
           });
@@ -4003,6 +4107,7 @@
           var fallbackFrom = normalizeValue(header.from) || null;
           var fallbackTo = normalizeValue(header.to) || null;
           var fallbackReason = normalizeValue(header.reason_code) || null;
+          var huCode = normalizeHuCode(header.hu);
           if (doc.op === "INVENTORY") {
             fallbackTo = normalizeValue(header.location) || null;
           }
@@ -4022,6 +4127,7 @@
               order_id: header.order_id ? header.order_id : null,
               order_ref: header.order_ref ? header.order_ref : null,
               reason_code: line.reason_code || fallbackReason,
+              hu_code: huCode || null,
             };
             lines.push(JSON.stringify(record));
           });
@@ -4102,6 +4208,24 @@
       disabled +
       ">+</button>" +
       "  </div>"
+    );
+  }
+
+  function renderHuField(header, isDraft) {
+    var huValue = normalizeValue(header.hu);
+    return (
+      '  <div class="field-row field-row-4" id="huPickerRow">' +
+      '    <div class="field-label">HU</div>' +
+      '    <input class="form-input" id="huInput" data-header="hu" type="text" placeholder="HU-..." value="' +
+      escapeHtml(huValue) +
+      '" ' +
+      (isDraft ? "" : "disabled") +
+      " />" +
+      '    <button class="btn btn-outline field-pick" id="huScanBtn" type="button" ' +
+      (isDraft ? "" : "disabled") +
+      ">Сканировать</button>" +
+      "  </div>" +
+      '  <div class="field-error" id="huError"></div>'
     );
   }
 
