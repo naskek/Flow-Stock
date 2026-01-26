@@ -2987,12 +2987,28 @@
         }
       }
 
+      function setQuickActive(value) {
+        quickBtns.forEach(function (btn) {
+          var step = parseInt(btn.getAttribute("data-step"), 10) || 1;
+          btn.classList.toggle("is-active", step === value);
+        });
+      }
+
       quickBtns.forEach(function (btn) {
         btn.addEventListener("click", function () {
           var value = parseInt(btn.getAttribute("data-step"), 10) || 1;
-          submit(value);
+          if (input) {
+            input.value = value;
+          }
+          setQuickActive(value);
         });
       });
+
+      if (input) {
+        input.addEventListener("input", function () {
+          setQuickActive(normalizeQtyStep(input.value));
+        });
+      }
 
       overlay.addEventListener("click", function (event) {
         if (event.target === overlay) {
@@ -3007,10 +3023,7 @@
       });
 
       document.addEventListener("keydown", onKeyDown);
-      if (input) {
-        input.focus();
-        input.select();
-      }
+      setQuickActive(normalizeQtyStep(qtyStep));
     }
 
     function setPartnerError(message) {

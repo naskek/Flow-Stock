@@ -1214,6 +1214,12 @@ body.modal-open {
   font-size: 16px;
 }
 
+.qty-overlay-quick-btn.is-active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
 .qty-overlay-input {
   font-size: 20px;
 }
