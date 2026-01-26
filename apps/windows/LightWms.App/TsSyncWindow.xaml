@@ -48,6 +48,13 @@
                     <DataGrid x:Name="ImportLogGrid" Grid.Row="3" AutoGenerateColumns="False" IsReadOnly="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Файл" Binding="{Binding FileName}" Width="*" />
+                            <DataGridTextColumn Header="Устройство" Binding="{Binding DeviceDisplay}" Width="140">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="ToolTip" Value="{Binding DeviceTooltip}" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
                             <DataGridTextColumn Header="Документы" Binding="{Binding Documents}" Width="120" />
                             <DataGridTextColumn Header="Строки" Binding="{Binding Lines}" Width="120" />
                             <DataGridTextColumn Header="Импортировано" Binding="{Binding Imported}" Width="140" />

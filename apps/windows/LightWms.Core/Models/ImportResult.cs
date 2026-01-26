@@ -8,4 +8,5 @@ public sealed class ImportResult
     public int DocumentsCreated { get; set; }
     public int LinesImported { get; set; }
     public int HuRegistryErrors { get; set; }
+    public IReadOnlyList<string> DeviceIds { get; set; } = Array.Empty<string>();
 }

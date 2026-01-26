@@ -32,6 +32,7 @@ public sealed class ImportService
     public ImportResult ImportJsonl(string filePath)
     {
         var result = new ImportResult();
+        var deviceIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var line in File.ReadLines(filePath))
         {
@@ -51,6 +52,11 @@ public sealed class ImportService
                 });
                 result.Errors++;
                 continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(importEvent!.DeviceId))
+            {
+                deviceIds.Add(importEvent.DeviceId.Trim());
             }
 
             var outcome = ProcessEvent(importEvent!, line, filePath, allowErrorInsert: true, out var docCreated, out var huRegistryError);
@@ -78,6 +84,7 @@ public sealed class ImportService
             }
         }
 
+        result.DeviceIds = deviceIds.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToList();
         return result;
     }
 

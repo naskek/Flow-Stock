@@ -211,7 +211,7 @@ public partial class TsSyncWindow : Window
         builder.AppendLine();
         foreach (var log in _importLogs)
         {
-            builder.AppendLine($"{log.FileName} | Документы: {log.Documents} | Строки: {log.Lines} | Импортировано: {log.Imported} | Дубли: {log.Duplicates} | Ошибки: {log.Errors} | HU: {log.HuRegistryErrors}");
+            builder.AppendLine($"{log.FileName} | Устройство: {log.DeviceSummary} | Документы: {log.Documents} | Строки: {log.Lines} | Импортировано: {log.Imported} | Дубли: {log.Duplicates} | Ошибки: {log.Errors} | HU: {log.HuRegistryErrors}");
         }
 
         File.WriteAllText(dialog.FileName, builder.ToString(), Encoding.UTF8);
@@ -250,9 +250,13 @@ public partial class TsSyncWindow : Window
             try
             {
                 var result = _services.Import.ImportJsonl(file);
+                var deviceInfo = BuildDeviceInfo(result.DeviceIds);
                 _importLogs.Add(new ImportFileLog
                 {
                     FileName = Path.GetFileName(file),
+                    DeviceDisplay = deviceInfo.Display,
+                    DeviceTooltip = deviceInfo.Tooltip,
+                    DeviceSummary = deviceInfo.Summary,
                     Documents = result.DocumentsCreated,
                     Lines = result.LinesImported,
                     Imported = result.Imported,
@@ -266,9 +270,13 @@ public partial class TsSyncWindow : Window
             catch (Exception ex)
             {
                 _services.AppLogger.Error($"TSD import failed file={file}", ex);
+                var deviceInfo = BuildDeviceInfo(Array.Empty<string>());
                 _importLogs.Add(new ImportFileLog
                 {
                     FileName = Path.GetFileName(file),
+                    DeviceDisplay = deviceInfo.Display,
+                    DeviceTooltip = deviceInfo.Tooltip,
+                    DeviceSummary = deviceInfo.Summary,
                     Documents = 0,
                     Lines = 0,
                     Imported = 0,
@@ -560,9 +568,29 @@ public partial class TsSyncWindow : Window
         return new DateTimeOffset(local).ToString("O", CultureInfo.InvariantCulture);
     }
 
+    private static DeviceInfo BuildDeviceInfo(IReadOnlyList<string>? deviceIds)
+    {
+        if (deviceIds == null || deviceIds.Count == 0)
+        {
+            return new DeviceInfo("-", null, "-");
+        }
+
+        if (deviceIds.Count == 1)
+        {
+            var id = deviceIds[0];
+            return new DeviceInfo(id, null, id);
+        }
+
+        var list = string.Join(", ", deviceIds);
+        return new DeviceInfo("MIXED", list, list);
+    }
+
     private sealed class ImportFileLog
     {
         public string FileName { get; init; } = string.Empty;
+        public string DeviceDisplay { get; init; } = "-";
+        public string DeviceSummary { get; init; } = "-";
+        public string? DeviceTooltip { get; init; }
         public int Documents { get; init; }
         public int Lines { get; init; }
         public int Imported { get; init; }
@@ -570,6 +598,8 @@ public partial class TsSyncWindow : Window
         public int Errors { get; init; }
         public int HuRegistryErrors { get; init; }
     }
+
+    private sealed record DeviceInfo(string Display, string? Tooltip, string Summary);
 
     private sealed record TsdDeviceOption(string Id, string Name)
     {
