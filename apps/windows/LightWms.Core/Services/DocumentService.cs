@@ -371,7 +371,7 @@ public sealed class DocumentService
             throw new InvalidOperationException("Товар не найден.");
         }
 
-        ValidateLineLocations(doc.Type, fromLocationId, toLocationId);
+        ValidateLineLocations(doc.Type, fromLocationId, toLocationId, doc.ShippingRef);
 
         _data.AddDocLine(new DocLine
         {
@@ -480,9 +480,11 @@ public sealed class DocumentService
                     {
                         check.Errors.Add($"{rowLabel}: требуются оба места хранения (откуда/куда).");
                     }
-                    else if (line.FromLocationId.Value == line.ToLocationId.Value)
+                    else if (line.FromLocationId.Value == line.ToLocationId.Value
+                             && string.IsNullOrWhiteSpace(doc.ShippingRef))
                     {
-                        check.Errors.Add($"{rowLabel}: места хранения откуда/куда должны быть разными.");
+                        check.Errors.Add(
+                            $"{rowLabel}: места хранения откуда/куда должны быть разными. Если вы хотите упаковать в HU в том же месте — заполните HU.");
                     }
                     break;
             }
@@ -553,7 +555,7 @@ public sealed class DocumentService
         return value.ToString("0.###", CultureInfo.CurrentCulture);
     }
 
-    private static void ValidateLineLocations(DocType type, long? fromLocationId, long? toLocationId)
+    private static void ValidateLineLocations(DocType type, long? fromLocationId, long? toLocationId, string? shippingRef)
     {
         switch (type)
         {
@@ -576,9 +578,10 @@ public sealed class DocumentService
                 {
                     throw new ArgumentException("Для перемещения требуются оба места хранения (откуда/куда).");
                 }
-                if (fromLocationId.Value == toLocationId.Value)
+                if (fromLocationId.Value == toLocationId.Value && string.IsNullOrWhiteSpace(shippingRef))
                 {
-                    throw new ArgumentException("Места хранения откуда/куда должны быть разными.");
+                    throw new ArgumentException(
+                        "Для перемещения места хранения должны быть разными. Если вы хотите упаковать в HU в том же месте — заполните HU.");
                 }
                 break;
         }

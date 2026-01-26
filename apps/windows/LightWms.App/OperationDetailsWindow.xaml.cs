@@ -1316,8 +1316,12 @@ public partial class OperationDetailsWindow : Window
                 }
                 if (fromLocation.Id == toLocation.Id)
                 {
-                    MessageBox.Show("Для перемещения места хранения откуда/куда должны быть разными.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return false;
+                    if (string.IsNullOrWhiteSpace(doc.ShippingRef))
+                    {
+                        MessageBox.Show("Для перемещения места хранения должны быть разными. Если вы хотите упаковать в HU в том же месте — заполните HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return false;
+                    }
+                    return true;
                 }
                 return true;
             default:
