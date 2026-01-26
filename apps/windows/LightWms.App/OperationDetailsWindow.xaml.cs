@@ -332,7 +332,24 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        TrySyncHuRegistry();
         Close();
+    }
+
+    private void TrySyncHuRegistry()
+    {
+        try
+        {
+            if (!_services.HuRegistry.TrySyncFromLedger(_services.DataStore, out _, out var error))
+            {
+                MessageBox.Show(error ?? "Не удалось обновить реестр HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("HU registry sync failed", ex);
+            MessageBox.Show("Не удалось обновить реестр HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void DocAddLine_Click(object sender, RoutedEventArgs e)

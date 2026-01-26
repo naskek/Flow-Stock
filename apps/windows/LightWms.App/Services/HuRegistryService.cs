@@ -302,6 +302,93 @@ public sealed class HuRegistryService : IHuRegistryUpdater
         }
     }
 
+    public bool TrySyncFromLedger(IDataStore store, out int updated, out string? error)
+    {
+        updated = 0;
+        error = null;
+
+        if (store == null)
+        {
+            error = "Источник данных не задан.";
+            return false;
+        }
+
+        lock (_sync)
+        {
+            if (!TryLoadInternal(out var snapshot, out error))
+            {
+                return false;
+            }
+
+            var totals = store.GetLedgerTotalsByHu();
+            var indexed = snapshot.Items
+                .Where(item => !string.IsNullOrWhiteSpace(item.Code))
+                .ToDictionary(item => item.Code!, item => item, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var entry in indexed.Values)
+            {
+                if (!totals.TryGetValue(entry.Code!, out var qty) || qty <= 0.000001)
+                {
+                    var nextState = string.Equals(entry.State, HuRegistryStates.Issued, StringComparison.OrdinalIgnoreCase)
+                        ? HuRegistryStates.Issued
+                        : HuRegistryStates.Unknown;
+                    if (!string.Equals(entry.State, nextState, StringComparison.OrdinalIgnoreCase))
+                    {
+                        entry.State = nextState;
+                        updated++;
+                    }
+                    if (entry.QtyBase != 0)
+                    {
+                        entry.QtyBase = 0;
+                        updated++;
+                    }
+                    continue;
+                }
+
+                if (!string.Equals(entry.State, HuRegistryStates.InStock, StringComparison.OrdinalIgnoreCase))
+                {
+                    entry.State = HuRegistryStates.InStock;
+                    updated++;
+                }
+                if (Math.Abs(entry.QtyBase - qty) > 0.000001)
+                {
+                    entry.QtyBase = qty;
+                    updated++;
+                }
+            }
+
+            foreach (var entry in totals)
+            {
+                if (entry.Value <= 0.000001)
+                {
+                    continue;
+                }
+
+                if (indexed.ContainsKey(entry.Key))
+                {
+                    continue;
+                }
+
+                snapshot.Items.Add(new HuRegistryItem
+                {
+                    Code = entry.Key,
+                    State = HuRegistryStates.InStock,
+                    QtyBase = entry.Value,
+                    UpdatedAt = NowIso()
+                });
+                updated++;
+            }
+
+            if (updated == 0)
+            {
+                return true;
+            }
+
+            snapshot.UpdatedAt = NowIso();
+            return TrySaveInternal(snapshot, out error);
+        }
+    }
+
     private static void ApplyOutbound(HuRegistryItem entry, double qty)
     {
         var newQty = entry.QtyBase - qty;
