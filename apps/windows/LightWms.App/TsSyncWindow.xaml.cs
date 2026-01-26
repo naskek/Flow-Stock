@@ -211,7 +211,7 @@ public partial class TsSyncWindow : Window
         builder.AppendLine();
         foreach (var log in _importLogs)
         {
-            builder.AppendLine($"{log.FileName} | Устройство: {log.DeviceSummary} | Документы: {log.Documents} | Строки: {log.Lines} | Импортировано: {log.Imported} | Дубли: {log.Duplicates} | Ошибки: {log.Errors} | HU: {log.HuRegistryErrors}");
+            builder.AppendLine($"{log.FileName} | Устройство: {log.DeviceSummary} | Товары: {log.ItemsUpserted} | Операции: {log.OperationsImported} | Документы: {log.Documents} | Строки: {log.Lines} | Импортировано: {log.Imported} | Дубли: {log.Duplicates} | Ошибки: {log.Errors} | HU: {log.HuRegistryErrors}");
         }
 
         File.WriteAllText(dialog.FileName, builder.ToString(), Encoding.UTF8);
@@ -257,6 +257,8 @@ public partial class TsSyncWindow : Window
                     DeviceDisplay = deviceInfo.Display,
                     DeviceTooltip = deviceInfo.Tooltip,
                     DeviceSummary = deviceInfo.Summary,
+                    ItemsUpserted = result.ItemsUpserted,
+                    OperationsImported = result.OperationsImported,
                     Documents = result.DocumentsCreated,
                     Lines = result.LinesImported,
                     Imported = result.Imported,
@@ -277,6 +279,8 @@ public partial class TsSyncWindow : Window
                     DeviceDisplay = deviceInfo.Display,
                     DeviceTooltip = deviceInfo.Tooltip,
                     DeviceSummary = deviceInfo.Summary,
+                    ItemsUpserted = 0,
+                    OperationsImported = 0,
                     Documents = 0,
                     Lines = 0,
                     Imported = 0,
@@ -591,6 +595,8 @@ public partial class TsSyncWindow : Window
         public string DeviceDisplay { get; init; } = "-";
         public string DeviceSummary { get; init; } = "-";
         public string? DeviceTooltip { get; init; }
+        public int ItemsUpserted { get; init; }
+        public int OperationsImported { get; init; }
         public int Documents { get; init; }
         public int Lines { get; init; }
         public int Imported { get; init; }

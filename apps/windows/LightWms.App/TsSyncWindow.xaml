@@ -55,6 +55,8 @@
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
+                            <DataGridTextColumn Header="Товары" Binding="{Binding ItemsUpserted}" Width="90" />
+                            <DataGridTextColumn Header="Операции" Binding="{Binding OperationsImported}" Width="110" />
                             <DataGridTextColumn Header="Документы" Binding="{Binding Documents}" Width="120" />
                             <DataGridTextColumn Header="Строки" Binding="{Binding Lines}" Width="120" />
                             <DataGridTextColumn Header="Импортировано" Binding="{Binding Imported}" Width="140" />

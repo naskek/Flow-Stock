@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LightWms.Core.Abstractions;
@@ -41,11 +43,11 @@ public sealed class ImportService
                 continue;
             }
 
-            if (!TryParseEvent(line, out var importEvent, out var errorReason))
+            if (!TryParseLine(line, out var importEvent, out var itemUpsertEvent, out var errorReason))
             {
                 _data.AddImportError(new ImportError
                 {
-                    EventId = importEvent?.EventId,
+                    EventId = importEvent?.EventId ?? itemUpsertEvent?.EventId,
                     Reason = errorReason ?? ReasonInvalidJson,
                     RawJson = line,
                     CreatedAt = DateTime.Now
@@ -54,33 +56,89 @@ public sealed class ImportService
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(importEvent!.DeviceId))
+            if (itemUpsertEvent != null)
+            {
+                if (!string.IsNullOrWhiteSpace(itemUpsertEvent.DeviceId))
+                {
+                    deviceIds.Add(itemUpsertEvent.DeviceId.Trim());
+                }
+
+                ImportOutcome outcome;
+                try
+                {
+                    outcome = ProcessItemUpsert(itemUpsertEvent, line, filePath, allowErrorInsert: true);
+                }
+                catch
+                {
+                    _data.AddImportError(new ImportError
+                    {
+                        EventId = itemUpsertEvent.EventId,
+                        Reason = ReasonInvalidJson,
+                        RawJson = line,
+                        CreatedAt = DateTime.Now
+                    });
+                    outcome = ImportOutcome.Error;
+                }
+
+                switch (outcome)
+                {
+                    case ImportOutcome.Imported:
+                        result.Imported++;
+                        result.ItemsUpserted++;
+                        break;
+                    case ImportOutcome.Duplicate:
+                        result.Duplicates++;
+                        break;
+                    case ImportOutcome.Error:
+                        result.Errors++;
+                        break;
+                }
+
+                continue;
+            }
+
+            if (importEvent != null && !string.IsNullOrWhiteSpace(importEvent.DeviceId))
             {
                 deviceIds.Add(importEvent.DeviceId.Trim());
             }
 
-            var outcome = ProcessEvent(importEvent!, line, filePath, allowErrorInsert: true, out var docCreated, out var huRegistryError);
-            switch (outcome)
+            try
             {
-                case ImportOutcome.Imported:
-                    result.Imported++;
-                    result.LinesImported++;
-                    if (docCreated)
-                    {
-                        result.DocumentsCreated++;
-                    }
-                    break;
-                case ImportOutcome.Duplicate:
-                    result.Duplicates++;
-                    break;
-                case ImportOutcome.Error:
-                    result.Errors++;
-                    break;
-            }
+                var outcome = ProcessEvent(importEvent!, line, filePath, allowErrorInsert: true, out var docCreated, out var huRegistryError);
+                switch (outcome)
+                {
+                    case ImportOutcome.Imported:
+                        result.Imported++;
+                        result.OperationsImported++;
+                        result.LinesImported++;
+                        if (docCreated)
+                        {
+                            result.DocumentsCreated++;
+                        }
+                        break;
+                    case ImportOutcome.Duplicate:
+                        result.Duplicates++;
+                        break;
+                    case ImportOutcome.Error:
+                        result.Errors++;
+                        break;
+                }
 
-            if (huRegistryError)
+                if (huRegistryError)
+                {
+                    result.HuRegistryErrors++;
+                }
+            }
+            catch
             {
-                result.HuRegistryErrors++;
+                _data.AddImportError(new ImportError
+                {
+                    EventId = importEvent?.EventId,
+                    Reason = ReasonInvalidJson,
+                    RawJson = line,
+                    CreatedAt = DateTime.Now
+                });
+                result.Errors++;
             }
         }
 
@@ -167,6 +225,10 @@ public sealed class ImportService
                         break;
                     }
                 }
+            }
+            if (item == null)
+            {
+                item = TryCreateFallbackItem(store, importEvent.Barcode);
             }
             if (item == null)
             {
@@ -304,6 +366,129 @@ public sealed class ImportService
         return outcome;
     }
 
+    private ImportOutcome ProcessItemUpsert(ItemUpsertEvent itemEvent, string rawJson, string sourceFile, bool allowErrorInsert)
+    {
+        var outcome = ImportOutcome.Error;
+
+        _data.ExecuteInTransaction(store =>
+        {
+            if (store.IsEventImported(itemEvent.EventId))
+            {
+                outcome = ImportOutcome.Duplicate;
+                return;
+            }
+
+            var name = TrimToNull(itemEvent.Name);
+            var barcode = TrimToNull(itemEvent.Barcode);
+            var gtin = TrimToNull(itemEvent.Gtin);
+            if (string.IsNullOrWhiteSpace(name) || (string.IsNullOrWhiteSpace(barcode) && string.IsNullOrWhiteSpace(gtin)))
+            {
+                if (allowErrorInsert)
+                {
+                    store.AddImportError(new ImportError
+                    {
+                        EventId = itemEvent.EventId,
+                        Reason = ReasonMissingField,
+                        RawJson = rawJson,
+                        CreatedAt = DateTime.Now
+                    });
+                }
+
+                outcome = ImportOutcome.Error;
+                return;
+            }
+
+            var existing = FindItemByCodes(store, barcode, gtin);
+            var baseUom = TrimToNull(itemEvent.BaseUom);
+            if (string.IsNullOrWhiteSpace(baseUom))
+            {
+                baseUom = existing?.BaseUom ?? "шт";
+            }
+
+            if (existing == null)
+            {
+                var itemId = store.AddItem(new Item
+                {
+                    Name = name,
+                    Barcode = barcode,
+                    Gtin = gtin,
+                    BaseUom = baseUom,
+                    DefaultPackagingId = null
+                });
+                existing = store.FindItemById(itemId);
+            }
+            else
+            {
+                store.UpdateItem(new Item
+                {
+                    Id = existing.Id,
+                    Name = name,
+                    Barcode = barcode ?? existing.Barcode,
+                    Gtin = gtin ?? existing.Gtin,
+                    BaseUom = baseUom,
+                    DefaultPackagingId = existing.DefaultPackagingId
+                });
+            }
+
+            store.AddImportedEvent(new ImportedEvent
+            {
+                EventId = itemEvent.EventId,
+                ImportedAt = DateTime.Now,
+                SourceFile = Path.GetFileName(sourceFile),
+                DeviceId = itemEvent.DeviceId
+            });
+
+            outcome = ImportOutcome.Imported;
+        });
+
+        return outcome;
+    }
+
+    private static Item? TryCreateFallbackItem(IDataStore store, string? barcode)
+    {
+        var code = TrimToNull(barcode);
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return null;
+        }
+
+        try
+        {
+            var itemId = store.AddItem(new Item
+            {
+                Name = code,
+                Barcode = code,
+                Gtin = null,
+                BaseUom = "шт",
+                DefaultPackagingId = null
+            });
+            return store.FindItemById(itemId);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static Item? FindItemByCodes(IDataStore store, string? barcode, string? gtin)
+    {
+        if (!string.IsNullOrWhiteSpace(barcode))
+        {
+            var item = store.FindItemByBarcode(barcode);
+            if (item != null)
+            {
+                return item;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(gtin))
+        {
+            return store.FindItemByBarcode(gtin);
+        }
+
+        return null;
+    }
+
     private static long? ResolvePartnerId(IDataStore store, ImportEvent importEvent)
     {
         if (importEvent.PartnerId.HasValue)
@@ -426,6 +611,60 @@ public sealed class ImportService
             return false;
         }
 
+        if (!string.IsNullOrWhiteSpace(dto.Event)
+            && !string.Equals(dto.Event.Trim(), "OP", StringComparison.OrdinalIgnoreCase))
+        {
+            errorReason = ReasonUnknownOp;
+            return false;
+        }
+
+        return TryBuildImportEvent(dto, out importEvent, out errorReason);
+    }
+
+    private bool TryParseLine(string rawJson, out ImportEvent? importEvent, out ItemUpsertEvent? itemUpsertEvent, out string? errorReason)
+    {
+        importEvent = null;
+        itemUpsertEvent = null;
+        errorReason = null;
+
+        ImportEventDto? dto;
+        try
+        {
+            dto = JsonSerializer.Deserialize<ImportEventDto>(rawJson, _jsonOptions);
+        }
+        catch (JsonException)
+        {
+            errorReason = ReasonInvalidJson;
+            return false;
+        }
+
+        if (dto == null)
+        {
+            errorReason = ReasonInvalidJson;
+            return false;
+        }
+
+        var eventType = dto.Event?.Trim();
+        if (string.Equals(eventType, "ITEM_UPSERT", StringComparison.OrdinalIgnoreCase))
+        {
+            return TryBuildItemUpsertEvent(dto, rawJson, out itemUpsertEvent, out errorReason);
+        }
+
+        if (!string.IsNullOrWhiteSpace(eventType)
+            && !string.Equals(eventType, "OP", StringComparison.OrdinalIgnoreCase))
+        {
+            errorReason = ReasonUnknownOp;
+            return false;
+        }
+
+        return TryBuildImportEvent(dto, out importEvent, out errorReason);
+    }
+
+    private bool TryBuildImportEvent(ImportEventDto dto, out ImportEvent? importEvent, out string? errorReason)
+    {
+        importEvent = null;
+        errorReason = null;
+
         if (string.IsNullOrWhiteSpace(dto.EventId) ||
             string.IsNullOrWhiteSpace(dto.Op) ||
             string.IsNullOrWhiteSpace(dto.Barcode) ||
@@ -443,7 +682,6 @@ public sealed class ImportService
         }
 
         var timestamp = ParseTimestamp(dto.Ts) ?? DateTime.Now;
-
         var partnerCode = NormalizePartnerCode(dto.PartnerCode, dto.PartnerInn);
 
         importEvent = new ImportEvent
@@ -465,6 +703,68 @@ public sealed class ImportService
         };
 
         return true;
+    }
+
+    private bool TryBuildItemUpsertEvent(ImportEventDto dto, string rawJson, out ItemUpsertEvent? itemUpsertEvent, out string? errorReason)
+    {
+        itemUpsertEvent = null;
+        errorReason = null;
+
+        var item = dto.Item;
+        if (item == null)
+        {
+            errorReason = ReasonMissingField;
+            return false;
+        }
+
+        var name = TrimToNull(item.Name);
+        var barcode = TrimToNull(item.Barcode);
+        var gtin = TrimToNull(item.Gtin);
+        var baseUom = TrimToNull(item.BaseUom);
+
+        if (string.IsNullOrWhiteSpace(name) || (string.IsNullOrWhiteSpace(barcode) && string.IsNullOrWhiteSpace(gtin)))
+        {
+            errorReason = ReasonMissingField;
+            return false;
+        }
+
+        var eventId = TrimToNull(dto.EventId);
+        if (string.IsNullOrWhiteSpace(eventId))
+        {
+            eventId = BuildFallbackEventId(rawJson);
+        }
+
+        var timestamp = ParseTimestamp(dto.Ts) ?? DateTime.Now;
+
+        itemUpsertEvent = new ItemUpsertEvent
+        {
+            EventId = eventId,
+            Timestamp = timestamp,
+            DeviceId = dto.DeviceId?.Trim() ?? string.Empty,
+            Name = name,
+            Barcode = barcode,
+            Gtin = gtin,
+            BaseUom = baseUom
+        };
+
+        return true;
+    }
+
+    private static string BuildFallbackEventId(string rawJson)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return Guid.NewGuid().ToString();
+        }
+
+        using var sha256 = SHA256.Create();
+        var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(rawJson));
+        return "ITEM_UPSERT_" + Convert.ToHexString(hash);
+    }
+
+    private static string? TrimToNull(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     private static DateTime? ParseTimestamp(string? ts)
@@ -590,6 +890,12 @@ public sealed class ImportService
 
     private sealed class ImportEventDto
     {
+        [JsonPropertyName("schema_version")]
+        public int? SchemaVersion { get; set; }
+
+        [JsonPropertyName("event")]
+        public string? Event { get; set; }
+
         [JsonPropertyName("event_id")]
         public string? EventId { get; set; }
 
@@ -637,5 +943,34 @@ public sealed class ImportService
 
         [JsonPropertyName("handling_unit")]
         public string? HandlingUnit { get; set; }
+
+        [JsonPropertyName("item")]
+        public ItemUpsertDto? Item { get; set; }
+    }
+
+    private sealed class ItemUpsertDto
+    {
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("barcode")]
+        public string? Barcode { get; set; }
+
+        [JsonPropertyName("gtin")]
+        public string? Gtin { get; set; }
+
+        [JsonPropertyName("base_uom")]
+        public string? BaseUom { get; set; }
+    }
+
+    private sealed class ItemUpsertEvent
+    {
+        public string EventId { get; init; } = string.Empty;
+        public DateTime Timestamp { get; init; }
+        public string DeviceId { get; init; } = string.Empty;
+        public string Name { get; init; } = string.Empty;
+        public string? Barcode { get; init; }
+        public string? Gtin { get; init; }
+        public string? BaseUom { get; init; }
     }
 }
