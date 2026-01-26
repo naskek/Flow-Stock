@@ -1183,7 +1183,7 @@
   }
 
   function renderScanBlock(doc, isDraft) {
-    var qtyMode = doc.header && doc.header.qtyMode === "ASK" ? "ASK" : "INC1";
+    var qtyMode = doc.header && doc.header.qtyMode === "INC1" ? "INC1" : "ASK";
     return (
       '<div class="scan-card">' +
       '  <label class="form-label" for="barcodeInput">Штрихкод</label>' +
@@ -1193,7 +1193,7 @@
       '" data-mode="INC1" type="button">+1</button>' +
       '    <button class="btn qty-mode-btn' +
       (qtyMode === "ASK" ? " is-active" : "") +
-      '" data-mode="ASK" type="button">Кол-во...</button>' +
+      '" data-mode="ASK" type="button">Кол-во</button>' +
       "  </div>" +
       '  <div class="scan-input-row">' +
       '    <input class="form-input scan-input" id="barcodeInput" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly ' +
@@ -2437,7 +2437,7 @@
       }
     }
 
-    function openQuantityOverlay(barcode, onSelect) {
+    function openQuantityOverlay(barcode, item, onSelect) {
       if (!doc.status || doc.status !== "DRAFT") {
         return;
       }
@@ -2451,6 +2451,7 @@
           return '<button type="button" class="btn qty-overlay-quick-btn" data-qty="' + value + '">' + value + " шт</button>";
         })
         .join("");
+      var itemLabel = item && item.name ? String(item.name) : "";
       qtyOverlay.innerHTML =
         '<div class="overlay-card">' +
         '  <div class="overlay-header">' +
@@ -2458,6 +2459,9 @@
         '    <button class="btn btn-ghost overlay-close" type="button">✕</button>' +
         "  </div>" +
         '  <div class="qty-overlay-body">' +
+        (itemLabel
+          ? '    <div class="qty-overlay-item">' + escapeHtml(itemLabel) + "</div>"
+          : "") +
         '    <div class="qty-overlay-barcode">' +
         escapeHtml(barcode) +
         "</div>" +
@@ -2465,6 +2469,7 @@
         quickButtons +
         "    </div>" +
         '    <input class="form-input qty-overlay-input" type="number" min="1" value="1" />' +
+        '    <div class="field-error qty-overlay-error"></div>' +
         '    <div class="qty-overlay-actions">' +
         '      <button class="btn btn-outline" type="button" id="qtyCancel">Отмена</button>' +
         '      <button class="btn primary-btn" type="button" id="qtyOk">OK</button>' +
@@ -2478,16 +2483,26 @@
       var closeBtn = qtyOverlay.querySelector(".overlay-close");
       var quickButtonsEls = qtyOverlay.querySelectorAll(".qty-overlay-quick-btn");
 
+      function setQtyError(message) {
+        var errorEl = qtyOverlay.querySelector(".qty-overlay-error");
+        if (errorEl) {
+          errorEl.textContent = message || "";
+        }
+        if (quantityInput) {
+          quantityInput.classList.toggle("input-error", !!message);
+        }
+      }
+
       function tryApplyQuantity() {
         if (!quantityInput) {
           return;
         }
-        var value = parseInt(quantityInput.value, 10);
+        var value = parseFloat(quantityInput.value);
         if (!value || value <= 0) {
-          quantityInput.focus();
-          quantityInput.select();
+          setQtyError("Введите количество больше 0");
           return;
         }
+        setQtyError("");
         closeQuantityOverlay();
         if (typeof onSelect === "function") {
           onSelect(value);
@@ -2543,18 +2558,23 @@
       document.addEventListener("keydown", qtyOverlayKeyListener);
 
       if (quantityInput) {
-        quantityInput.focus();
-        quantityInput.select();
+        quantityInput.addEventListener("input", function () {
+          setQtyError("");
+        });
       }
     }
 
-    function addLineWithQuantity(barcode, quantity) {
+    function addLineWithQuantity(barcode, quantity, itemOverride) {
       var qtyValue = Number(quantity) || 0;
       if (!qtyValue || qtyValue <= 0) {
         focusBarcode();
         return;
       }
       var lineData = buildLineData(doc.op, doc.header);
+      if (itemOverride) {
+        finalizeLine(itemOverride);
+        return;
+      }
       TsdStorage.findItemByCode(barcode)
         .then(function (item) {
           if (item) {
@@ -2831,11 +2851,21 @@
         focusBarcode();
         return;
       }
-      var qtyMode = doc.header.qtyMode === "ASK" ? "ASK" : "INC1";
+      var qtyMode = doc.header.qtyMode === "INC1" ? "INC1" : "ASK";
       if (qtyMode === "ASK") {
-        openQuantityOverlay(barcode, function (quantity) {
-          addLineWithQuantity(barcode, quantity);
-        });
+        TsdStorage.findItemByCode(barcode)
+          .then(function (item) {
+            if (item) {
+              openQuantityOverlay(barcode, item, function (quantity) {
+                addLineWithQuantity(barcode, quantity, item);
+              });
+              return;
+            }
+            addLineWithQuantity(barcode, qtyStep);
+          })
+          .catch(function () {
+            addLineWithQuantity(barcode, qtyStep);
+          });
         return;
       }
       addLineWithQuantity(barcode, qtyStep);
@@ -3874,7 +3904,7 @@
         to: "",
         to_name: null,
         to_id: null,
-        qtyMode: "INC1",
+        qtyMode: "ASK",
       };
     }
     if (op === "OUTBOUND") {
@@ -3887,7 +3917,7 @@
         from: "",
         from_name: null,
         from_id: null,
-        qtyMode: "INC1",
+        qtyMode: "ASK",
       };
     }
     if (op === "MOVE") {
@@ -3899,7 +3929,7 @@
         to: "",
         to_name: null,
         to_id: null,
-        qtyMode: "INC1",
+        qtyMode: "ASK",
       };
     }
     if (op === "WRITE_OFF") {
@@ -3910,7 +3940,7 @@
         from_id: null,
         reason_code: null,
         reason_label: null,
-        qtyMode: "INC1",
+        qtyMode: "ASK",
       };
     }
     if (op === "INVENTORY") {
@@ -3919,7 +3949,7 @@
         location: "",
         location_name: null,
         location_id: null,
-        qtyMode: "INC1",
+        qtyMode: "ASK",
       };
     }
     return {};

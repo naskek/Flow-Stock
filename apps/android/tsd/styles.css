@@ -1203,6 +1203,12 @@ body.modal-open {
   color: #486581;
 }
 
+.qty-overlay-item {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1b3a57;
+}
+
 .qty-overlay-quick {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -1222,6 +1228,11 @@ body.modal-open {
 
 .qty-overlay-input {
   font-size: 20px;
+}
+
+.qty-overlay-error {
+  font-size: 12px;
+  color: #b23a2b;
 }
 
 .qty-overlay-actions {
