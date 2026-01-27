@@ -8,24 +8,33 @@ using LightWms.Data;
 using LightWms.Server;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.StaticFiles;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var dbPath = ResolveDbPath(builder.Configuration);
+
 builder.Services.AddSingleton<SqliteDataStore>(sp =>
 {
-    Directory.CreateDirectory(ServerPaths.BaseDir);
-    var store = new SqliteDataStore(ServerPaths.DatabasePath);
+    var directory = Path.GetDirectoryName(dbPath);
+    if (!string.IsNullOrWhiteSpace(directory))
+    {
+        Directory.CreateDirectory(directory);
+    }
+    var store = new SqliteDataStore(dbPath);
     store.Initialize();
     return store;
 });
 builder.Services.AddSingleton<LightWms.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<SqliteDataStore>());
 builder.Services.AddSingleton<DocumentService>();
-builder.Services.AddSingleton(new ApiDocStore(ServerPaths.DatabasePath));
+builder.Services.AddSingleton(new ApiDocStore(dbPath));
 
 var app = builder.Build();
 
 app.UseHttpsRedirection();
+
+LogDbInfo(app.Logger, dbPath);
 
 app.Use(async (context, next) =>
 {
@@ -75,6 +84,83 @@ app.MapGet("/api/ping", () =>
         server_time = DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture),
         version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown"
     });
+});
+
+app.MapGet("/api/diag/db", () =>
+{
+    var info = BuildDbInfo(dbPath);
+    return Results.Ok(info);
+});
+
+app.MapGet("/api/diag/counts", () =>
+{
+    using var connection = OpenConnection(dbPath);
+    return Results.Ok(new
+    {
+        items = CountTable(connection, "items"),
+        locations = CountTable(connection, "locations"),
+        partners = CountTable(connection, "partners"),
+        orders = CountTable(connection, "orders"),
+        docs = CountTable(connection, "docs"),
+        ledger = CountTable(connection, "ledger")
+    });
+});
+
+app.MapGet("/api/locations", (SqliteDataStore store) =>
+{
+    var locations = store.GetLocations()
+        .Select(location => new { id = location.Id, code = location.Code, name = location.Name })
+        .ToList();
+    return Results.Ok(locations);
+});
+
+app.MapGet("/api/items/by-barcode/{barcode}", (string barcode, SqliteDataStore store) =>
+{
+    if (string.IsNullOrWhiteSpace(barcode))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_BARCODE"));
+    }
+
+    var trimmed = barcode.Trim();
+    var item = store.FindItemByBarcode(trimmed) ?? FindItemByBarcodeVariant(store, trimmed);
+    if (item == null)
+    {
+        return Results.NotFound();
+    }
+
+    return Results.Ok(new
+    {
+        id = item.Id,
+        name = item.Name,
+        barcode = item.Barcode,
+        gtin = item.Gtin,
+        base_uom_code = item.BaseUom
+    });
+});
+
+app.MapGet("/api/stock", () =>
+{
+    using var connection = OpenConnection(dbPath);
+    using var command = connection.CreateCommand();
+    command.CommandText = @"
+SELECT item_id, location_id, COALESCE(SUM(qty_delta), 0) AS qty
+FROM ledger
+GROUP BY item_id, location_id
+HAVING qty != 0
+ORDER BY item_id, location_id;";
+    using var reader = command.ExecuteReader();
+    var rows = new List<object>();
+    while (reader.Read())
+    {
+        rows.Add(new
+        {
+            item_id = reader.GetInt64(0),
+            location_id = reader.GetInt64(1),
+            qty = reader.GetDouble(2)
+        });
+    }
+
+    return Results.Ok(rows);
 });
 
 app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
@@ -341,6 +427,52 @@ if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
 }
 
 app.Run();
+
+static string ResolveDbPath(IConfiguration configuration)
+{
+    var configured = configuration["DbPath"];
+    var path = string.IsNullOrWhiteSpace(configured) ? ServerPaths.DatabasePath : configured;
+    path = Environment.ExpandEnvironmentVariables(path);
+    return Path.GetFullPath(path);
+}
+
+static void LogDbInfo(ILogger logger, string dbPath)
+{
+    var info = BuildDbInfo(dbPath);
+    logger.LogInformation(
+        "DB: {Path} exists={Exists} size={Size} lastWriteUtc={LastWriteUtc}",
+        info.dbPath,
+        info.exists,
+        info.sizeBytes,
+        info.lastWriteUtc);
+}
+
+static object BuildDbInfo(string dbPath)
+{
+    var fileInfo = new FileInfo(dbPath);
+    return new
+    {
+        dbPath,
+        exists = fileInfo.Exists,
+        sizeBytes = fileInfo.Exists ? fileInfo.Length : 0,
+        lastWriteUtc = fileInfo.Exists ? fileInfo.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture) : null
+    };
+}
+
+static SqliteConnection OpenConnection(string dbPath)
+{
+    var connection = new SqliteConnection($"Data Source={dbPath}");
+    connection.Open();
+    return connection;
+}
+
+static long CountTable(SqliteConnection connection, string table)
+{
+    using var command = connection.CreateCommand();
+    command.CommandText = $"SELECT COUNT(*) FROM {table};";
+    var result = command.ExecuteScalar();
+    return result == null || result == DBNull.Value ? 0 : Convert.ToInt64(result, CultureInfo.InvariantCulture);
+}
 
 static string? NormalizeHu(string? value)
 {
