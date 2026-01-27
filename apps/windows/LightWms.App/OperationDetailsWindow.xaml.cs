@@ -1592,15 +1592,9 @@ public partial class OperationDetailsWindow : Window
                         return false;
                     }
 
-                    if (string.IsNullOrWhiteSpace(fromHu) || string.IsNullOrWhiteSpace(toHu))
+                    if (string.IsNullOrWhiteSpace(fromHu) && string.IsNullOrWhiteSpace(toHu))
                     {
-                        MessageBox.Show("Для внутреннего перемещения выберите HU-источник и HU-назначение.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        return false;
-                    }
-
-                    if (string.Equals(NormalizeHuValue(fromHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase))
-                    {
-                        MessageBox.Show("HU-источник и HU-назначение должны быть разными.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        MessageBox.Show("Для внутреннего перемещения укажите HU-источник или HU-назначение.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
                         return false;
                     }
 
@@ -1615,7 +1609,8 @@ public partial class OperationDetailsWindow : Window
                 }
 
                 if (fromLocation.Id == toLocation.Id
-                    && string.Equals(NormalizeHuValue(fromHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase))
+                    && string.IsNullOrWhiteSpace(NormalizeHuValue(fromHu))
+                    && string.IsNullOrWhiteSpace(NormalizeHuValue(toHu)))
                 {
                     MessageBox.Show("Для перемещения места хранения должны быть разными. Если вы хотите упаковать в HU в том же месте - заполните HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;

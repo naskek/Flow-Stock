@@ -692,15 +692,17 @@ public sealed class ImportService
         var fromHu = NormalizeHuCode(dto.FromHu);
         var toHu = NormalizeHuCode(dto.ToHu);
         var huCode = NormalizeHuCode(dto.HuCode ?? dto.HandlingUnit);
+        if (docType == DocType.Move && string.IsNullOrWhiteSpace(toHu) && !string.IsNullOrWhiteSpace(huCode))
+        {
+            toHu = huCode;
+        }
 
         if (docType == DocType.Move
             && !string.IsNullOrWhiteSpace(fromLocation)
             && !string.IsNullOrWhiteSpace(toLocation)
             && string.Equals(fromLocation, toLocation, StringComparison.OrdinalIgnoreCase))
         {
-            if (string.IsNullOrWhiteSpace(fromHu)
-                || string.IsNullOrWhiteSpace(toHu)
-                || string.Equals(fromHu, toHu, StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrWhiteSpace(fromHu) && string.IsNullOrWhiteSpace(toHu))
             {
                 errorReason = ReasonMoveHuRequired;
                 return false;
@@ -874,7 +876,13 @@ public sealed class ImportService
     {
         if (importEvent.Type == DocType.Move)
         {
-            return (NormalizeHuCode(importEvent.FromHu), NormalizeHuCode(importEvent.ToHu));
+            var fromHu = NormalizeHuCode(importEvent.FromHu);
+            var toHu = NormalizeHuCode(importEvent.ToHu);
+            if (string.IsNullOrWhiteSpace(toHu))
+            {
+                toHu = NormalizeHuCode(huCode);
+            }
+            return (fromHu, toHu);
         }
 
         var normalized = NormalizeHuCode(huCode);

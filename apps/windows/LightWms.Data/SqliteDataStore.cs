@@ -824,7 +824,7 @@ SELECT last_insert_rowid();
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT dl.id, dl.item_id, i.name, i.barcode, dl.qty, dl.qty_input, dl.uom_code, i.base_uom, lf.code, lt.code
+SELECT dl.id, dl.item_id, i.name, i.barcode, dl.qty, dl.qty_input, dl.uom_code, i.base_uom, lf.code, lt.code, dl.from_hu, dl.to_hu
 FROM doc_lines dl
 INNER JOIN items i ON i.id = dl.item_id
 LEFT JOIN locations lf ON lf.id = dl.from_location_id
@@ -848,7 +848,9 @@ ORDER BY dl.id;
                     UomCode = reader.IsDBNull(6) ? null : reader.GetString(6),
                     BaseUom = reader.IsDBNull(7) ? "шт" : reader.GetString(7),
                     FromLocation = reader.IsDBNull(8) ? null : reader.GetString(8),
-                    ToLocation = reader.IsDBNull(9) ? null : reader.GetString(9)
+                    ToLocation = reader.IsDBNull(9) ? null : reader.GetString(9),
+                    FromHu = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    ToHu = reader.IsDBNull(11) ? null : reader.GetString(11)
                 });
             }
 

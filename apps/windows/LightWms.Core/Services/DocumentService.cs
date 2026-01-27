@@ -207,6 +207,7 @@ public sealed class DocumentService
                                 .OrderBy(location => location.Code, StringComparer.OrdinalIgnoreCase)
                                 .ToList();
 
+                            var outboundHu = (string?)null;
                             foreach (var location in locations)
                             {
                                 if (remaining <= 0)
@@ -214,7 +215,7 @@ public sealed class DocumentService
                                     break;
                                 }
 
-                                var available = store.GetLedgerBalance(line.ItemId, location.Id, fromHu);
+                                var available = store.GetLedgerBalance(line.ItemId, location.Id, outboundHu);
                                 if (available <= 0)
                                 {
                                     continue;
@@ -228,7 +229,7 @@ public sealed class DocumentService
                                     ItemId = line.ItemId,
                                     LocationId = location.Id,
                                     QtyDelta = -take,
-                                    HuCode = fromHu
+                                    HuCode = outboundHu
                                 });
                                 remaining -= take;
                             }
@@ -503,7 +504,8 @@ public sealed class DocumentService
                         check.Errors.Add($"{rowLabel}: HU используется только для упаковки в рамках одного места. Очистите HU.");
                     }
                     else if (line.FromLocationId.Value == line.ToLocationId.Value
-                             && string.Equals(NormalizeHuValue(fromHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase))
+                             && string.IsNullOrWhiteSpace(NormalizeHuValue(fromHu))
+                             && string.IsNullOrWhiteSpace(NormalizeHuValue(toHu)))
                     {
                         check.Errors.Add(
                             $"{rowLabel}: места хранения откуда/куда должны быть разными. Если вы хотите упаковать в HU в том же месте - заполните HU.");
@@ -545,9 +547,10 @@ public sealed class DocumentService
 
         if (doc.Type == DocType.Outbound)
         {
+            var autoAllocation = lines.Any(line => !line.FromLocationId.HasValue);
             foreach (var entry in outboundByItem)
             {
-                var current = GetTotalAvailableQty(entry.Key, docHu, locations);
+                var current = GetTotalAvailableQty(entry.Key, autoAllocation ? null : docHu, locations);
                 var future = current - entry.Value;
                 if (future < 0)
                 {
@@ -605,7 +608,8 @@ public sealed class DocumentService
                     throw new ArgumentException("Для перемещения требуются оба места хранения (откуда/куда).");
                 }
                 if (fromLocationId.Value == toLocationId.Value
-                    && string.Equals(NormalizeHuValue(fromHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase))
+                    && string.IsNullOrWhiteSpace(NormalizeHuValue(fromHu))
+                    && string.IsNullOrWhiteSpace(NormalizeHuValue(toHu)))
                 {
                     throw new ArgumentException(
                         "Для перемещения места хранения должны быть разными. Если вы хотите упаковать в HU в том же месте - заполните HU.");
