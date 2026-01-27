@@ -162,7 +162,10 @@ CREATE TABLE IF NOT EXISTS api_events (
     event_id TEXT PRIMARY KEY,
     event_type TEXT NOT NULL,
     doc_uid TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    received_at TEXT,
+    device_id TEXT,
+    raw_json TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_api_events_doc ON api_events(doc_uid);
 CREATE TABLE IF NOT EXISTS stock_reservation_lines (
@@ -194,6 +197,9 @@ CREATE INDEX IF NOT EXISTS ix_stock_reservation_item_loc ON stock_reservation_li
         EnsureColumn(connection, "doc_lines", "to_hu", "TEXT");
         EnsureColumn(connection, "ledger", "hu", "TEXT");
         EnsureColumn(connection, "ledger", "hu_code", "TEXT");
+        EnsureColumn(connection, "api_events", "received_at", "TEXT");
+        EnsureColumn(connection, "api_events", "device_id", "TEXT");
+        EnsureColumn(connection, "api_events", "raw_json", "TEXT");
 
         EnsureIndex(connection, "ix_docs_order", "docs(order_id)");
         EnsureIndex(connection, "ix_item_packaging_item_code", "item_packaging(item_id, code)");

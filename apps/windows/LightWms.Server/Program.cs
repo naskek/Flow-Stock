@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Text.Json;
 using LightWms.Core.Models;
 using LightWms.Core.Services;
 using LightWms.Data;
@@ -74,6 +75,135 @@ app.MapGet("/api/ping", () =>
         server_time = DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture),
         version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown"
     });
+});
+
+app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
+{
+    string rawJson;
+    using (var reader = new StreamReader(request.Body))
+    {
+        rawJson = await reader.ReadToEndAsync();
+    }
+
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    OperationEventRequest? opEvent;
+    try
+    {
+        opEvent = JsonSerializer.Deserialize<OperationEventRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (opEvent == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (string.IsNullOrWhiteSpace(opEvent.EventId))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_EVENT_ID"));
+    }
+
+    if (apiStore.IsEventProcessed(opEvent.EventId))
+    {
+        return Results.Ok(new ApiResult(true));
+    }
+
+    if (!string.Equals(opEvent.Op, "MOVE", StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.BadRequest(new ApiResult(false, "UNSUPPORTED_OP"));
+    }
+
+    if (string.IsNullOrWhiteSpace(opEvent.DocRef))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_DOC_REF"));
+    }
+
+    if (string.IsNullOrWhiteSpace(opEvent.Barcode))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_BARCODE"));
+    }
+
+    if (opEvent.Qty <= 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_QTY"));
+    }
+
+    if (string.IsNullOrWhiteSpace(opEvent.FromLoc) || string.IsNullOrWhiteSpace(opEvent.ToLoc))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+    }
+
+    var barcode = opEvent.Barcode.Trim();
+    var item = store.FindItemByBarcode(barcode) ?? FindItemByBarcodeVariant(store, barcode);
+    if (item == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_BARCODE"));
+    }
+
+    var fromLocation = ResolveLocation(store, opEvent.FromLoc);
+    var toLocation = ResolveLocation(store, opEvent.ToLoc);
+    if (fromLocation == null || toLocation == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+    }
+
+    var docRef = opEvent.DocRef.Trim();
+    var existingDoc = store.FindDocByRef(docRef, DocType.Move);
+    long docId;
+
+    if (existingDoc != null)
+    {
+        if (existingDoc.Status == DocStatus.Closed)
+        {
+            return Results.BadRequest(new ApiResult(false, "DOC_ALREADY_CLOSED"));
+        }
+
+        docId = existingDoc.Id;
+    }
+    else
+    {
+        docId = docs.CreateDoc(DocType.Move, docRef, null, null, null, null);
+    }
+
+    try
+    {
+        docs.AddDocLine(
+            docId,
+            item.Id,
+            opEvent.Qty,
+            fromLocation.Id,
+            toLocation.Id,
+            null,
+            null,
+            NormalizeHu(opEvent.FromHu),
+            NormalizeHu(opEvent.ToHu));
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+
+    // Online ops close immediately to keep server state authoritative.
+    var closeResult = docs.TryCloseDoc(docId, allowNegative: false);
+    if (!closeResult.Success)
+    {
+        var error = closeResult.Errors.Count > 0
+            ? string.Join("; ", closeResult.Errors)
+            : "CLOSE_FAILED";
+        return Results.Ok(new ApiResult(false, error));
+    }
+
+    apiStore.RecordOpEvent(opEvent.EventId, "OP", null, opEvent.DeviceId, rawJson);
+    return Results.Ok(new ApiResult(true));
 });
 
 app.MapPost("/api/docs", (CreateDocRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>

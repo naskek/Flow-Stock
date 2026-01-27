@@ -82,6 +82,25 @@ VALUES(@event_id, @event_type, @doc_uid, @created_at);
         command.ExecuteNonQuery();
     }
 
+    public void RecordOpEvent(string eventId, string eventType, string? docUid, string? deviceId, string? rawJson)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO api_events(event_id, event_type, doc_uid, created_at, received_at, device_id, raw_json)
+VALUES(@event_id, @event_type, @doc_uid, @created_at, @received_at, @device_id, @raw_json);
+";
+        var now = DateTime.Now.ToString("s");
+        command.Parameters.AddWithValue("@event_id", eventId);
+        command.Parameters.AddWithValue("@event_type", eventType);
+        command.Parameters.AddWithValue("@doc_uid", string.IsNullOrWhiteSpace(docUid) ? DBNull.Value : docUid);
+        command.Parameters.AddWithValue("@created_at", now);
+        command.Parameters.AddWithValue("@received_at", now);
+        command.Parameters.AddWithValue("@device_id", string.IsNullOrWhiteSpace(deviceId) ? DBNull.Value : deviceId);
+        command.Parameters.AddWithValue("@raw_json", string.IsNullOrWhiteSpace(rawJson) ? DBNull.Value : rawJson);
+        command.ExecuteNonQuery();
+    }
+
     public void AddReservationLine(string docUid, long itemId, long locationId, double qty)
     {
         using var connection = OpenConnection();

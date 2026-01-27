@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace LightWms.Server;
 
 public sealed class CreateDocRequest
@@ -38,4 +40,52 @@ public sealed class ApiResult
 
     public bool Ok { get; init; }
     public string? Error { get; init; }
+}
+
+public sealed class OperationEventRequest
+{
+    [JsonPropertyName("schema_version")]
+    public int SchemaVersion { get; set; }
+
+    [JsonPropertyName("event_id")]
+    public string? EventId { get; set; }
+
+    [JsonPropertyName("ts")]
+    public string? Timestamp { get; set; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; set; }
+
+    [JsonPropertyName("op")]
+    public string? Op { get; set; }
+
+    [JsonPropertyName("doc_ref")]
+    public string? DocRef { get; set; }
+
+    [JsonPropertyName("barcode")]
+    public string? Barcode { get; set; }
+
+    [JsonPropertyName("qty")]
+    public double Qty { get; set; }
+
+    [JsonPropertyName("from_loc")]
+    public string? FromLoc { get; set; }
+
+    [JsonPropertyName("to_loc")]
+    public string? ToLoc { get; set; }
+
+    [JsonPropertyName("from_hu")]
+    public string? FromHu { get; set; }
+
+    [JsonPropertyName("to_hu")]
+    public string? ToHu { get; set; }
+
+    [JsonPropertyName("partner_code")]
+    public string? PartnerCode { get; set; }
+
+    [JsonPropertyName("order_ref")]
+    public string? OrderRef { get; set; }
+
+    [JsonPropertyName("reason_code")]
+    public string? ReasonCode { get; set; }
 }
