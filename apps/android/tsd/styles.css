@@ -292,6 +292,46 @@ body {
   margin-bottom: 12px;
 }
 
+.hu-actions {
+  margin-bottom: 12px;
+}
+
+.hu-details {
+  margin-bottom: 12px;
+}
+
+.hu-card {
+  border: 2px solid #d9e7ee;
+  border-radius: 16px;
+  padding: 16px;
+  background: #fff;
+  display: grid;
+  gap: 10px;
+}
+
+.hu-card-title {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.hu-card-meta {
+  font-size: 15px;
+  color: #486581;
+}
+
+.hu-lines {
+  display: grid;
+  gap: 8px;
+}
+
+.hu-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
 .stock-card {
   border: 2px solid #d9e7ee;
   border-radius: 16px;

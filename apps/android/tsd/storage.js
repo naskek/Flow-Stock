@@ -2,7 +2,7 @@
   "use strict";
 
   var DB_NAME = "tsd_app";
-  var DB_VERSION = 7;
+  var DB_VERSION = 8;
   var STORE_SETTINGS = "settings";
   var STORE_DOCS = "docs";
   var STORE_META = "meta";
@@ -12,6 +12,7 @@
   var STORE_LOCATIONS = "locations";
   var STORE_UOMS = "uoms";
   var STORE_STOCK = "stock";
+  var STORE_HU_STOCK = "huStock";
   var STORE_ORDERS = "orders";
   var STORE_ORDER_LINES = "orderLines";
   var db = null;
@@ -169,6 +170,9 @@
           var stockStore = database.createObjectStore(STORE_STOCK, { autoIncrement: true });
           stockStore.createIndex("byItemId", "itemId", { unique: false });
           stockStore.createIndex("byLocationId", "locationId", { unique: false });
+        }
+        if (!database.objectStoreNames.contains(STORE_HU_STOCK)) {
+          database.createObjectStore(STORE_HU_STOCK, { keyPath: "hu" });
         }
       };
 
@@ -453,6 +457,19 @@
       throw buildImportError("orders.lines должен быть массивом.");
     }
 
+    var huStock = null;
+    if (json.hu_stock != null) {
+      if (!isObject(json.hu_stock)) {
+        throw buildImportError("hu_stock должен быть объектом.");
+      }
+      if (!isNonEmptyString(json.hu_stock.exported_at)) {
+        throw buildImportError("hu_stock.exported_at должен быть непустой строкой.");
+      }
+      if (!Array.isArray(json.hu_stock.rows)) {
+        throw buildImportError("hu_stock.rows должен быть массивом.");
+      }
+    }
+
     var uoms = json.catalog.uoms.map(function (uom, index) {
       if (!isObject(uom) || uom.id == null) {
         throw buildImportError("catalog.uoms[" + index + "].id обязателен.");
@@ -569,6 +586,44 @@
       };
     });
 
+    if (json.hu_stock != null) {
+      var huExportedAt = String(json.hu_stock.exported_at || "").trim();
+      var grouped = {};
+      json.hu_stock.rows.forEach(function (row, index) {
+        if (!isObject(row)) {
+          throw buildImportError("hu_stock.rows[" + index + "] должен быть объектом.");
+        }
+        var huCode = String(row.hu || "").trim();
+        if (!huCode) {
+          throw buildImportError("hu_stock.rows[" + index + "].hu обязателен.");
+        }
+        if (row.item_id == null) {
+          throw buildImportError("hu_stock.rows[" + index + "].item_id обязателен.");
+        }
+        var entry = {
+          itemId: row.item_id,
+          qtyBase: normalizeNumber(row.qty),
+          locationId: row.location_id != null ? row.location_id : null,
+        };
+        if (!grouped[huCode]) {
+          grouped[huCode] = [];
+        }
+        grouped[huCode].push(entry);
+      });
+
+      var entries = Object.keys(grouped).map(function (huCode) {
+        return {
+          hu: huCode,
+          exportedAt: huExportedAt,
+          rows: grouped[huCode],
+        };
+      });
+      huStock = {
+        exportedAt: huExportedAt,
+        entries: entries,
+      };
+    }
+
     var orders = json.orders.orders.map(function (order, index) {
       if (!isObject(order) || order.id == null) {
         throw buildImportError("orders.orders[" + index + "].id обязателен.");
@@ -639,6 +694,7 @@
       stockRows: stockRows,
       orders: orders,
       orderLines: orderLines,
+      huStock: huStock,
     };
   }
 
@@ -663,6 +719,7 @@
             STORE_ORDERS,
             STORE_ORDER_LINES,
             STORE_STOCK,
+            STORE_HU_STOCK,
           ],
           "readwrite"
         );
@@ -675,6 +732,7 @@
         var ordersStore = tx.objectStore(STORE_ORDERS);
         var orderLinesStore = tx.objectStore(STORE_ORDER_LINES);
         var stockStore = tx.objectStore(STORE_STOCK);
+        var huStockStore = tx.objectStore(STORE_HU_STOCK);
 
         tx.oncomplete = function () {
           invalidateLocationCache();
@@ -694,6 +752,7 @@
           clearStore(ordersStore),
           clearStore(orderLinesStore),
           clearStore(stockStore),
+          clearStore(huStockStore),
         ])
           .then(function () {
             metaStore.put({ key: "dataExportedAt", value: normalized.exportedAt });
@@ -730,6 +789,12 @@
             normalized.stockRows.forEach(function (row) {
               stockStore.put(row);
             });
+
+            if (normalized.huStock && Array.isArray(normalized.huStock.entries)) {
+              normalized.huStock.entries.forEach(function (entry) {
+                huStockStore.put(entry);
+              });
+            }
           })
           .catch(function (error) {
             try {
@@ -894,6 +959,61 @@
         request.onerror = function () {
           reject(request.error);
         };
+      });
+    });
+  }
+
+  function getHuStockByCode(hu) {
+    return init().then(function () {
+      return new Promise(function (resolve, reject) {
+        var code = String(hu || "").trim();
+        if (!code) {
+          resolve(null);
+          return;
+        }
+        var tx = db.transaction(STORE_HU_STOCK, "readonly");
+        var store = tx.objectStore(STORE_HU_STOCK);
+        var request = store.get(code);
+        request.onsuccess = function () {
+          resolve(request.result || null);
+        };
+        request.onerror = function () {
+          reject(request.error);
+        };
+      });
+    });
+  }
+
+  function getItemsByIds(itemIds) {
+    return init().then(function () {
+      return new Promise(function (resolve, reject) {
+        var ids = Array.isArray(itemIds) ? itemIds.slice() : [];
+        if (!ids.length) {
+          resolve({});
+          return;
+        }
+        var map = {};
+        var pending = ids.length;
+        var tx = db.transaction(STORE_ITEMS, "readonly");
+        var store = tx.objectStore(STORE_ITEMS);
+        tx.onerror = function () {
+          reject(tx.error);
+        };
+        ids.forEach(function (id) {
+          var request = store.get(id);
+          request.onsuccess = function () {
+            if (request.result) {
+              map[id] = request.result;
+            }
+            pending -= 1;
+            if (pending === 0) {
+              resolve(map);
+            }
+          };
+          request.onerror = function () {
+            reject(request.error);
+          };
+        });
       });
     });
   }
@@ -1485,6 +1605,8 @@
     getLocationById: getLocationById,
     findLocationByCode: findLocationByCode,
     getStockByItemId: getStockByItemId,
+    getHuStockByCode: getHuStockByCode,
+    getItemsByIds: getItemsByIds,
     getTotalStockByItemId: getTotalStockByItemId,
     listLocalItemsForExport: listLocalItemsForExport,
     markLocalItemsExported: markLocalItemsExported,
