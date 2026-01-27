@@ -1138,7 +1138,9 @@
           disabled: !isDraft,
         }) +
         '  <div class="field-error" id="toError"></div>' +
-        renderHuField(header, isDraft) +
+        renderMoveInternalRow(header, isDraft) +
+        renderMoveHuField("С HU", "huFromValue", "huFromScanBtn", "huFromError", header.from_hu, isDraft) +
+        renderMoveHuField("На HU", "huToValue", "huToScanBtn", "huToError", header.to_hu, isDraft) +
         "</div>"
       );
     }
@@ -2328,9 +2330,16 @@
     var reasonPickBtn = document.getElementById("reasonPickBtn");
     var reasonErrorEl = document.getElementById("reasonError");
     var partnerErrorEl = document.getElementById("partnerError");
+    var moveInternalToggle = document.getElementById("moveInternalToggle");
     var huValueEl = document.getElementById("huValue");
     var huScanBtn = document.getElementById("huScanBtn");
     var huErrorEl = document.getElementById("huError");
+    var huFromValueEl = document.getElementById("huFromValue");
+    var huFromScanBtn = document.getElementById("huFromScanBtn");
+    var huFromErrorEl = document.getElementById("huFromError");
+    var huToValueEl = document.getElementById("huToValue");
+    var huToScanBtn = document.getElementById("huToScanBtn");
+    var huToErrorEl = document.getElementById("huToError");
     var orderHint = document.getElementById("orderHint");
     var dataStatus = null;
     var lookupToken = 0;
@@ -2350,6 +2359,7 @@
     var huModalError = null;
     var huModalConfirm = null;
     var huModalValue = null;
+    var huModalTarget = "hu";
     var huModalKeyListener = null;
 
     function setDocStatus(text) {
@@ -2413,17 +2423,22 @@
       if (partnerPickBtn) {
         partnerPickBtn.disabled = !hasPartners || doc.status !== "DRAFT";
       }
+      var isDraft = doc.status === "DRAFT";
       if (toPickBtn) {
-        toPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
+        var toDisabled = !hasLocations || !isDraft;
+        if (doc.op === "MOVE" && doc.header.move_internal) {
+          toDisabled = true;
+        }
+        toPickBtn.disabled = toDisabled;
       }
       if (fromPickBtn) {
-        fromPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
+        fromPickBtn.disabled = !hasLocations || !isDraft;
       }
       if (orderPickBtn) {
-        orderPickBtn.disabled = !hasOrders || doc.status !== "DRAFT";
+        orderPickBtn.disabled = !hasOrders || !isDraft;
       }
       if (locationPickBtn) {
-        locationPickBtn.disabled = !hasLocations || doc.status !== "DRAFT";
+        locationPickBtn.disabled = !hasLocations || !isDraft;
       }
 
       if (orderHint) {
@@ -2598,6 +2613,54 @@
           setScanInfo("Товар не найден", true);
         });
 
+      function maybeValidateMoveQty(itemId, nextQty) {
+        if (doc.op !== "MOVE" || !doc.header.move_internal) {
+          return Promise.resolve(true);
+        }
+        if (!doc.header.from_id) {
+          return Promise.resolve(true);
+        }
+        var fromHu = normalizeHuCode(lineData.from_hu);
+        return TsdStorage.getStockByItemId(itemId)
+          .then(function (rows) {
+            var locationRows = rows.filter(function (row) {
+              return row.locationId === doc.header.from_id;
+            });
+            if (!locationRows.length) {
+              return true;
+            }
+
+            var hasHuInfo = locationRows.some(function (row) {
+              return row.hu !== undefined;
+            });
+            if (!hasHuInfo) {
+              return true;
+            }
+
+            var available = 0;
+            locationRows.forEach(function (row) {
+              var rowHu = normalizeHuCode(row.hu);
+              if (fromHu) {
+                if (rowHu === fromHu) {
+                  available += Number(row.qtyBase) || 0;
+                }
+              } else if (!rowHu) {
+                available += Number(row.qtyBase) || 0;
+              }
+            });
+
+            if (nextQty > available) {
+              alert("Недостаточно остатка на выбранном HU.");
+              return false;
+            }
+
+            return true;
+          })
+          .catch(function () {
+            return true;
+          });
+      }
+
       function finalizeLine(item) {
         var itemId = item ? item.itemId : null;
         var itemName = item ? item.name : null;
@@ -2605,37 +2668,53 @@
           return;
         }
         var lineIndex = findLineIndex(doc.op, doc.lines, barcode, lineData);
+        var nextQty = qtyValue;
         if (lineIndex >= 0) {
-          doc.lines[lineIndex].qty += qtyValue;
-          if (itemName && !doc.lines[lineIndex].itemName) {
-            doc.lines[lineIndex].itemName = itemName;
-            doc.lines[lineIndex].itemId = itemId;
+          nextQty = (Number(doc.lines[lineIndex].qty) || 0) + qtyValue;
+        }
+
+        maybeValidateMoveQty(itemId, nextQty).then(function (ok) {
+          if (!ok) {
+            focusBarcode();
+            return;
           }
-        } else {
-          doc.lines.push({
+
+          if (lineIndex >= 0) {
+            doc.lines[lineIndex].qty = nextQty;
+            if (itemName && !doc.lines[lineIndex].itemName) {
+              doc.lines[lineIndex].itemName = itemName;
+              doc.lines[lineIndex].itemId = itemId;
+            }
+          } else {
+            doc.lines.push({
+              barcode: barcode,
+              qty: qtyValue,
+              from: lineData.from,
+              to: lineData.to,
+              from_hu: lineData.from_hu,
+              to_hu: lineData.to_hu,
+              reason_code: lineData.reason_code,
+              itemId: itemId,
+              itemName: itemName,
+            });
+          }
+
+          doc.undoStack.push({
             barcode: barcode,
-            qty: qtyValue,
+            qtyDelta: qtyValue,
             from: lineData.from,
             to: lineData.to,
+            from_hu: lineData.from_hu,
+            to_hu: lineData.to_hu,
             reason_code: lineData.reason_code,
-            itemId: itemId,
-            itemName: itemName,
           });
-        }
 
-        doc.undoStack.push({
-          barcode: barcode,
-          qtyDelta: qtyValue,
-          from: lineData.from,
-          to: lineData.to,
-          reason_code: lineData.reason_code,
+          if (barcodeInput) {
+            barcodeInput.value = "";
+          }
+          setScanInfo("", false);
+          saveDocState().then(refreshDocView);
         });
-
-        if (barcodeInput) {
-          barcodeInput.value = "";
-        }
-        setScanInfo("", false);
-        saveDocState().then(refreshDocView);
       }
     }
 
@@ -2880,12 +2959,23 @@
     function validateBeforeFinish() {
       var valid = true;
       setPartnerError("");
-      setHuError("");
+      setHuError("", "hu");
+      setHuError("", "from_hu");
+      setHuError("", "to_hu");
       setLocationError("from", "");
       setLocationError("to", "");
       setLocationError("location", "");
-      if (!validateHuHeader(true)) {
-        valid = false;
+      if (doc.op !== "MOVE") {
+        if (!validateHuHeader(true)) {
+          valid = false;
+        }
+      } else {
+        if (!validateHuField("from_hu", true)) {
+          valid = false;
+        }
+        if (!validateHuField("to_hu", true)) {
+          valid = false;
+        }
       }
       if (doc.op === "INBOUND") {
         if (!doc.header.partner_id) {
@@ -2912,6 +3002,35 @@
         }
         if (!normalizeValue(doc.header.to) && !doc.header.to_id) {
           setLocationError("to", "Укажите место хранения");
+          valid = false;
+        }
+        if (doc.header.move_internal) {
+          if (doc.header.from_id && doc.header.to_id && doc.header.from_id !== doc.header.to_id) {
+            setLocationError("to", "Для внутреннего перемещения выберите то же место хранения.");
+            valid = false;
+          }
+
+          if (!normalizeValue(doc.header.from_hu)) {
+            setHuError("Выберите HU-источник.", "from_hu");
+            valid = false;
+          }
+          if (!normalizeValue(doc.header.to_hu)) {
+            setHuError("Выберите HU-назначение.", "to_hu");
+            valid = false;
+          }
+
+          var fromHu = normalizeHuCode(doc.header.from_hu);
+          var toHu = normalizeHuCode(doc.header.to_hu);
+          if (fromHu && toHu && fromHu === toHu) {
+            setHuError("HU-источник и HU-назначение должны быть разными.", "to_hu");
+            valid = false;
+          }
+        } else if (
+          doc.header.from_id &&
+          doc.header.to_id &&
+          doc.header.from_id === doc.header.to_id
+        ) {
+          setLocationError("to", "Для перемещения внутри склада включите режим и задайте HU.");
           valid = false;
         }
       } else if (doc.op === "WRITE_OFF") {
@@ -3068,48 +3187,76 @@
       }
     }
 
-    function setHuError(message) {
-      if (huErrorEl) {
-        huErrorEl.textContent = message || "";
+    function getHuFieldElements(field) {
+      if (field === "from_hu") {
+        return { valueEl: huFromValueEl, errorEl: huFromErrorEl };
+      }
+      if (field === "to_hu") {
+        return { valueEl: huToValueEl, errorEl: huToErrorEl };
+      }
+      return { valueEl: huValueEl, errorEl: huErrorEl };
+    }
+
+    function setHuError(message, field) {
+      var target = field || "hu";
+      var nodes = getHuFieldElements(target);
+      if (nodes.errorEl) {
+        nodes.errorEl.textContent = message || "";
       }
     }
 
-    function setHuDisplay(value) {
-      if (!huValueEl) {
+    function setHuDisplay(value, field) {
+      var target = field || "hu";
+      var nodes = getHuFieldElements(target);
+      if (!nodes.valueEl) {
         return;
       }
-      var current = normalizeValue(value != null ? value : doc.header.hu);
+      var current = normalizeValue(value != null ? value : doc.header[target]);
       var normalized = normalizeHuCode(current);
       var labelValue = normalized || current;
       var label = labelValue ? "HU: " + labelValue : "HU: не задан";
-      huValueEl.textContent = label;
+      nodes.valueEl.textContent = label;
     }
 
-    function validateHuHeader(showAlert) {
-      var current = normalizeValue(doc.header.hu);
+    function validateHuField(field, showAlert) {
+      var target = field || "hu";
+      var current = normalizeValue(doc.header[target]);
       if (!current) {
-        setHuError("");
-        setHuDisplay("");
+        setHuError("", target);
+        setHuDisplay("", target);
         return true;
       }
 
       var normalized = normalizeHuCode(current);
       if (normalized === null) {
         var message = "Это не HU-код. HU должен начинаться с HU-.";
-        setHuError(message);
+        setHuError(message, target);
         if (showAlert) {
           alert(message);
         }
         return false;
       }
 
-      setHuError("");
-      if (normalized !== doc.header.hu) {
-        doc.header.hu = normalized;
+      setHuError("", target);
+      if (normalized !== doc.header[target]) {
+        doc.header[target] = normalized;
         saveDocState();
       }
-      setHuDisplay(normalized);
+      setHuDisplay(normalized, target);
       return true;
+    }
+
+    function validateHuHeader(showAlert) {
+      return validateHuField("hu", showAlert);
+    }
+
+    function refreshHuHeaderDisplay() {
+      if (doc.op === "MOVE") {
+        setHuDisplay(doc.header.from_hu, "from_hu");
+        setHuDisplay(doc.header.to_hu, "to_hu");
+        return;
+      }
+      setHuDisplay(doc.header.hu, "hu");
     }
 
     function setHuModalValue(rawValue, showError) {
@@ -3140,19 +3287,28 @@
       }
     }
 
-    function openHuOverlay() {
+    function openHuOverlay(targetField) {
       if (!isDraftDoc || huOverlay) {
         return;
       }
 
+      huModalTarget = targetField || "hu";
       setScanHighlight(false);
+      var huTitle = "Сканировать HU";
+      if (huModalTarget === "from_hu") {
+        huTitle = "Сканировать HU-источник";
+      } else if (huModalTarget === "to_hu") {
+        huTitle = "Сканировать HU-назначение";
+      }
       huOverlay = document.createElement("div");
       huOverlay.className = "overlay hu-overlay";
       huOverlay.setAttribute("tabindex", "-1");
       huOverlay.innerHTML =
         '<div class="overlay-card">' +
         '  <div class="overlay-header">' +
-        '    <div class="overlay-title">Сканировать HU</div>' +
+        '    <div class="overlay-title">' +
+        escapeHtml(huTitle) +
+        "</div>" +
         '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
         "  </div>" +
         '  <div class="overlay-body">' +
@@ -3189,6 +3345,7 @@
           huModalKeyListener = null;
         }
         setDocStatus("");
+        huModalTarget = "hu";
         setScanTarget("barcode");
         enterScanMode();
       }
@@ -3197,9 +3354,9 @@
         if (!huModalValue) {
           return;
         }
-        doc.header.hu = huModalValue;
-        setHuError("");
-        setHuDisplay(huModalValue);
+        doc.header[huModalTarget] = huModalValue;
+        setHuError("", huModalTarget);
+        setHuDisplay(huModalValue, huModalTarget);
         saveDocState();
         closeOverlay();
       }
@@ -3231,9 +3388,15 @@
       };
       document.addEventListener("keydown", huModalKeyListener);
 
-      setHuModalValue(doc.header.hu, false);
-      setScanTarget("hu");
-      setDocStatus("Сканируйте HU");
+      var statusLabel = "Сканируйте HU";
+      if (huModalTarget === "from_hu") {
+        statusLabel = "Сканируйте HU-источник";
+      } else if (huModalTarget === "to_hu") {
+        statusLabel = "Сканируйте HU-назначение";
+      }
+      setHuModalValue(doc.header[huModalTarget], false);
+      setScanTarget("hu", huModalTarget);
+      setDocStatus(statusLabel);
       clearScanBuffer();
       enterScanMode();
     }
@@ -3457,6 +3620,11 @@
       doc.header[field] = location.code || "";
       doc.header[field + "_name"] = location.name || null;
       doc.header[field + "_id"] = location.locationId;
+      if (doc.op === "MOVE" && doc.header.move_internal && field === "from") {
+        doc.header.to = location.code || "";
+        doc.header.to_name = location.name || null;
+        doc.header.to_id = location.locationId;
+      }
       updateRecentSetting("recentLocationIds", location.locationId);
       saveDocState().then(refreshDocView);
     }
@@ -3638,12 +3806,51 @@
       }
     });
 
+    if (moveInternalToggle) {
+      moveInternalToggle.addEventListener("change", function () {
+        if (!isDraftDoc) {
+          return;
+        }
+        doc.header.move_internal = !!moveInternalToggle.checked;
+        if (doc.header.move_internal) {
+          if (doc.header.from_id) {
+            doc.header.to = doc.header.from || "";
+            doc.header.to_name = doc.header.from_name || null;
+            doc.header.to_id = doc.header.from_id || null;
+          } else {
+            doc.header.to = "";
+            doc.header.to_name = null;
+            doc.header.to_id = null;
+          }
+        }
+        saveDocState().then(refreshDocView);
+      });
+    }
+
     if (huScanBtn) {
       huScanBtn.addEventListener("click", function () {
         if (!isDraftDoc) {
           return;
         }
-        openHuOverlay();
+        openHuOverlay("hu");
+      });
+    }
+
+    if (huFromScanBtn) {
+      huFromScanBtn.addEventListener("click", function () {
+        if (!isDraftDoc) {
+          return;
+        }
+        openHuOverlay("from_hu");
+      });
+    }
+
+    if (huToScanBtn) {
+      huToScanBtn.addEventListener("click", function () {
+        if (!isDraftDoc) {
+          return;
+        }
+        openHuOverlay("to_hu");
       });
     }
 
@@ -3739,7 +3946,7 @@
         applyCatalogState(null);
       });
 
-    setHuDisplay(doc.header.hu);
+    refreshHuHeaderDisplay();
     focusFirstLocationOrBarcode();
   }
 
@@ -3935,6 +4142,9 @@
         to: "",
         to_name: null,
         to_id: null,
+        move_internal: false,
+        from_hu: "",
+        to_hu: "",
         qtyMode: "ASK",
       };
     }
@@ -4002,6 +4212,19 @@
       if (!normalizeValue(header.to) && !header.to_id) {
         missing.push("to");
       }
+      if (header.move_internal) {
+        if (!normalizeValue(header.from_hu)) {
+          missing.push("from_hu");
+        }
+        if (!normalizeValue(header.to_hu)) {
+          missing.push("to_hu");
+        }
+        var missingFromHu = normalizeHuCode(header.from_hu);
+        var missingToHu = normalizeHuCode(header.to_hu);
+        if (missingFromHu && missingToHu && missingFromHu === missingToHu) {
+          missing.push("to_hu");
+        }
+      }
       return missing;
     }
 
@@ -4028,6 +4251,8 @@
     var from = null;
     var to = null;
     var reason = null;
+    var fromHu = null;
+    var toHu = null;
 
     if (op === "INBOUND") {
       to = normalizeValue(header.to) || null;
@@ -4036,6 +4261,8 @@
     } else if (op === "MOVE") {
       from = normalizeValue(header.from) || null;
       to = normalizeValue(header.to) || null;
+      fromHu = normalizeHuCode(header.from_hu) || null;
+      toHu = normalizeHuCode(header.to_hu) || null;
     } else if (op === "WRITE_OFF") {
       from = normalizeValue(header.from) || null;
       reason = normalizeValue(header.reason_code) || null;
@@ -4043,7 +4270,7 @@
       to = normalizeValue(header.location) || null;
     }
 
-    return { from: from, to: to, reason_code: reason };
+    return { from: from, to: to, from_hu: fromHu, to_hu: toHu, reason_code: reason };
   }
 
   function buildLineKey(op, barcode, lineData) {
@@ -4055,7 +4282,17 @@
       return safeBarcode + "|" + (lineData.from || "");
     }
     if (op === "MOVE") {
-      return safeBarcode + "|" + (lineData.from || "") + "|" + (lineData.to || "");
+      return (
+        safeBarcode +
+        "|" +
+        (lineData.from || "") +
+        "|" +
+        (lineData.to || "") +
+        "|" +
+        (lineData.from_hu || "") +
+        "|" +
+        (lineData.to_hu || "")
+      );
     }
     if (op === "WRITE_OFF") {
       return safeBarcode + "|" + (lineData.from || "") + "|" + (lineData.reason_code || "");
@@ -4206,8 +4443,14 @@
               partner_id: header.partner_id ? header.partner_id : null,
               order_ref: header.order_ref ? header.order_ref : null,
               reason_code: line.reason_code || fallbackReason,
-              hu_code: huCode || null,
+              hu_code: doc.op === "MOVE" ? null : huCode || null,
             };
+            if (doc.op === "MOVE") {
+              record.from_loc = line.from || fallbackFrom;
+              record.to_loc = line.to || fallbackTo;
+              record.from_hu = normalizeHuCode(line.from_hu || header.from_hu) || null;
+              record.to_hu = normalizeHuCode(line.to_hu || header.to_hu) || null;
+            }
             opLines.push(JSON.stringify(record));
           });
         });
@@ -4360,8 +4603,16 @@
               order_id: header.order_id ? header.order_id : null,
               order_ref: header.order_ref ? header.order_ref : null,
               reason_code: line.reason_code || fallbackReason,
-              hu_code: huCode || null,
             };
+            if (doc.op === "MOVE") {
+              record.from_loc = line.from || fallbackFrom;
+              record.to_loc = line.to || fallbackTo;
+              record.from_hu = normalizeHuCode(line.from_hu || header.from_hu) || null;
+              record.to_hu = normalizeHuCode(line.to_hu || header.to_hu) || null;
+              record.hu_code = null;
+            } else {
+              record.hu_code = huCode || null;
+            }
             lines.push(JSON.stringify(record));
           });
         });
@@ -4458,6 +4709,52 @@
       ">Сканировать HU</button>" +
       "  </div>" +
       '  <div class="field-error" id="huError"></div>'
+    );
+  }
+
+  function renderMoveInternalRow(header, isDraft) {
+    var isChecked = header.move_internal ? "checked" : "";
+    var disabled = isDraft ? "" : "disabled";
+    return (
+      '  <div class="field-row">' +
+      '    <div class="field-label">Перемещение</div>' +
+      '    <div class="field-value field-value-toggle">' +
+      '      <label class="toggle-inline">' +
+      '        <input type="checkbox" id="moveInternalToggle" ' +
+      isChecked +
+      " " +
+      disabled +
+      " />" +
+      "        <span>Внутри склада</span>" +
+      "      </label>" +
+      "    </div>" +
+      "    <div></div>" +
+      "  </div>"
+    );
+  }
+
+  function renderMoveHuField(label, valueId, scanId, errorId, value, isDraft) {
+    var huValue = normalizeValue(value);
+    var huLabel = huValue ? "HU: " + huValue : "HU: не задан";
+    return (
+      '  <div class="field-row field-row-hu">' +
+      '    <div class="field-label">' +
+      escapeHtml(label) +
+      "</div>" +
+      '    <div class="field-value" id="' +
+      valueId +
+      '">' +
+      escapeHtml(huLabel) +
+      "</div>" +
+      '    <button class="btn btn-outline field-action" id="' +
+      scanId +
+      '" type="button" ' +
+      (isDraft ? "" : "disabled") +
+      ">Сканировать</button>" +
+      "  </div>" +
+      '  <div class="field-error" id="' +
+      errorId +
+      '"></div>'
     );
   }
 

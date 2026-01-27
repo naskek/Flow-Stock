@@ -560,10 +560,12 @@
       if (!isObject(row) || row.item_id == null || row.location_id == null) {
         throw buildImportError("stock.rows[" + index + "]: item_id и location_id обязательны.");
       }
+      var hu = row.hu != null ? String(row.hu).trim() : "";
       return {
         itemId: row.item_id,
         locationId: row.location_id,
         qtyBase: normalizeNumber(row.qty),
+        hu: hu || null,
       };
     });
 
@@ -873,6 +875,7 @@
                   code: location.code || "",
                   name: location.name || "",
                   qtyBase: typeof entry.qtyBase === "number" ? entry.qtyBase : 0,
+                  hu: entry.hu || null,
                 };
               });
               rows.sort(function (a, b) {

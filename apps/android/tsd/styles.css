@@ -501,6 +501,22 @@ body {
   font-size: 13px;
 }
 
+.field-value-toggle {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.toggle-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.toggle-inline input {
+  margin: 0;
+}
+
 .field-pick {
   width: 40px;
   height: 40px;
