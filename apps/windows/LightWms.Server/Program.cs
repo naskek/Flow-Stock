@@ -178,6 +178,139 @@ app.MapGet("/api/hu-stock", (SqliteDataStore store) =>
     return Results.Ok(rows);
 });
 
+app.MapGet("/api/hus", (HttpRequest request) =>
+{
+    var takeText = request.Query["take"].ToString();
+    var take = 200;
+    if (!string.IsNullOrWhiteSpace(takeText) && int.TryParse(takeText, out var parsed))
+    {
+        take = parsed;
+    }
+
+    if (take < 1)
+    {
+        take = 1;
+    }
+    if (take > 1000)
+    {
+        take = 1000;
+    }
+
+    using var connection = OpenConnection(dbPath);
+    using var command = connection.CreateCommand();
+    command.CommandText = @"
+SELECT id, hu_code, status, created_at, created_by, closed_at, note
+FROM hus
+ORDER BY id DESC
+LIMIT @take;";
+    command.Parameters.AddWithValue("@take", take);
+    using var reader = command.ExecuteReader();
+    var list = new List<object>();
+    while (reader.Read())
+    {
+        list.Add(new
+        {
+            id = reader.GetInt64(0),
+            hu_code = reader.GetString(1),
+            status = reader.GetString(2),
+            created_at = reader.GetString(3),
+            created_by = reader.IsDBNull(4) ? null : reader.GetString(4),
+            closed_at = reader.IsDBNull(5) ? null : reader.GetString(5),
+            note = reader.IsDBNull(6) ? null : reader.GetString(6)
+        });
+    }
+
+    return Results.Ok(list);
+});
+
+app.MapGet("/api/hus/{huCode}", (string huCode, SqliteDataStore store) =>
+{
+    if (string.IsNullOrWhiteSpace(huCode))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_HU"));
+    }
+
+    var normalized = NormalizeHu(huCode);
+    if (string.IsNullOrWhiteSpace(normalized))
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_HU"));
+    }
+
+    var record = store.GetHuByCode(normalized);
+    if (record == null)
+    {
+        return Results.Ok(new ApiResult(false, "UNKNOWN_HU"));
+    }
+
+    return Results.Ok(new
+    {
+        ok = true,
+        hu = new
+        {
+            id = record.Id,
+            hu_code = record.Code,
+            status = record.Status,
+            created_at = record.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+            created_by = record.CreatedBy,
+            closed_at = record.ClosedAt?.ToString("O", CultureInfo.InvariantCulture),
+            note = record.Note
+        }
+    });
+});
+
+app.MapPost("/api/hus/generate", (HuGenerateRequest request) =>
+{
+    var count = request.Count;
+    if (count < 1 || count > 1000)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_COUNT"));
+    }
+
+    var createdBy = string.IsNullOrWhiteSpace(request.CreatedBy) ? null : request.CreatedBy.Trim();
+    var createdAt = DateTime.Now.ToString("s", CultureInfo.InvariantCulture);
+    var codes = new List<string>(count);
+
+    using var connection = OpenConnection(dbPath);
+    using var transaction = connection.BeginTransaction();
+    try
+    {
+        for (var i = 0; i < count; i++)
+        {
+            var tmpCode = "TMP-" + Guid.NewGuid().ToString("N");
+            using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = @"
+INSERT INTO hus(hu_code, status, created_at, created_by)
+VALUES(@hu_code, 'OPEN', @created_at, @created_by);
+SELECT last_insert_rowid();
+";
+            insert.Parameters.AddWithValue("@hu_code", tmpCode);
+            insert.Parameters.AddWithValue("@created_at", createdAt);
+            insert.Parameters.AddWithValue("@created_by", createdBy ?? (object)DBNull.Value);
+            var id = (long)(insert.ExecuteScalar() ?? 0L);
+            var huCode = $"HU-{id:000000}";
+
+            using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE hus SET hu_code = @hu_code WHERE id = @id;";
+            update.Parameters.AddWithValue("@hu_code", huCode);
+            update.Parameters.AddWithValue("@id", id);
+            update.ExecuteNonQuery();
+
+            codes.Add(huCode);
+        }
+
+        transaction.Commit();
+    }
+    catch
+    {
+        transaction.Rollback();
+        throw;
+    }
+
+    return Results.Ok(new { ok = true, hus = codes });
+});
+
 app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
 {
     string rawJson;
@@ -278,15 +411,35 @@ app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, Docum
         docId = docs.CreateDoc(DocType.Move, docRef, null, null, null, null);
     }
 
+    var fromHu = NormalizeHu(opEvent.FromHu);
+    var toHu = NormalizeHu(opEvent.ToHu);
+    if (string.IsNullOrWhiteSpace(toHu) && !string.IsNullOrWhiteSpace(opEvent.HuCode))
+    {
+        toHu = NormalizeHu(opEvent.HuCode);
+    }
+
+    var missingHu = new List<string>();
+    if (!string.IsNullOrWhiteSpace(fromHu) && store.GetHuByCode(fromHu) == null)
+    {
+        missingHu.Add("from_hu");
+    }
+    if (!string.IsNullOrWhiteSpace(toHu) && store.GetHuByCode(toHu) == null)
+    {
+        missingHu.Add("to_hu");
+    }
+
+    if (missingHu.Count > 0)
+    {
+        return Results.BadRequest(new
+        {
+            ok = false,
+            error = "UNKNOWN_HU",
+            missing = missingHu
+        });
+    }
+
     try
     {
-        var fromHu = NormalizeHu(opEvent.FromHu);
-        var toHu = NormalizeHu(opEvent.ToHu);
-        if (string.IsNullOrWhiteSpace(toHu) && !string.IsNullOrWhiteSpace(opEvent.HuCode))
-        {
-            toHu = NormalizeHu(opEvent.HuCode);
-        }
-
         docs.AddDocLine(
             docId,
             item.Id,

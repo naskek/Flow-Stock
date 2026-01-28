@@ -30,6 +30,14 @@ public sealed class CloseDocRequest
     public string? EventId { get; set; }
 }
 
+public sealed class HuGenerateRequest
+{
+    public int Count { get; set; }
+
+    [JsonPropertyName("created_by")]
+    public string? CreatedBy { get; set; }
+}
+
 public sealed class ApiResult
 {
     public ApiResult(bool ok, string? error = null)
