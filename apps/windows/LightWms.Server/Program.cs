@@ -7,6 +7,7 @@ using LightWms.Core.Services;
 using LightWms.Data;
 using LightWms.Server;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.FileProviders;
@@ -90,6 +91,16 @@ app.MapGet("/api/diag/db", () =>
 {
     var info = BuildDbInfo(dbPath);
     return Results.Ok(info);
+});
+
+app.MapGet("/api/diag/version", (EndpointDataSource dataSource) =>
+{
+    return Results.Ok(BuildVersionInfo(dataSource));
+});
+
+app.MapGet("/api/diag/routes", (EndpointDataSource dataSource) =>
+{
+    return Results.Ok(BuildRouteList(dataSource));
 });
 
 app.MapGet("/api/diag/counts", () =>
@@ -641,6 +652,51 @@ static object BuildDbInfo(string dbPath)
         sizeBytes = fileInfo.Exists ? fileInfo.Length : 0,
         lastWriteUtc = fileInfo.Exists ? fileInfo.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture) : null
     };
+}
+
+static object BuildVersionInfo(EndpointDataSource dataSource)
+{
+    var assembly = typeof(Program).Assembly;
+    var location = assembly.Location;
+    var buildUtc = string.IsNullOrWhiteSpace(location)
+        ? null
+        : File.GetLastWriteTimeUtc(location).ToString("O", CultureInfo.InvariantCulture);
+    var routesCount = BuildRouteList(dataSource).Count;
+    return new
+    {
+        version = assembly.GetName().Version?.ToString() ?? "unknown",
+        buildUtc,
+        routesCount
+    };
+}
+
+static List<string> BuildRouteList(EndpointDataSource dataSource)
+{
+    var list = new List<string>();
+    foreach (var endpoint in dataSource.Endpoints)
+    {
+        if (endpoint is not RouteEndpoint routeEndpoint)
+        {
+            continue;
+        }
+
+        var pattern = "/" + (routeEndpoint.RoutePattern.RawText?.TrimStart('/') ?? string.Empty);
+        var methods = endpoint.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods;
+        if (methods == null || methods.Count == 0)
+        {
+            list.Add($"ANY {pattern}");
+            continue;
+        }
+
+        foreach (var method in methods)
+        {
+            list.Add($"{method} {pattern}");
+        }
+    }
+
+    return list
+        .OrderBy(entry => entry, StringComparer.OrdinalIgnoreCase)
+        .ToList();
 }
 
 static SqliteConnection OpenConnection(string dbPath)
