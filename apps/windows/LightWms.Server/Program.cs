@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using LightWms.Core.Models;
 using LightWms.Core.Services;
 using LightWms.Data;
@@ -149,6 +150,76 @@ app.MapGet("/api/items/by-barcode/{barcode}", (string barcode, SqliteDataStore s
     });
 });
 
+app.MapGet("/api/items", (HttpRequest request) =>
+{
+    var query = request.Query["q"].ToString();
+    var search = string.IsNullOrWhiteSpace(query) ? null : $"%{query.Trim()}%";
+
+    using var connection = OpenConnection(dbPath);
+    using var command = connection.CreateCommand();
+    command.CommandText = @"
+SELECT id, name, barcode, gtin, base_uom, uom
+FROM items
+WHERE @search IS NULL
+   OR name LIKE @search COLLATE NOCASE
+   OR barcode LIKE @search COLLATE NOCASE
+   OR gtin LIKE @search COLLATE NOCASE
+ORDER BY name;";
+    command.Parameters.AddWithValue("@search", search ?? (object)DBNull.Value);
+    using var reader = command.ExecuteReader();
+    var list = new List<object>();
+    while (reader.Read())
+    {
+        var baseUom = reader.IsDBNull(4) ? null : reader.GetString(4);
+        if (string.IsNullOrWhiteSpace(baseUom) && !reader.IsDBNull(5))
+        {
+            baseUom = reader.GetString(5);
+        }
+
+        list.Add(new
+        {
+            id = reader.GetInt64(0),
+            name = reader.GetString(1),
+            barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
+            gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
+            base_uom_code = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom
+        });
+    }
+
+    return Results.Ok(list);
+});
+
+app.MapGet("/api/partners", (HttpRequest request, SqliteDataStore store) =>
+{
+    var role = request.Query["role"].ToString();
+    var filter = ParsePartnerRole(role);
+    if (filter == PartnerRoleFilter.Unknown)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_ROLE"));
+    }
+
+    var statusMap = LoadPartnerStatuses();
+    var partners = store.GetPartners();
+    var list = new List<object>();
+    foreach (var partner in partners)
+    {
+        var status = statusMap.TryGetValue(partner.Id, out var stored) ? stored : PartnerRole.Both;
+        if (!ShouldIncludePartner(status, filter))
+        {
+            continue;
+        }
+
+        list.Add(new
+        {
+            id = partner.Id,
+            name = partner.Name,
+            code = partner.Code
+        });
+    }
+
+    return Results.Ok(list);
+});
+
 app.MapGet("/api/stock", () =>
 {
     using var connection = OpenConnection(dbPath);
@@ -172,6 +243,75 @@ ORDER BY item_id, location_id;";
     }
 
     return Results.Ok(rows);
+});
+
+app.MapGet("/api/stock/by-barcode/{barcode}", (string barcode, SqliteDataStore store) =>
+{
+    if (string.IsNullOrWhiteSpace(barcode))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_BARCODE"));
+    }
+
+    var trimmed = barcode.Trim();
+    var item = store.FindItemByBarcode(trimmed) ?? FindItemByBarcodeVariant(store, trimmed);
+    if (item == null)
+    {
+        return Results.NotFound(new ApiResult(false, "UNKNOWN_BARCODE"));
+    }
+
+    using var connection = OpenConnection(dbPath);
+    using var totalsCommand = connection.CreateCommand();
+    totalsCommand.CommandText = @"
+SELECT l.id, l.code, COALESCE(SUM(led.qty_delta), 0) AS qty
+FROM ledger led
+INNER JOIN locations l ON l.id = led.location_id
+WHERE led.item_id = @item_id
+GROUP BY l.id, l.code
+HAVING qty != 0
+ORDER BY l.code;";
+    totalsCommand.Parameters.AddWithValue("@item_id", item.Id);
+    using var totalsReader = totalsCommand.ExecuteReader();
+    var totals = new List<object>();
+    while (totalsReader.Read())
+    {
+        totals.Add(new
+        {
+            location_id = totalsReader.GetInt64(0),
+            location_code = totalsReader.GetString(1),
+            qty = totalsReader.GetDouble(2)
+        });
+    }
+
+    using var byHuCommand = connection.CreateCommand();
+    byHuCommand.CommandText = @"
+SELECT COALESCE(led.hu_code, led.hu) AS hu, l.id, l.code, COALESCE(SUM(led.qty_delta), 0) AS qty
+FROM ledger led
+INNER JOIN locations l ON l.id = led.location_id
+WHERE led.item_id = @item_id
+  AND COALESCE(led.hu_code, led.hu) IS NOT NULL
+  AND COALESCE(led.hu_code, led.hu) <> ''
+GROUP BY hu, l.id, l.code
+HAVING qty != 0
+ORDER BY hu, l.code;";
+    byHuCommand.Parameters.AddWithValue("@item_id", item.Id);
+    using var byHuReader = byHuCommand.ExecuteReader();
+    var byHu = new List<object>();
+    while (byHuReader.Read())
+    {
+        byHu.Add(new
+        {
+            hu = byHuReader.GetString(0),
+            location_id = byHuReader.GetInt64(1),
+            location_code = byHuReader.GetString(2),
+            qty = byHuReader.GetDouble(3)
+        });
+    }
+
+    return Results.Ok(new
+    {
+        totalsByLocation = totals,
+        byHu
+    });
 });
 
 app.MapGet("/api/hu-stock", (SqliteDataStore store) =>
@@ -826,9 +966,85 @@ static Item? FindItemByBarcodeVariant(SqliteDataStore store, string barcode)
     return null;
 }
 
+static IReadOnlyDictionary<long, PartnerRole> LoadPartnerStatuses()
+{
+    var path = GetPartnerStatusPath();
+    if (!File.Exists(path))
+    {
+        return new Dictionary<long, PartnerRole>();
+    }
+
+    try
+    {
+        var json = File.ReadAllText(path);
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            Converters = { new JsonStringEnumConverter() }
+        };
+        var data = JsonSerializer.Deserialize<Dictionary<long, PartnerRole>>(json, options);
+        return data ?? new Dictionary<long, PartnerRole>();
+    }
+    catch
+    {
+        return new Dictionary<long, PartnerRole>();
+    }
+}
+
+static string GetPartnerStatusPath()
+{
+    var baseDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "LightWMS");
+    return Path.Combine(baseDir, "partner_statuses.json");
+}
+
+static PartnerRoleFilter ParsePartnerRole(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return PartnerRoleFilter.Both;
+    }
+
+    var normalized = value.Trim().ToLowerInvariant();
+    return normalized switch
+    {
+        "customer" => PartnerRoleFilter.Customer,
+        "client" => PartnerRoleFilter.Customer,
+        "supplier" => PartnerRoleFilter.Supplier,
+        "both" => PartnerRoleFilter.Both,
+        _ => PartnerRoleFilter.Unknown
+    };
+}
+
+static bool ShouldIncludePartner(PartnerRole status, PartnerRoleFilter filter)
+{
+    return filter switch
+    {
+        PartnerRoleFilter.Customer => status is PartnerRole.Client or PartnerRole.Both,
+        PartnerRoleFilter.Supplier => status is PartnerRole.Supplier or PartnerRole.Both,
+        _ => true
+    };
+}
+
 sealed class LocationResolution
 {
     public Location? Location { get; init; }
     public string? Error { get; init; }
     public IReadOnlyList<Location>? Matches { get; init; }
+}
+
+enum PartnerRole
+{
+    Supplier,
+    Client,
+    Both
+}
+
+enum PartnerRoleFilter
+{
+    Customer,
+    Supplier,
+    Both,
+    Unknown
 }
