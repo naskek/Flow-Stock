@@ -459,6 +459,11 @@ public sealed class DocumentService
 
         var docHu = NormalizeHuValue(doc.ShippingRef);
         var lines = _data.GetDocLines(docId);
+        if (lines.Count == 0)
+        {
+            check.Errors.Add("Добавьте хотя бы один товар в документ перед проведением.");
+            return check;
+        }
         var itemsById = _data.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
         var locations = _data.GetLocations();
         var locationsById = locations.ToDictionary(location => location.Id, location => location.Code);

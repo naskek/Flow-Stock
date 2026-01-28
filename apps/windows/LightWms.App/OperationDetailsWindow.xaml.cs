@@ -256,6 +256,16 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        if (_services.Documents.GetDocLines(doc.Id).Count == 0)
+        {
+            MessageBox.Show(
+                "Добавьте хотя бы один товар в документ перед проведением.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
         if (IsPartnerRequired() && doc.PartnerId == null)
         {
             MessageBox.Show("Выберите контрагента.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
