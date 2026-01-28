@@ -163,6 +163,21 @@ ORDER BY item_id, location_id;";
     return Results.Ok(rows);
 });
 
+app.MapGet("/api/hu-stock", (SqliteDataStore store) =>
+{
+    var rows = store.GetHuStockRows()
+        .Select(row => new
+        {
+            hu = row.HuCode,
+            item_id = row.ItemId,
+            location_id = row.LocationId,
+            qty = row.Qty
+        })
+        .ToList();
+
+    return Results.Ok(rows);
+});
+
 app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
 {
     string rawJson;
