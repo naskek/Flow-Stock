@@ -219,10 +219,12 @@ CREATE INDEX IF NOT EXISTS idx_hus_created_at ON hus(created_at);
         EnsureIndex(connection, "ix_ledger_item_loc_hu_code", "ledger(item_id, location_id, hu_code)");
         EnsureIndex(connection, "idx_hus_status", "hus(status)");
         EnsureIndex(connection, "idx_hus_created_at", "hus(created_at)");
+        EnsureIndex(connection, "ux_hus_hu_code", "hus(hu_code)");
 
         BackfillBaseUom(connection);
         BackfillPartnerCreatedAt(connection);
         BackfillLedgerHuCode(connection);
+        BackfillHuRegistry(connection);
     }
 
     public void ExecuteInTransaction(Action<IDataStore> work)
@@ -1906,6 +1908,14 @@ SELECT last_insert_rowid();
         return false;
     }
 
+    private static bool TableExists(SqliteConnection connection, string tableName)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = @name LIMIT 1;";
+        command.Parameters.AddWithValue("@name", tableName);
+        return command.ExecuteScalar() != null;
+    }
+
     private static void EnsureIndex(SqliteConnection connection, string indexName, string indexDefinition)
     {
         using var command = connection.CreateCommand();
@@ -1930,8 +1940,58 @@ SELECT last_insert_rowid();
 
     private static void BackfillLedgerHuCode(SqliteConnection connection)
     {
+        if (!ColumnExists(connection, "ledger", "hu_code"))
+        {
+            return;
+        }
+
+        if (!ColumnExists(connection, "ledger", "hu"))
+        {
+            return;
+        }
+
         using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE ledger SET hu_code = hu WHERE hu_code IS NULL AND hu IS NOT NULL;";
+        command.CommandText = "UPDATE ledger SET hu_code = hu WHERE (hu_code IS NULL OR hu_code = '') AND hu IS NOT NULL AND hu <> '';";
+        command.ExecuteNonQuery();
+    }
+
+    private static void BackfillHuRegistry(SqliteConnection connection)
+    {
+        if (!TableExists(connection, "hus"))
+        {
+            return;
+        }
+
+        var sources = new List<string>();
+        if (ColumnExists(connection, "ledger", "hu_code"))
+        {
+            sources.Add("SELECT hu_code AS hu_code FROM ledger WHERE hu_code IS NOT NULL AND hu_code <> ''");
+        }
+
+        if (ColumnExists(connection, "doc_lines", "from_hu"))
+        {
+            sources.Add("SELECT from_hu AS hu_code FROM doc_lines WHERE from_hu IS NOT NULL AND from_hu <> ''");
+        }
+
+        if (ColumnExists(connection, "doc_lines", "to_hu"))
+        {
+            sources.Add("SELECT to_hu AS hu_code FROM doc_lines WHERE to_hu IS NOT NULL AND to_hu <> ''");
+        }
+
+        if (sources.Count == 0)
+        {
+            return;
+        }
+
+        var sql = $@"
+INSERT OR IGNORE INTO hus(hu_code, status, created_at, created_by)
+SELECT DISTINCT hu_code, 'OPEN', @created_at, 'backfill'
+FROM (
+{string.Join("\nUNION ALL\n", sources)}
+);";
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@created_at", ToDbDate(DateTime.Now));
         command.ExecuteNonQuery();
     }
 
