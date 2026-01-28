@@ -334,6 +334,16 @@
     return name + code;
   }
 
+  function getPartnerRoleForOp(op) {
+    if (op === "INBOUND") {
+      return "supplier";
+    }
+    if (op === "OUTBOUND") {
+      return "customer";
+    }
+    return "both";
+  }
+
   function formatLocationLabel(code, name) {
     var safeCode = String(code || "").trim();
     var safeName = String(name || "").trim();
@@ -843,7 +853,7 @@
           var qtyText = String(row.qtyBase != null ? row.qtyBase : 0);
           var locationLabel = formatLocationLabel(row.code, row.name);
           if (row.hu) {
-            locationLabel += " — " + row.hu;
+            locationLabel += " - " + row.hu;
           }
           return (
             '<div class="stock-location-row">' +
@@ -859,7 +869,30 @@
         .join("");
     }
 
-    function renderDetails(item, rows) {
+    function renderHuRows(rows, uom) {
+      if (!rows.length) {
+        return '<div class="stock-no-rows">Нет HU-разреза.</div>';
+      }
+      return rows
+        .map(function (row) {
+          var hu = row.hu || "-";
+          var locationCode = row.locationCode || "";
+          var qtyText = String(row.qty != null ? row.qty : 0);
+          var line =
+            hu +
+            " — " +
+            qtyText +
+            " " +
+            (uom || "шт") +
+            " (локация: " +
+            locationCode +
+            ")";
+          return '<div class="stock-hu-row">' + escapeHtml(line) + "</div>";
+        })
+        .join("");
+    }
+
+    function renderDetails(item, rows, huRows) {
       if (!detailsEl) {
         return;
       }
@@ -874,13 +907,22 @@
         skuParts.push("GTIN: " + item.gtin);
       }
       var skuLine = skuParts.join(" · ");
+      var uom = item.base_uom || item.base_uom_code || "шт";
       var locationsHtml = rows.length
         ? renderLocationRows(rows)
         : '<div class="stock-no-rows">Нет остатков по данным выгрузки.</div>';
+      var huHtml = "";
+      if (huRows) {
+        huHtml =
+          '<div class="stock-hu-block">' +
+          '<div class="stock-hu-title">По HU</div>' +
+          renderHuRows(huRows, uom) +
+          "</div>";
+      }
       detailsEl.innerHTML =
         '<div class="stock-card">' +
         '<div class="stock-title">' +
-        escapeHtml(item.name || "—") +
+        escapeHtml(item.name || "-") +
         "</div>" +
         (skuLine
           ? '<div class="stock-subtitle">' + escapeHtml(skuLine) + "</div>"
@@ -891,7 +933,22 @@
         '<div class="stock-locations">' +
         locationsHtml +
         "</div>" +
+        huHtml +
         "</div>";
+    }
+
+    function loadLocationNameMap() {
+      return TsdStorage.apiGetLocations()
+        .then(function (locations) {
+          var map = {};
+          locations.forEach(function (location) {
+            map[location.locationId] = location;
+          });
+          return map;
+        })
+        .catch(function () {
+          return {};
+        });
     }
 
     function showStockItem(item) {
@@ -899,11 +956,35 @@
         setStockMessage("Товар не найден в данных");
         return;
       }
+      var barcode = item.barcode || item.gtin;
+      if (!barcode) {
+        setStockMessage("У товара нет штрихкода");
+        return;
+      }
       clearSuggestions();
       setStockMessage("");
-      TsdStorage.getStockByItemId(item.itemId)
-        .then(function (rows) {
-          renderDetails(item, rows);
+      Promise.all([TsdStorage.apiGetStockByBarcode(barcode), loadLocationNameMap()])
+        .then(function (result) {
+          var stock = result[0] || {};
+          var locationMap = result[1] || {};
+          var rows = (stock.totalsByLocation || []).map(function (row) {
+            var location = locationMap[row.locationId] || {};
+            return {
+              qtyBase: row.qty,
+              code: row.locationCode || location.code || "",
+              name: location.name || "",
+              hu: null,
+            };
+          });
+          var huRows = (stock.byHu || []).map(function (row) {
+            var location = locationMap[row.locationId] || {};
+            return {
+              hu: row.hu,
+              qty: row.qty,
+              locationCode: row.locationCode || location.code || "",
+            };
+          });
+          renderDetails(item, rows, huRows);
         })
         .catch(function () {
           setStockMessage("Ошибка получения остатков");
@@ -916,7 +997,7 @@
         return;
       }
       setStockMessage("Ищем...");
-      TsdStorage.findItemByCode(trimmed)
+      TsdStorage.apiFindItemByCode(trimmed)
         .then(function (item) {
           if (item) {
             showStockItem(item);
@@ -933,33 +1014,27 @@
     }
 
     function updateDataStatus() {
-      TsdStorage.getDataStatus()
-        .then(function (status) {
-          var exported = status && status.exportedAt;
-          var ready =
-            status &&
-            status.counts &&
-            status.counts.items > 0 &&
-            status.counts.stock > 0;
-          dataReady = !!ready;
-          setStatusText(
-            exported ? "По состоянию на: " + exported : "Дата актуальности данных неизвестна"
-          );
-          if (!ready) {
-            setStockMessage("Нет данных. Загрузите данные с ПК в Настройках.");
+      pingServer(true)
+        .then(function (ok) {
+          dataReady = !!ok;
+          setStatusText(ok ? "Онлайн" : "Нет связи с сервером");
+          if (!ok) {
+            setStockMessage("Нет связи с сервером");
             if (searchInput) {
               searchInput.disabled = true;
             }
             clearDetails();
             clearSuggestions();
-          } else if (searchInput) {
-            searchInput.disabled = false;
-            setStockMessage("");
+            return;
           }
+          if (searchInput) {
+            searchInput.disabled = false;
+          }
+          setStockMessage("");
         })
         .catch(function () {
-          setStatusText("Дата актуальности данных неизвестна");
-          setStockMessage("Нет данных. Загрузите данные с ПК в Настройках.");
+          setStatusText("Нет связи с сервером");
+          setStockMessage("Нет связи с сервером");
           if (searchInput) {
             searchInput.disabled = true;
           }
@@ -1016,7 +1091,7 @@
           clearSuggestions();
           return;
         }
-        TsdStorage.searchItems(value, 20)
+        TsdStorage.apiSearchItems(value, 20)
           .then(function (items) {
             renderSuggestionList(items);
           })
@@ -2008,13 +2083,15 @@
     });
   }
 
-  function openPartnerPicker(onSelect) {
+  function openPartnerPicker(role, onSelect) {
     setScanHighlight(false);
     var overlay = buildOverlay("Контрагенты");
     var input = overlay.querySelector(".overlay-search");
     var recentsEl = overlay.querySelector(".overlay-recents");
     var resultsEl = overlay.querySelector(".overlay-results");
     var closeBtn = overlay.querySelector(".overlay-close");
+    var partnerList = null;
+    var partnerLoading = null;
 
     function close() {
       unlockOverlayScroll();
@@ -2029,22 +2106,48 @@
       }
     }
 
+    function ensurePartnerList() {
+      if (partnerList) {
+        return Promise.resolve(partnerList);
+      }
+      if (partnerLoading) {
+        return partnerLoading;
+      }
+      partnerLoading = TsdStorage.apiGetPartners(role)
+        .then(function (partners) {
+          partnerList = (partners || []).map(function (partner) {
+            partner.nameLower = String(partner.name || "").toLowerCase();
+            partner.codeLower = String(partner.code || "").toLowerCase();
+            partner.innLower = String(partner.inn || "").toLowerCase();
+            return partner;
+          });
+          return partnerList;
+        })
+        .catch(function () {
+          partnerList = [];
+          return partnerList;
+        })
+        .finally(function () {
+          partnerLoading = null;
+        });
+      return partnerLoading;
+    }
+
     function loadRecents() {
-      TsdStorage.getSetting("recentPartnerIds")
-        .then(function (ids) {
+      Promise.all([ensurePartnerList(), TsdStorage.getSetting("recentPartnerIds")])
+        .then(function (result) {
+          var partners = result[0] || [];
+          var ids = result[1];
           var list = Array.isArray(ids) ? ids.slice(0, 5) : [];
-          return Promise.all(
-            list.map(function (id) {
-              return TsdStorage.getPartnerById(id).catch(function () {
-                return null;
+          var filtered = list
+            .map(function (id) {
+              return partners.find(function (partner) {
+                return partner.partnerId === id;
               });
             })
-          );
-        })
-        .then(function (partners) {
-          var filtered = partners.filter(function (partner) {
-            return !!partner;
-          });
+            .filter(function (partner) {
+              return !!partner;
+            });
           renderOverlayList(
             recentsEl,
             filtered,
@@ -2066,9 +2169,21 @@
     }
 
     function runSearch(query) {
-      TsdStorage.searchPartners(query)
+      var q = String(query || "").trim().toLowerCase();
+      ensurePartnerList()
         .then(function (partners) {
-          var list = partners.map(function (partner) {
+          var list = partners.filter(function (partner) {
+            if (!q) {
+              return true;
+            }
+            return (
+              (partner.nameLower && partner.nameLower.indexOf(q) !== -1) ||
+              (partner.codeLower && partner.codeLower.indexOf(q) !== -1) ||
+              (partner.innLower && partner.innLower.indexOf(q) !== -1)
+            );
+          });
+
+          list.forEach(function (partner) {
             var sub = [];
             if (partner.code) {
               sub.push("Код: " + partner.code);
@@ -2077,8 +2192,8 @@
               sub.push("ИНН: " + partner.inn);
             }
             partner.subLabel = sub.join(" · ");
-            return partner;
           });
+
           renderOverlayList(
             resultsEl,
             list,
@@ -2146,7 +2261,7 @@
           var list = Array.isArray(ids) ? ids.slice(0, 5) : [];
           return Promise.all(
             list.map(function (id) {
-              return TsdStorage.getLocationById(id).catch(function () {
+              return TsdStorage.apiGetLocationById(id).catch(function () {
                 return null;
               });
             })
@@ -2177,7 +2292,7 @@
     }
 
     function runSearch(query) {
-      TsdStorage.searchLocations(query)
+      TsdStorage.apiSearchLocations(query)
         .then(function (locations) {
           renderOverlayList(
             resultsEl,
@@ -2823,7 +2938,7 @@
         return;
       }
       var token = (lookupToken += 1);
-      TsdStorage.findItemByCode(trimmed)
+      TsdStorage.apiFindItemByCode(trimmed)
         .then(function (item) {
           if (token !== lookupToken) {
             return;
@@ -2852,8 +2967,10 @@
     }
 
     function applyCatalogState(status) {
-      var hasPartners = status && status.counts && status.counts.partners > 0;
-      var hasLocations = status && status.counts && status.counts.locations > 0;
+      var online = serverStatus.ok !== false;
+      var hasPartners = online;
+      var hasLocations =
+        online || (status && status.counts && status.counts.locations > 0);
       var hasOrders = status && status.counts && status.counts.orders > 0;
 
       if (partnerPickerRow) {
@@ -2925,6 +3042,10 @@
         '    <div class="qty-overlay-barcode">' +
         escapeHtml(barcode) +
         "</div>" +
+        '    <div class="qty-overlay-stock">' +
+        '      <div class="qty-overlay-stock-title">Остаток сейчас</div>' +
+        '      <div class="qty-overlay-stock-body" id="qtyStockBody">Загрузка...</div>' +
+        "    </div>" +
         '    <div class="qty-overlay-quick">' +
         quickButtons +
         "    </div>" +
@@ -2942,6 +3063,89 @@
       var cancelBtn = qtyOverlay.querySelector("#qtyCancel");
       var closeBtn = qtyOverlay.querySelector(".overlay-close");
       var quickButtonsEls = qtyOverlay.querySelectorAll(".qty-overlay-quick-btn");
+      var stockBody = qtyOverlay.querySelector("#qtyStockBody");
+
+      if (stockBody) {
+        Promise.all([TsdStorage.apiGetStockByBarcode(barcode), TsdStorage.apiGetLocations()])
+          .then(function (result) {
+            var stock = result[0] || {};
+            var locations = result[1] || [];
+            var locationMap = {};
+            locations.forEach(function (location) {
+              locationMap[location.locationId] = location;
+            });
+            var totals = Array.isArray(stock.totalsByLocation) ? stock.totalsByLocation : [];
+            var byHu = Array.isArray(stock.byHu) ? stock.byHu : [];
+            var uom = (item && (item.base_uom || item.base_uom_code)) || "шт";
+
+            if (!totals.length && !byHu.length) {
+              stockBody.textContent = "Остатков нет";
+              return;
+            }
+
+            function renderTotalsRows(rows) {
+              if (!rows.length) {
+                return '<div class="qty-stock-empty">Нет данных</div>';
+              }
+              return rows
+                .map(function (row) {
+                  var location = locationMap[row.locationId] || {};
+                  var code = row.locationCode || location.code || "";
+                  var name = location.name || "";
+                  var label = formatLocationLabel(code, name);
+                  return (
+                    '<div class="qty-stock-row">' +
+                    '  <div class="qty-stock-label">' +
+                    escapeHtml(label) +
+                    "</div>" +
+                    '  <div class="qty-stock-qty">' +
+                    escapeHtml(String(row.qty)) +
+                    " шт</div>" +
+                    "</div>"
+                  );
+                })
+                .join("");
+            }
+
+            function renderHuRows(rows) {
+              if (!rows.length) {
+                return '<div class="qty-stock-empty">Нет HU-разреза</div>';
+              }
+              return rows
+                .map(function (row) {
+                  var code = row.locationCode || "";
+                  var line =
+                    row.hu +
+                    " — " +
+                    row.qty +
+                    " " +
+                    uom +
+                    " (локация: " +
+                    code +
+                    ")";
+                  return '<div class="qty-stock-row">' + escapeHtml(line) + "</div>";
+                })
+                .join("");
+            }
+
+            var totalsHtml = renderTotalsRows(totals);
+            var byHuHtml =
+              '<div class="qty-stock-section">' +
+              '  <div class="qty-stock-section-title">По HU</div>' +
+              renderHuRows(byHu) +
+              "</div>";
+
+            stockBody.innerHTML =
+              '<div class="qty-stock-section">' +
+              '  <div class="qty-stock-section-title">По локациям</div>' +
+              totalsHtml +
+              "</div>" +
+              byHuHtml;
+          })
+          .catch(function () {
+            stockBody.textContent = "Остаток недоступен";
+          });
+      }
 
       function setQtyError(message) {
         var errorEl = qtyOverlay.querySelector(".qty-overlay-error");
@@ -3035,7 +3239,7 @@
         finalizeLine(itemOverride);
         return;
       }
-      TsdStorage.findItemByCode(barcode)
+      TsdStorage.apiFindItemByCode(barcode)
         .then(function (item) {
           if (item) {
             finalizeLine(item);
@@ -3060,31 +3264,16 @@
           return Promise.resolve(true);
         }
         var fromHu = normalizeHuCode(lineData.from_hu);
-        return TsdStorage.getStockByItemId(itemId)
-          .then(function (rows) {
-            var locationRows = rows.filter(function (row) {
-              return row.locationId === doc.header.from_id;
-            });
-            if (!locationRows.length) {
-              return true;
-            }
-
-            var hasHuInfo = locationRows.some(function (row) {
-              return row.hu !== undefined;
-            });
-            if (!hasHuInfo) {
-              return true;
-            }
-
+        if (!fromHu) {
+          return Promise.resolve(true);
+        }
+        return TsdStorage.apiGetStockByBarcode(barcode)
+          .then(function (stock) {
+            var rows = stock && Array.isArray(stock.byHu) ? stock.byHu : [];
             var available = 0;
-            locationRows.forEach(function (row) {
-              var rowHu = normalizeHuCode(row.hu);
-              if (fromHu) {
-                if (rowHu === fromHu) {
-                  available += Number(row.qtyBase) || 0;
-                }
-              } else if (!rowHu) {
-                available += Number(row.qtyBase) || 0;
+            rows.forEach(function (row) {
+              if (row.locationId === doc.header.from_id && normalizeHuCode(row.hu) === fromHu) {
+                available += Number(row.qty) || 0;
               }
             });
 
@@ -3303,7 +3492,7 @@
 
       if (doc.header.from_id && !doc.header.from_name) {
         updates.push(
-          TsdStorage.getLocationById(doc.header.from_id).then(function (location) {
+          TsdStorage.apiGetLocationById(doc.header.from_id).then(function (location) {
             if (location) {
               doc.header.from = location.code || doc.header.from;
               doc.header.from_name = location.name || null;
@@ -3315,7 +3504,7 @@
 
       if (doc.header.to_id && !doc.header.to_name) {
         updates.push(
-          TsdStorage.getLocationById(doc.header.to_id).then(function (location) {
+          TsdStorage.apiGetLocationById(doc.header.to_id).then(function (location) {
             if (location) {
               doc.header.to = location.code || doc.header.to;
               doc.header.to_name = location.name || null;
@@ -3327,7 +3516,7 @@
 
       if (doc.header.location_id && !doc.header.location_name) {
         updates.push(
-          TsdStorage.getLocationById(doc.header.location_id).then(function (location) {
+          TsdStorage.apiGetLocationById(doc.header.location_id).then(function (location) {
             if (location) {
               doc.header.location = location.code || doc.header.location;
               doc.header.location_name = location.name || null;
@@ -3377,7 +3566,7 @@
       }
       var qtyMode = doc.header.qtyMode === "INC1" ? "INC1" : "ASK";
       if (qtyMode === "ASK") {
-        TsdStorage.findItemByCode(barcode)
+        TsdStorage.apiFindItemByCode(barcode)
           .then(function (item) {
             if (item) {
               openQuantityOverlay(barcode, item, function (quantity) {
@@ -4083,7 +4272,7 @@
         if (doc.status !== "DRAFT") {
           return;
         }
-        openPartnerPicker(applyPartnerSelection);
+        openPartnerPicker(getPartnerRoleForOp(doc.op), applyPartnerSelection);
       });
     }
 
@@ -4543,7 +4732,10 @@
     var dateKey = getDateKey(now);
     var prefix = OPS[op].prefix;
 
-    TsdStorage.nextDocCounter(prefix, dateKey)
+    ensureServerAvailable()
+      .then(function () {
+        return TsdStorage.nextDocCounter(prefix, dateKey);
+      })
       .then(function (counter) {
         var docRef = prefix + "-" + dateKey + "-" + padNumber(counter, 3);
         var docId = createUuid();
@@ -4568,7 +4760,7 @@
         });
       })
       .catch(function () {
-        alert("Не удалось создать документ.");
+        return false;
       });
   }
 

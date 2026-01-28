@@ -4,6 +4,7 @@
   var FORCE_ONLINE = true;
   var ONLINE_ERROR_MESSAGE = "Нет связи с сервером LightWMS. Проверьте Wi-Fi.";
   var PING_TIMEOUT_MS = 4000;
+  var API_TIMEOUT_MS = 10000;
   var BASE_URL_SETTING = "base_url";
   var baseUrlCache = null;
   var lastPingAt = 0;
@@ -101,6 +102,293 @@
         if (timer) {
           clearTimeout(timer);
         }
+      });
+  }
+
+  function fetchJsonWithTimeout(url, options, timeoutMs) {
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var timer = controller
+      ? window.setTimeout(function () {
+          controller.abort();
+        }, timeoutMs || API_TIMEOUT_MS)
+      : null;
+
+    return fetch(
+      url,
+      Object.assign(
+        {
+          cache: "no-store",
+          signal: controller ? controller.signal : undefined,
+        },
+        options || {}
+      )
+    )
+      .then(function (response) {
+        return response
+          .json()
+          .catch(function () {
+            return null;
+          })
+          .then(function (payload) {
+            if (!response.ok) {
+              var message = (payload && payload.error) || "SERVER_ERROR";
+              throw new Error(message);
+            }
+            if (!payload && response.status !== 204) {
+              throw new Error("INVALID_RESPONSE");
+            }
+            return payload;
+          });
+      })
+      .finally(function () {
+        if (timer) {
+          clearTimeout(timer);
+        }
+      });
+  }
+
+  function normalizeApiItem(item) {
+    if (!item || item.id == null) {
+      return null;
+    }
+    var id = Number(item.id);
+    if (!id) {
+      return null;
+    }
+    return {
+      itemId: id,
+      name: String(item.name || ""),
+      barcode: String(item.barcode || "").trim(),
+      gtin: String(item.gtin || "").trim(),
+      sku: String(item.sku || "").trim(),
+      base_uom: String(item.base_uom_code || item.base_uom || "").trim(),
+      base_uom_code: String(item.base_uom_code || item.base_uom || "").trim(),
+    };
+  }
+
+  function normalizeApiLocation(location) {
+    if (!location || location.id == null) {
+      return null;
+    }
+    var id = Number(location.id);
+    if (!id) {
+      return null;
+    }
+    return {
+      locationId: id,
+      code: String(location.code || "").trim(),
+      name: String(location.name || "").trim(),
+    };
+  }
+
+  function apiSearchItems(query, limit) {
+    var q = String(query || "").trim();
+    return getBaseUrl().then(function (baseUrl) {
+      var url = baseUrl + "/api/items";
+      if (q) {
+        url += "?q=" + encodeURIComponent(q);
+      }
+      return fetchJsonWithTimeout(url, { method: "GET" });
+    }).then(function (payload) {
+      if (!Array.isArray(payload)) {
+        throw new Error("INVALID_ITEMS");
+      }
+      var items = payload
+        .map(normalizeApiItem)
+        .filter(function (item) {
+          return !!item;
+        });
+      if (typeof limit === "number" && limit > 0 && items.length > limit) {
+        return items.slice(0, limit);
+      }
+      return items;
+    });
+  }
+
+  function apiFindItemByCode(code) {
+    var clean = String(code || "").trim();
+    if (!clean) {
+      return Promise.resolve(null);
+    }
+    return apiSearchItems(clean, 20).then(function (items) {
+      if (!items.length) {
+        return null;
+      }
+      var exact = items.find(function (item) {
+        return item.barcode === clean || item.gtin === clean;
+      });
+      if (exact) {
+        return exact;
+      }
+      if (items.length === 1) {
+        return items[0];
+      }
+      return items[0];
+    });
+  }
+
+  var apiLocationsCache = null;
+  var apiLocationsCachedAt = 0;
+  var API_LOCATIONS_TTL_MS = 60000;
+
+  function apiGetLocations() {
+    var now = Date.now();
+    if (apiLocationsCache && now - apiLocationsCachedAt < API_LOCATIONS_TTL_MS) {
+      return Promise.resolve(apiLocationsCache.slice());
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/locations", { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_LOCATIONS");
+        }
+        var locations = payload
+          .map(normalizeApiLocation)
+          .filter(function (location) {
+            return !!location;
+          });
+        apiLocationsCache = locations;
+        apiLocationsCachedAt = Date.now();
+        return locations.slice();
+      });
+  }
+
+  var apiPartnersCache = {};
+
+  function normalizePartnerRole(role) {
+    var normalized = String(role || "").toLowerCase();
+    if (normalized === "supplier" || normalized === "customer" || normalized === "both") {
+      return normalized;
+    }
+    return "both";
+  }
+
+  function normalizeApiPartner(partner) {
+    if (!partner || partner.id == null) {
+      return null;
+    }
+    var id = Number(partner.id);
+    var name = String(partner.name || "").trim();
+    if (!id || !name) {
+      return null;
+    }
+    var code = String(partner.code || partner.inn || "").trim();
+    var inn = String(partner.inn || partner.code || "").trim();
+    return {
+      partnerId: id,
+      name: name,
+      code: code,
+      inn: inn,
+    };
+  }
+
+  function apiGetPartners(role) {
+    var roleValue = normalizePartnerRole(role);
+    if (apiPartnersCache[roleValue]) {
+      return Promise.resolve(apiPartnersCache[roleValue].slice());
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/partners?role=" + encodeURIComponent(roleValue),
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_PARTNERS");
+        }
+        var partners = payload
+          .map(normalizeApiPartner)
+          .filter(function (partner) {
+            return !!partner;
+          });
+        apiPartnersCache[roleValue] = partners;
+        return partners.slice();
+      });
+  }
+
+  function apiSearchLocations(query) {
+    var q = String(query || "").toLowerCase();
+    return apiGetLocations().then(function (locations) {
+      if (!q) {
+        return locations;
+      }
+      return locations.filter(function (location) {
+        return (
+          (location.code && location.code.toLowerCase().indexOf(q) !== -1) ||
+          (location.name && location.name.toLowerCase().indexOf(q) !== -1)
+        );
+      });
+    });
+  }
+
+  function apiGetLocationById(id) {
+    var target = Number(id);
+    if (!target) {
+      return Promise.resolve(null);
+    }
+    return apiGetLocations().then(function (locations) {
+      for (var i = 0; i < locations.length; i += 1) {
+        if (Number(locations[i].locationId) === target) {
+          return locations[i];
+        }
+      }
+      return null;
+    });
+  }
+
+  function apiGetStockByBarcode(barcode) {
+    var clean = String(barcode || "").trim();
+    if (!clean) {
+      return Promise.reject(new Error("barcode_required"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/stock/by-barcode/" + encodeURIComponent(clean),
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        if (!payload || !Array.isArray(payload.totalsByLocation) || !Array.isArray(payload.byHu)) {
+          throw new Error("INVALID_STOCK");
+        }
+        function normalizeLocationCode(value) {
+          return String(value || "").trim();
+        }
+
+        var totals = payload.totalsByLocation.map(function (row) {
+          var locationId = Number(row.location_id);
+          var qty = Number(row.qty);
+          var locationCode = normalizeLocationCode(row.location_code || row.locationCode);
+          if (!locationId || isNaN(qty) || !isNonEmptyString(locationCode)) {
+            throw new Error("INVALID_STOCK");
+          }
+          return {
+            locationId: locationId,
+            locationCode: locationCode,
+            qty: qty,
+          };
+        });
+        var byHu = payload.byHu.map(function (row) {
+          var locationId = Number(row.location_id);
+          var qty = Number(row.qty);
+          var hu = String(row.hu || "").trim();
+          var locationCode = normalizeLocationCode(row.location_code || row.locationCode);
+          if (!locationId || isNaN(qty) || !isNonEmptyString(locationCode) || !isNonEmptyString(hu)) {
+            throw new Error("INVALID_STOCK");
+          }
+          return {
+            hu: hu,
+            locationId: locationId,
+            locationCode: locationCode,
+            qty: qty,
+          };
+        });
+        return { totalsByLocation: totals, byHu: byHu };
       });
   }
 
@@ -1756,6 +2044,13 @@
     listLocalItemsForExport: listLocalItemsForExport,
     markLocalItemsExported: markLocalItemsExported,
     getBaseUrl: getBaseUrl,
+    apiSearchItems: apiSearchItems,
+    apiFindItemByCode: apiFindItemByCode,
+    apiGetLocations: apiGetLocations,
+    apiSearchLocations: apiSearchLocations,
+    apiGetLocationById: apiGetLocationById,
+    apiGetStockByBarcode: apiGetStockByBarcode,
+    apiGetPartners: apiGetPartners,
   };
 
   global.TsdStorage = FORCE_ONLINE ? wrapOnline(offlineStorage) : offlineStorage;

@@ -381,6 +381,24 @@ body {
   color: #486581;
 }
 
+.stock-hu-block {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed #d8e3ee;
+}
+
+.stock-hu-title {
+  font-weight: 600;
+  color: #1b3a57;
+  margin-bottom: 6px;
+}
+
+.stock-hu-row {
+  font-size: 14px;
+  color: #486581;
+  padding: 2px 0;
+}
+
 .screen-title {
   margin: 0 0 12px;
   font-size: 18px;
@@ -1269,6 +1287,52 @@ body.modal-open {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 6px;
+}
+
+.qty-overlay-stock {
+  border: 1px solid #d8e3ee;
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: #f6f9fc;
+  color: #1b3a57;
+  font-size: 13px;
+}
+
+.qty-overlay-stock-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.qty-stock-section {
+  margin-top: 6px;
+}
+
+.qty-stock-section-title {
+  font-size: 12px;
+  color: #486581;
+  margin-bottom: 4px;
+}
+
+.qty-stock-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.qty-stock-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.qty-stock-qty {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.qty-stock-empty {
+  font-size: 12px;
+  color: #6f8096;
 }
 
 .qty-overlay-quick-btn {
