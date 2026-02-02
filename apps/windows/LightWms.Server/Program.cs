@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using System.Data.Common;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using LightWms.Core.Abstractions;
 using LightWms.Core.Models;
 using LightWms.Core.Services;
 using LightWms.Data;
@@ -12,31 +14,57 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.FileProviders;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var dbPath = ResolveDbPath(builder.Configuration);
+var dbProvider = ResolveDbProvider(builder.Configuration);
+string? sqlitePath = null;
+string? postgresConnectionString = null;
 
-builder.Services.AddSingleton<SqliteDataStore>(sp =>
+if (dbProvider == DbProvider.Postgres)
 {
-    var directory = Path.GetDirectoryName(dbPath);
-    if (!string.IsNullOrWhiteSpace(directory))
+    postgresConnectionString = BuildPostgresConnectionString(builder.Configuration);
+}
+else
+{
+    sqlitePath = ResolveSqlitePath(builder.Configuration);
+}
+
+if (dbProvider == DbProvider.Postgres)
+{
+    builder.Services.AddSingleton<PostgresDataStore>(sp =>
     {
-        Directory.CreateDirectory(directory);
-    }
-    var store = new SqliteDataStore(dbPath);
-    store.Initialize();
-    return store;
-});
-builder.Services.AddSingleton<LightWms.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<SqliteDataStore>());
+        var store = new PostgresDataStore(postgresConnectionString!);
+        store.Initialize();
+        return store;
+    });
+    builder.Services.AddSingleton<LightWms.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<PostgresDataStore>());
+    builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString!));
+}
+else
+{
+    builder.Services.AddSingleton<SqliteDataStore>(sp =>
+    {
+        var directory = Path.GetDirectoryName(sqlitePath);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+        var store = new SqliteDataStore(sqlitePath!);
+        store.Initialize();
+        return store;
+    });
+    builder.Services.AddSingleton<LightWms.Core.Abstractions.IDataStore>(sp => sp.GetRequiredService<SqliteDataStore>());
+    builder.Services.AddSingleton<IApiDocStore>(new ApiDocStore(sqlitePath!));
+}
 builder.Services.AddSingleton<DocumentService>();
-builder.Services.AddSingleton(new ApiDocStore(dbPath));
 
 var app = builder.Build();
 
 app.UseHttpsRedirection();
 
-LogDbInfo(app.Logger, dbPath);
+LogDbInfo(app.Logger, dbProvider, sqlitePath, postgresConnectionString);
 
 app.Use(async (context, next) =>
 {
@@ -90,7 +118,7 @@ app.MapGet("/api/ping", () =>
 
 app.MapGet("/api/diag/db", () =>
 {
-    var info = BuildDbInfo(dbPath);
+    var info = BuildDbInfo(dbProvider, sqlitePath, postgresConnectionString);
     return Results.Ok(info);
 });
 
@@ -106,7 +134,7 @@ app.MapGet("/api/diag/routes", (EndpointDataSource dataSource) =>
 
 app.MapGet("/api/diag/counts", () =>
 {
-    using var connection = OpenConnection(dbPath);
+    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
     return Results.Ok(new
     {
         items = CountTable(connection, "items"),
@@ -118,7 +146,7 @@ app.MapGet("/api/diag/counts", () =>
     });
 });
 
-app.MapGet("/api/locations", (SqliteDataStore store) =>
+app.MapGet("/api/locations", (IDataStore store) =>
 {
     var locations = store.GetLocations()
         .Select(location => new { id = location.Id, code = location.Code, name = location.Name })
@@ -126,7 +154,7 @@ app.MapGet("/api/locations", (SqliteDataStore store) =>
     return Results.Ok(locations);
 });
 
-app.MapGet("/api/items/by-barcode/{barcode}", (string barcode, SqliteDataStore store) =>
+app.MapGet("/api/items/by-barcode/{barcode}", (string barcode, IDataStore store) =>
 {
     if (string.IsNullOrWhiteSpace(barcode))
     {
@@ -155,9 +183,18 @@ app.MapGet("/api/items", (HttpRequest request) =>
     var query = request.Query["q"].ToString();
     var search = string.IsNullOrWhiteSpace(query) ? null : $"%{query.Trim()}%";
 
-    using var connection = OpenConnection(dbPath);
+    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
     using var command = connection.CreateCommand();
-    command.CommandText = @"
+    command.CommandText = dbProvider == DbProvider.Postgres
+        ? @"
+SELECT id, name, barcode, gtin, base_uom, uom
+FROM items
+WHERE @search IS NULL
+   OR name ILIKE @search
+   OR barcode ILIKE @search
+   OR gtin ILIKE @search
+ORDER BY name;"
+        : @"
 SELECT id, name, barcode, gtin, base_uom, uom
 FROM items
 WHERE @search IS NULL
@@ -165,7 +202,7 @@ WHERE @search IS NULL
    OR barcode LIKE @search COLLATE NOCASE
    OR gtin LIKE @search COLLATE NOCASE
 ORDER BY name;";
-    command.Parameters.AddWithValue("@search", search ?? (object)DBNull.Value);
+    AddParam(command, "@search", search ?? (object)DBNull.Value);
     using var reader = command.ExecuteReader();
     var list = new List<object>();
     while (reader.Read())
@@ -189,7 +226,7 @@ ORDER BY name;";
     return Results.Ok(list);
 });
 
-app.MapGet("/api/partners", (HttpRequest request, SqliteDataStore store) =>
+app.MapGet("/api/partners", (HttpRequest request, IDataStore store) =>
 {
     var role = request.Query["role"].ToString();
     var filter = ParsePartnerRole(role);
@@ -222,13 +259,13 @@ app.MapGet("/api/partners", (HttpRequest request, SqliteDataStore store) =>
 
 app.MapGet("/api/stock", () =>
 {
-    using var connection = OpenConnection(dbPath);
+    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
     using var command = connection.CreateCommand();
     command.CommandText = @"
 SELECT item_id, location_id, COALESCE(SUM(qty_delta), 0) AS qty
 FROM ledger
 GROUP BY item_id, location_id
-HAVING qty != 0
+HAVING SUM(qty_delta) != 0
 ORDER BY item_id, location_id;";
     using var reader = command.ExecuteReader();
     var rows = new List<object>();
@@ -245,7 +282,7 @@ ORDER BY item_id, location_id;";
     return Results.Ok(rows);
 });
 
-app.MapGet("/api/stock/by-barcode/{barcode}", (string barcode, SqliteDataStore store) =>
+app.MapGet("/api/stock/by-barcode/{barcode}", (string barcode, IDataStore store) =>
 {
     if (string.IsNullOrWhiteSpace(barcode))
     {
@@ -259,7 +296,7 @@ app.MapGet("/api/stock/by-barcode/{barcode}", (string barcode, SqliteDataStore s
         return Results.NotFound(new ApiResult(false, "UNKNOWN_BARCODE"));
     }
 
-    using var connection = OpenConnection(dbPath);
+    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
     using var totalsCommand = connection.CreateCommand();
     totalsCommand.CommandText = @"
 SELECT l.id, l.code, COALESCE(SUM(led.qty_delta), 0) AS qty
@@ -267,9 +304,9 @@ FROM ledger led
 INNER JOIN locations l ON l.id = led.location_id
 WHERE led.item_id = @item_id
 GROUP BY l.id, l.code
-HAVING qty != 0
+HAVING SUM(led.qty_delta) != 0
 ORDER BY l.code;";
-    totalsCommand.Parameters.AddWithValue("@item_id", item.Id);
+    AddParam(totalsCommand, "@item_id", item.Id);
     using var totalsReader = totalsCommand.ExecuteReader();
     var totals = new List<object>();
     while (totalsReader.Read())
@@ -291,9 +328,9 @@ WHERE led.item_id = @item_id
   AND COALESCE(led.hu_code, led.hu) IS NOT NULL
   AND COALESCE(led.hu_code, led.hu) <> ''
 GROUP BY hu, l.id, l.code
-HAVING qty != 0
+HAVING SUM(led.qty_delta) != 0
 ORDER BY hu, l.code;";
-    byHuCommand.Parameters.AddWithValue("@item_id", item.Id);
+    AddParam(byHuCommand, "@item_id", item.Id);
     using var byHuReader = byHuCommand.ExecuteReader();
     var byHu = new List<object>();
     while (byHuReader.Read())
@@ -314,7 +351,7 @@ ORDER BY hu, l.code;";
     });
 });
 
-app.MapGet("/api/hu-stock", (SqliteDataStore store) =>
+app.MapGet("/api/hu-stock", (IDataStore store) =>
 {
     var rows = store.GetHuStockRows()
         .Select(row => new
@@ -347,14 +384,14 @@ app.MapGet("/api/hus", (HttpRequest request) =>
         take = 1000;
     }
 
-    using var connection = OpenConnection(dbPath);
+    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
     using var command = connection.CreateCommand();
     command.CommandText = @"
 SELECT id, hu_code, status, created_at, created_by, closed_at, note
 FROM hus
 ORDER BY id DESC
 LIMIT @take;";
-    command.Parameters.AddWithValue("@take", take);
+    AddParam(command, "@take", take);
     using var reader = command.ExecuteReader();
     var list = new List<object>();
     while (reader.Read())
@@ -374,7 +411,7 @@ LIMIT @take;";
     return Results.Ok(list);
 });
 
-app.MapGet("/api/hus/{huCode}", (string huCode, SqliteDataStore store) =>
+app.MapGet("/api/hus/{huCode}", (string huCode, IDataStore store) =>
 {
     if (string.IsNullOrWhiteSpace(huCode))
     {
@@ -421,7 +458,7 @@ app.MapPost("/api/hus/generate", (HuGenerateRequest request) =>
     var createdAt = DateTime.Now.ToString("s", CultureInfo.InvariantCulture);
     var codes = new List<string>(count);
 
-    using var connection = OpenConnection(dbPath);
+    using var connection = OpenConnection(dbProvider, sqlitePath, postgresConnectionString);
     using var transaction = connection.BeginTransaction();
     try
     {
@@ -430,22 +467,28 @@ app.MapPost("/api/hus/generate", (HuGenerateRequest request) =>
             var tmpCode = "TMP-" + Guid.NewGuid().ToString("N");
             using var insert = connection.CreateCommand();
             insert.Transaction = transaction;
-            insert.CommandText = @"
+            insert.CommandText = dbProvider == DbProvider.Postgres
+                ? @"
+INSERT INTO hus(hu_code, status, created_at, created_by)
+VALUES(@hu_code, 'OPEN', @created_at, @created_by)
+RETURNING id;
+"
+                : @"
 INSERT INTO hus(hu_code, status, created_at, created_by)
 VALUES(@hu_code, 'OPEN', @created_at, @created_by);
 SELECT last_insert_rowid();
 ";
-            insert.Parameters.AddWithValue("@hu_code", tmpCode);
-            insert.Parameters.AddWithValue("@created_at", createdAt);
-            insert.Parameters.AddWithValue("@created_by", createdBy ?? (object)DBNull.Value);
+            AddParam(insert, "@hu_code", tmpCode);
+            AddParam(insert, "@created_at", createdAt);
+            AddParam(insert, "@created_by", createdBy ?? (object)DBNull.Value);
             var id = (long)(insert.ExecuteScalar() ?? 0L);
             var huCode = $"HU-{id:000000}";
 
             using var update = connection.CreateCommand();
             update.Transaction = transaction;
             update.CommandText = "UPDATE hus SET hu_code = @hu_code WHERE id = @id;";
-            update.Parameters.AddWithValue("@hu_code", huCode);
-            update.Parameters.AddWithValue("@id", id);
+            AddParam(update, "@hu_code", huCode);
+            AddParam(update, "@id", id);
             update.ExecuteNonQuery();
 
             codes.Add(huCode);
@@ -462,7 +505,7 @@ SELECT last_insert_rowid();
     return Results.Ok(new { ok = true, hus = codes });
 });
 
-app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
+app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentService docs, IApiDocStore apiStore) =>
 {
     string rawJson;
     using (var reader = new StreamReader(request.Body))
@@ -621,7 +664,7 @@ app.MapPost("/api/ops", async (HttpRequest request, SqliteDataStore store, Docum
     return Results.Ok(new ApiResult(true));
 });
 
-app.MapPost("/api/docs", async (HttpRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
+app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentService docs, IApiDocStore apiStore) =>
 {
     var rawJson = await ReadBody(request);
     if (string.IsNullOrWhiteSpace(rawJson))
@@ -865,7 +908,7 @@ app.MapPost("/api/docs", async (HttpRequest request, SqliteDataStore store, Docu
     });
 });
 
-app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
+app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest request, IDataStore store, DocumentService docs, IApiDocStore apiStore) =>
 {
     var rawJson = await ReadBody(request);
     if (string.IsNullOrWhiteSpace(rawJson))
@@ -1020,7 +1063,7 @@ app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest reques
     });
 });
 
-app.MapPost("/api/docs/{docUid}/close", async (string docUid, HttpRequest request, SqliteDataStore store, DocumentService docs, ApiDocStore apiStore) =>
+app.MapPost("/api/docs/{docUid}/close", async (string docUid, HttpRequest request, IDataStore store, DocumentService docs, IApiDocStore apiStore) =>
 {
     var rawJson = await ReadBody(request);
     if (string.IsNullOrWhiteSpace(rawJson))
@@ -1108,7 +1151,20 @@ if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
 
 app.Run();
 
-static string ResolveDbPath(IConfiguration configuration)
+static DbProvider ResolveDbProvider(IConfiguration configuration)
+{
+    var provider = configuration["LIGHTWMS_DB_PROVIDER"];
+    if (string.IsNullOrWhiteSpace(provider))
+    {
+        return DbProvider.Sqlite;
+    }
+
+    return provider.Trim().Equals("postgres", StringComparison.OrdinalIgnoreCase)
+        ? DbProvider.Postgres
+        : DbProvider.Sqlite;
+}
+
+static string ResolveSqlitePath(IConfiguration configuration)
 {
     var configured = configuration["DbPath"];
     var path = string.IsNullOrWhiteSpace(configured) ? ServerPaths.DatabasePath : configured;
@@ -1116,9 +1172,50 @@ static string ResolveDbPath(IConfiguration configuration)
     return Path.GetFullPath(path);
 }
 
-static void LogDbInfo(ILogger logger, string dbPath)
+static string BuildPostgresConnectionString(IConfiguration configuration)
 {
-    var fileInfo = new FileInfo(dbPath);
+    var host = configuration["LIGHTWMS_PG_HOST"];
+    var database = configuration["LIGHTWMS_PG_DB"];
+    var user = configuration["LIGHTWMS_PG_USER"];
+    var password = configuration["LIGHTWMS_PG_PASSWORD"];
+    var portText = configuration["LIGHTWMS_PG_PORT"];
+
+    if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(database) || string.IsNullOrWhiteSpace(user))
+    {
+        throw new InvalidOperationException("Missing postgres connection settings. Set LIGHTWMS_PG_HOST/DB/USER/PASSWORD.");
+    }
+
+    var builder = new NpgsqlConnectionStringBuilder
+    {
+        Host = host,
+        Database = database,
+        Username = user,
+        Password = password ?? string.Empty
+    };
+
+    if (!string.IsNullOrWhiteSpace(portText) && int.TryParse(portText, out var port))
+    {
+        builder.Port = port;
+    }
+
+    return builder.ConnectionString;
+}
+
+static void LogDbInfo(ILogger logger, DbProvider provider, string? sqlitePath, string? postgresConnectionString)
+{
+    if (provider == DbProvider.Postgres)
+    {
+        var info = BuildPostgresInfo(postgresConnectionString);
+        logger.LogInformation(
+            "DB: postgres host={Host} db={Database} port={Port} user={User}",
+            info.Host,
+            info.Database,
+            info.Port,
+            info.Username);
+        return;
+    }
+
+    var fileInfo = new FileInfo(sqlitePath ?? string.Empty);
     var exists = fileInfo.Exists;
     var sizeBytes = exists ? fileInfo.Length : 0;
     var lastWriteUtc = exists
@@ -1127,18 +1224,32 @@ static void LogDbInfo(ILogger logger, string dbPath)
 
     logger.LogInformation(
         "DB: {Path} exists={Exists} size={Size} lastWriteUtc={LastWriteUtc}",
-        dbPath,
+        sqlitePath,
         exists,
         sizeBytes,
         lastWriteUtc);
 }
 
-static object BuildDbInfo(string dbPath)
+static object BuildDbInfo(DbProvider provider, string? sqlitePath, string? postgresConnectionString)
 {
-    var fileInfo = new FileInfo(dbPath);
+    if (provider == DbProvider.Postgres)
+    {
+        var info = BuildPostgresInfo(postgresConnectionString);
+        return new
+        {
+            provider = "postgres",
+            host = info.Host,
+            port = info.Port,
+            database = info.Database,
+            user = info.Username
+        };
+    }
+
+    var fileInfo = new FileInfo(sqlitePath ?? string.Empty);
     return new
     {
-        dbPath,
+        provider = "sqlite",
+        dbPath = sqlitePath,
         exists = fileInfo.Exists,
         sizeBytes = fileInfo.Exists ? fileInfo.Length : 0,
         lastWriteUtc = fileInfo.Exists ? fileInfo.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture) : null
@@ -1190,14 +1301,16 @@ static List<string> BuildRouteList(EndpointDataSource dataSource)
         .ToList();
 }
 
-static SqliteConnection OpenConnection(string dbPath)
+static DbConnection OpenConnection(DbProvider provider, string? sqlitePath, string? postgresConnectionString)
 {
-    var connection = new SqliteConnection($"Data Source={dbPath}");
+    DbConnection connection = provider == DbProvider.Postgres
+        ? new NpgsqlConnection(postgresConnectionString)
+        : new SqliteConnection($"Data Source={sqlitePath}");
     connection.Open();
     return connection;
 }
 
-static long CountTable(SqliteConnection connection, string table)
+static long CountTable(DbConnection connection, string table)
 {
     using var command = connection.CreateCommand();
     command.CommandText = $"SELECT COUNT(*) FROM {table};";
@@ -1205,12 +1318,31 @@ static long CountTable(SqliteConnection connection, string table)
     return result == null || result == DBNull.Value ? 0 : Convert.ToInt64(result, CultureInfo.InvariantCulture);
 }
 
+static void AddParam(DbCommand command, string name, object? value)
+{
+    var parameter = command.CreateParameter();
+    parameter.ParameterName = name;
+    parameter.Value = value ?? DBNull.Value;
+    command.Parameters.Add(parameter);
+}
+
+static (string Host, int Port, string Database, string Username) BuildPostgresInfo(string? connectionString)
+{
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        return (string.Empty, 0, string.Empty, string.Empty);
+    }
+
+    var builder = new NpgsqlConnectionStringBuilder(connectionString);
+    return (builder.Host, builder.Port, builder.Database, builder.Username);
+}
+
 static string? NormalizeHu(string? value)
 {
     return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
-static LocationResolution ResolveLocationForEvent(SqliteDataStore store, string? code, int? id)
+static LocationResolution ResolveLocationForEvent(IDataStore store, string? code, int? id)
 {
     if (id.HasValue)
     {
@@ -1256,7 +1388,7 @@ static LocationResolution ResolveLocationForEvent(SqliteDataStore store, string?
     return new LocationResolution { Error = "UNKNOWN_LOCATION" };
 }
 
-static object BuildLocationErrorResult(LocationResolution resolution, OperationEventRequest request, SqliteDataStore store)
+static object BuildLocationErrorResult(LocationResolution resolution, OperationEventRequest request, IDataStore store)
 {
     var sampleCodes = store.GetLocations()
         .Select(location => location.Code)
@@ -1292,7 +1424,7 @@ static object BuildLocationErrorResult(LocationResolution resolution, OperationE
     };
 }
 
-static Item? FindItemByBarcodeVariant(SqliteDataStore store, string barcode)
+static Item? FindItemByBarcodeVariant(IDataStore store, string barcode)
 {
     if (barcode.Length == 13)
     {
@@ -1405,4 +1537,10 @@ enum PartnerRoleFilter
     Supplier,
     Both,
     Unknown
+}
+
+enum DbProvider
+{
+    Sqlite,
+    Postgres
 }

@@ -1,29 +1,15 @@
 using System.Globalization;
-using Microsoft.Data.Sqlite;
+using Npgsql;
 
 namespace LightWms.Server;
 
-public sealed record ApiDocInfo(
-    long DocId,
-    string Status,
-    string DocRef,
-    string DocType,
-    long? PartnerId,
-    long? FromLocationId,
-    long? ToLocationId,
-    string? FromHu,
-    string? ToHu,
-    string? DeviceId);
-
-public sealed record ApiEventInfo(string EventType, string? DocUid);
-
-public sealed class ApiDocStore : IApiDocStore
+public sealed class PostgresApiDocStore : IApiDocStore
 {
-    private readonly string _dbPath;
+    private readonly string _connectionString;
 
-    public ApiDocStore(string dbPath)
+    public PostgresApiDocStore(string connectionString)
     {
-        _dbPath = dbPath;
+        _connectionString = connectionString;
     }
 
     public void AddApiDoc(
@@ -172,8 +158,9 @@ LIMIT 1;";
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = @"
-INSERT OR IGNORE INTO api_events(event_id, event_type, doc_uid, created_at, received_at, device_id, raw_json)
-VALUES(@event_id, @event_type, @doc_uid, @created_at, @received_at, @device_id, @raw_json);
+INSERT INTO api_events(event_id, event_type, doc_uid, created_at, received_at, device_id, raw_json)
+VALUES(@event_id, @event_type, @doc_uid, @created_at, @received_at, @device_id, @raw_json)
+ON CONFLICT (event_id) DO NOTHING;
 ";
         var now = DateTime.Now.ToString("s");
         command.Parameters.AddWithValue("@event_id", eventId);
@@ -240,9 +227,9 @@ WHERE item_id = @item_id AND location_id = @location_id";
         command.ExecuteNonQuery();
     }
 
-    private SqliteConnection OpenConnection()
+    private NpgsqlConnection OpenConnection()
     {
-        var connection = new SqliteConnection($"Data Source={_dbPath}");
+        var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
         return connection;
     }
