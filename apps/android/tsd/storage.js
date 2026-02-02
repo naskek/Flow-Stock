@@ -1,6 +1,16 @@
  (function (global) {
   "use strict";
 
+  var FORCE_ONLINE = true;
+  var ONLINE_ERROR_MESSAGE = "Нет связи с сервером LightWMS. Проверьте Wi-Fi.";
+  var PING_TIMEOUT_MS = 4000;
+  var API_TIMEOUT_MS = 10000;
+  var BASE_URL_SETTING = "base_url";
+  var baseUrlCache = null;
+  var lastPingAt = 0;
+  var lastPingOk = false;
+  var PING_CACHE_MS = 10000;
+
   var DB_NAME = "tsd_app";
   var DB_VERSION = 8;
   var STORE_SETTINGS = "settings";
@@ -17,6 +27,407 @@
   var STORE_ORDER_LINES = "orderLines";
   var db = null;
   var locationCache = null;
+
+  function normalizeBaseUrl(value) {
+    var url = String(value || "").trim();
+    if (!url) {
+      return "";
+    }
+    return url.replace(/\/+$/, "");
+  }
+
+  function getDefaultBaseUrl() {
+    if (window.location && String(window.location.origin || "").indexOf("http") === 0) {
+      return normalizeBaseUrl(window.location.origin);
+    }
+    return "https://localhost:7153";
+  }
+
+  function getBaseUrl() {
+    if (baseUrlCache) {
+      return Promise.resolve(baseUrlCache);
+    }
+    return getSetting(BASE_URL_SETTING)
+      .then(function (value) {
+        var normalized = normalizeBaseUrl(value) || getDefaultBaseUrl();
+        baseUrlCache = normalized;
+        return normalized;
+      })
+      .catch(function () {
+        baseUrlCache = getDefaultBaseUrl();
+        return baseUrlCache;
+      });
+  }
+
+  function ensureOnline() {
+    var now = Date.now();
+    if (lastPingAt && now - lastPingAt < PING_CACHE_MS) {
+      return lastPingOk ? Promise.resolve(true) : Promise.reject(new Error(ONLINE_ERROR_MESSAGE));
+    }
+    if (!navigator.onLine) {
+      lastPingAt = now;
+      lastPingOk = false;
+      return Promise.reject(new Error(ONLINE_ERROR_MESSAGE));
+    }
+
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var timer = controller
+      ? window.setTimeout(function () {
+          controller.abort();
+        }, PING_TIMEOUT_MS)
+      : null;
+
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetch(baseUrl + "/api/ping", {
+          method: "GET",
+          cache: "no-store",
+          signal: controller ? controller.signal : undefined,
+        });
+      })
+      .then(function (response) {
+        lastPingAt = Date.now();
+        lastPingOk = response.ok;
+        if (!response.ok) {
+          throw new Error(ONLINE_ERROR_MESSAGE);
+        }
+        return true;
+      })
+      .catch(function () {
+        lastPingAt = Date.now();
+        lastPingOk = false;
+        throw new Error(ONLINE_ERROR_MESSAGE);
+      })
+      .finally(function () {
+        if (timer) {
+          clearTimeout(timer);
+        }
+      });
+  }
+
+  function fetchJsonWithTimeout(url, options, timeoutMs) {
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var timer = controller
+      ? window.setTimeout(function () {
+          controller.abort();
+        }, timeoutMs || API_TIMEOUT_MS)
+      : null;
+
+    return fetch(
+      url,
+      Object.assign(
+        {
+          cache: "no-store",
+          signal: controller ? controller.signal : undefined,
+        },
+        options || {}
+      )
+    )
+      .then(function (response) {
+        return response
+          .json()
+          .catch(function () {
+            return null;
+          })
+          .then(function (payload) {
+            if (!response.ok) {
+              var message = (payload && payload.error) || "SERVER_ERROR";
+              throw new Error(message);
+            }
+            if (!payload && response.status !== 204) {
+              throw new Error("INVALID_RESPONSE");
+            }
+            return payload;
+          });
+      })
+      .finally(function () {
+        if (timer) {
+          clearTimeout(timer);
+        }
+      });
+  }
+
+  function normalizeApiItem(item) {
+    if (!item || item.id == null) {
+      return null;
+    }
+    var id = Number(item.id);
+    if (!id) {
+      return null;
+    }
+    return {
+      itemId: id,
+      name: String(item.name || ""),
+      barcode: String(item.barcode || "").trim(),
+      gtin: String(item.gtin || "").trim(),
+      sku: String(item.sku || "").trim(),
+      base_uom: String(item.base_uom_code || item.base_uom || "").trim(),
+      base_uom_code: String(item.base_uom_code || item.base_uom || "").trim(),
+    };
+  }
+
+  function normalizeApiLocation(location) {
+    if (!location || location.id == null) {
+      return null;
+    }
+    var id = Number(location.id);
+    if (!id) {
+      return null;
+    }
+    return {
+      locationId: id,
+      code: String(location.code || "").trim(),
+      name: String(location.name || "").trim(),
+    };
+  }
+
+  function apiSearchItems(query, limit) {
+    var q = String(query || "").trim();
+    return getBaseUrl().then(function (baseUrl) {
+      var url = baseUrl + "/api/items";
+      if (q) {
+        url += "?q=" + encodeURIComponent(q);
+      }
+      return fetchJsonWithTimeout(url, { method: "GET" });
+    }).then(function (payload) {
+      if (!Array.isArray(payload)) {
+        throw new Error("INVALID_ITEMS");
+      }
+      var items = payload
+        .map(normalizeApiItem)
+        .filter(function (item) {
+          return !!item;
+        });
+      if (typeof limit === "number" && limit > 0 && items.length > limit) {
+        return items.slice(0, limit);
+      }
+      return items;
+    });
+  }
+
+  function apiFindItemByCode(code) {
+    var clean = String(code || "").trim();
+    if (!clean) {
+      return Promise.resolve(null);
+    }
+    return apiSearchItems(clean, 20).then(function (items) {
+      if (!items.length) {
+        return null;
+      }
+      var exact = items.find(function (item) {
+        return item.barcode === clean || item.gtin === clean;
+      });
+      if (exact) {
+        return exact;
+      }
+      if (items.length === 1) {
+        return items[0];
+      }
+      return items[0];
+    });
+  }
+
+  var apiLocationsCache = null;
+  var apiLocationsCachedAt = 0;
+  var API_LOCATIONS_TTL_MS = 60000;
+
+  function apiGetLocations() {
+    var now = Date.now();
+    if (apiLocationsCache && now - apiLocationsCachedAt < API_LOCATIONS_TTL_MS) {
+      return Promise.resolve(apiLocationsCache.slice());
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/locations", { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_LOCATIONS");
+        }
+        var locations = payload
+          .map(normalizeApiLocation)
+          .filter(function (location) {
+            return !!location;
+          });
+        apiLocationsCache = locations;
+        apiLocationsCachedAt = Date.now();
+        return locations.slice();
+      });
+  }
+
+  var apiPartnersCache = {};
+
+  function normalizePartnerRole(role) {
+    var normalized = String(role || "").toLowerCase();
+    if (normalized === "supplier" || normalized === "customer" || normalized === "both") {
+      return normalized;
+    }
+    return "both";
+  }
+
+  function normalizeApiPartner(partner) {
+    if (!partner || partner.id == null) {
+      return null;
+    }
+    var id = Number(partner.id);
+    var name = String(partner.name || "").trim();
+    if (!id || !name) {
+      return null;
+    }
+    var code = String(partner.code || partner.inn || "").trim();
+    var inn = String(partner.inn || partner.code || "").trim();
+    return {
+      partnerId: id,
+      name: name,
+      code: code,
+      inn: inn,
+    };
+  }
+
+  function apiGetPartners(role) {
+    var roleValue = normalizePartnerRole(role);
+    if (apiPartnersCache[roleValue]) {
+      return Promise.resolve(apiPartnersCache[roleValue].slice());
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/partners?role=" + encodeURIComponent(roleValue),
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_PARTNERS");
+        }
+        var partners = payload
+          .map(normalizeApiPartner)
+          .filter(function (partner) {
+            return !!partner;
+          });
+        apiPartnersCache[roleValue] = partners;
+        return partners.slice();
+      });
+  }
+
+  function apiSearchLocations(query) {
+    var q = String(query || "").toLowerCase();
+    return apiGetLocations().then(function (locations) {
+      if (!q) {
+        return locations;
+      }
+      return locations.filter(function (location) {
+        return (
+          (location.code && location.code.toLowerCase().indexOf(q) !== -1) ||
+          (location.name && location.name.toLowerCase().indexOf(q) !== -1)
+        );
+      });
+    });
+  }
+
+  function apiGetLocationById(id) {
+    var target = Number(id);
+    if (!target) {
+      return Promise.resolve(null);
+    }
+    return apiGetLocations().then(function (locations) {
+      for (var i = 0; i < locations.length; i += 1) {
+        if (Number(locations[i].locationId) === target) {
+          return locations[i];
+        }
+      }
+      return null;
+    });
+  }
+
+  function apiGetStockByBarcode(barcode) {
+    var clean = String(barcode || "").trim();
+    if (!clean) {
+      return Promise.reject(new Error("barcode_required"));
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/stock/by-barcode/" + encodeURIComponent(clean),
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        if (!payload || !Array.isArray(payload.totalsByLocation) || !Array.isArray(payload.byHu)) {
+          throw new Error("INVALID_STOCK");
+        }
+        function normalizeLocationCode(value) {
+          return String(value || "").trim();
+        }
+
+        var totals = payload.totalsByLocation.map(function (row) {
+          var locationId = Number(row.location_id);
+          var qty = Number(row.qty);
+          var locationCode = normalizeLocationCode(row.location_code || row.locationCode);
+          if (!locationId || isNaN(qty) || !isNonEmptyString(locationCode)) {
+            throw new Error("INVALID_STOCK");
+          }
+          return {
+            locationId: locationId,
+            locationCode: locationCode,
+            qty: qty,
+          };
+        });
+        var byHu = payload.byHu.map(function (row) {
+          var locationId = Number(row.location_id);
+          var qty = Number(row.qty);
+          var hu = String(row.hu || "").trim();
+          var locationCode = normalizeLocationCode(row.location_code || row.locationCode);
+          if (!locationId || isNaN(qty) || !isNonEmptyString(locationCode) || !isNonEmptyString(hu)) {
+            throw new Error("INVALID_STOCK");
+          }
+          return {
+            hu: hu,
+            locationId: locationId,
+            locationCode: locationCode,
+            qty: qty,
+          };
+        });
+        return { totalsByLocation: totals, byHu: byHu };
+      });
+  }
+
+  var ONLINE_SKIP = {
+    getSetting: true,
+    setSetting: true,
+    getBaseUrl: true,
+    init: true,
+    ensureDefaults: true,
+  };
+
+  function wrapOnline(storage) {
+    var wrapped = {};
+    Object.keys(storage).forEach(function (key) {
+      var value = storage[key];
+      if (typeof value === "function") {
+        if (ONLINE_SKIP[key]) {
+          wrapped[key] = value.bind(storage);
+          return;
+        }
+        wrapped[key] = function () {
+          var args = arguments;
+          return ensureOnline()
+            .then(function () {
+              return value.apply(storage, args);
+            })
+            .catch(function (error) {
+              if (error && error.message === ONLINE_ERROR_MESSAGE) {
+                alert(ONLINE_ERROR_MESSAGE);
+              }
+              return Promise.reject(error);
+            });
+        };
+        return;
+      }
+      wrapped[key] = value;
+    });
+    return wrapped;
+  }
 
   function invalidateLocationCache() {
     locationCache = null;
@@ -228,6 +639,9 @@
         var request = getSettingsStore("readwrite").put({ key: key, value: value });
 
         request.onsuccess = function () {
+          if (key === BASE_URL_SETTING) {
+            baseUrlCache = normalizeBaseUrl(value) || getDefaultBaseUrl();
+          }
           resolve(true);
         };
 
@@ -265,30 +679,41 @@
           return true;
         });
       })
-    .then(function () {
-      return getSetting("recentPartnerIds").then(function (value) {
-        if (!Array.isArray(value)) {
-          return setSetting("recentPartnerIds", []);
-        }
-        return true;
+      .then(function () {
+        return getSetting(BASE_URL_SETTING).then(function (value) {
+          if (!value || typeof value !== "string") {
+            var nextBase = getDefaultBaseUrl();
+            baseUrlCache = nextBase;
+            return setSetting(BASE_URL_SETTING, nextBase);
+          }
+          baseUrlCache = normalizeBaseUrl(value) || getDefaultBaseUrl();
+          return true;
+        });
+      })
+      .then(function () {
+        return getSetting("recentPartnerIds").then(function (value) {
+          if (!Array.isArray(value)) {
+            return setSetting("recentPartnerIds", []);
+          }
+          return true;
+        });
+      })
+      .then(function () {
+        return getSetting("recentLocationIds").then(function (value) {
+          if (!Array.isArray(value)) {
+            return setSetting("recentLocationIds", []);
+          }
+          return true;
+        });
+      })
+      .then(function () {
+        return getSetting("qtyStep").then(function (value) {
+          if (!value || isNaN(Number(value)) || Number(value) < 1) {
+            return setSetting("qtyStep", 1);
+          }
+          return true;
+        });
       });
-    })
-    .then(function () {
-      return getSetting("recentLocationIds").then(function (value) {
-        if (!Array.isArray(value)) {
-          return setSetting("recentLocationIds", []);
-        }
-        return true;
-      });
-    })
-    .then(function () {
-      return getSetting("qtyStep").then(function (value) {
-        if (!value || isNaN(Number(value)) || Number(value) < 1) {
-          return setSetting("qtyStep", 1);
-        }
-        return true;
-      });
-    });
   }
 
   function getDoc(id) {
@@ -757,6 +1182,10 @@
           .then(function () {
             metaStore.put({ key: "dataExportedAt", value: normalized.exportedAt });
             metaStore.put({ key: "schemaVersion", value: normalized.schemaVersion });
+            metaStore.put({
+              key: "huStockExportedAt",
+              value: normalized.huStock ? normalized.huStock.exportedAt : "",
+            });
 
             normalized.uoms.forEach(function (uom) {
               uomsStore.put(uom);
@@ -849,10 +1278,13 @@
       countStore(STORE_LOCATIONS),
       countStore(STORE_ORDERS),
       countStore(STORE_STOCK),
+      countStore(STORE_HU_STOCK),
+      getMetaValue("huStockExportedAt"),
     ]).then(function (results) {
       return {
         exportedAt: results[0] || null,
         schemaVersion: results[1] || null,
+        huExportedAt: results[9] || null,
         counts: {
           uoms: results[2] || 0,
           items: results[3] || 0,
@@ -860,6 +1292,7 @@
           locations: results[5] || 0,
           orders: results[6] || 0,
           stock: results[7] || 0,
+          huStock: results[8] || 0,
         },
       };
     });
@@ -1577,7 +2010,7 @@
     });
   }
 
-  global.TsdStorage = {
+  var offlineStorage = {
     init: init,
     getSetting: getSetting,
     setSetting: setSetting,
@@ -1610,5 +2043,15 @@
     getTotalStockByItemId: getTotalStockByItemId,
     listLocalItemsForExport: listLocalItemsForExport,
     markLocalItemsExported: markLocalItemsExported,
+    getBaseUrl: getBaseUrl,
+    apiSearchItems: apiSearchItems,
+    apiFindItemByCode: apiFindItemByCode,
+    apiGetLocations: apiGetLocations,
+    apiSearchLocations: apiSearchLocations,
+    apiGetLocationById: apiGetLocationById,
+    apiGetStockByBarcode: apiGetStockByBarcode,
+    apiGetPartners: apiGetPartners,
   };
+
+  global.TsdStorage = FORCE_ONLINE ? wrapOnline(offlineStorage) : offlineStorage;
 })(window);

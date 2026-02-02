@@ -11,6 +11,8 @@
   var scanSink = document.getElementById("scanSink");
   var currentRoute = null;
   var scanKeydownHandler = null;
+  var SERVER_PING_INTERVAL = 15000;
+  var serverStatus = { ok: null, checkedAt: 0 };
 
   var STATUS_ORDER = {
     DRAFT: 0,
@@ -25,9 +27,78 @@
       return;
     }
 
-    var online = navigator.onLine;
-    networkStatus.textContent = online ? "Онлайн" : "Оффлайн";
+    var online = serverStatus.ok;
+    networkStatus.textContent = online ? "Server: OK" : "Server: OFF";
     networkStatus.classList.toggle("is-offline", !online);
+  }
+
+  function normalizeBaseUrl(value) {
+    var url = String(value || "").trim();
+    if (!url) {
+      return "";
+    }
+    return url.replace(/\/+$/, "");
+  }
+
+  function getServerBaseUrl() {
+    return TsdStorage.getBaseUrl()
+      .then(function (value) {
+        var normalized = normalizeBaseUrl(value);
+        if (normalized) {
+          return normalized;
+        }
+        if (window.location && String(window.location.origin || "").indexOf("http") === 0) {
+          return normalizeBaseUrl(window.location.origin);
+        }
+        return "https://localhost:7153";
+      })
+      .catch(function () {
+        if (window.location && String(window.location.origin || "").indexOf("http") === 0) {
+          return normalizeBaseUrl(window.location.origin);
+        }
+        return "https://localhost:7153";
+      });
+  }
+
+  function pingServer(force) {
+    var now = Date.now();
+    if (!force && serverStatus.checkedAt && now - serverStatus.checkedAt < SERVER_PING_INTERVAL) {
+      updateNetworkStatus();
+      return Promise.resolve(!!serverStatus.ok);
+    }
+
+    return getServerBaseUrl()
+      .then(function (baseUrl) {
+        return fetch(baseUrl + "/api/ping", { method: "GET", cache: "no-store" })
+          .then(function (response) {
+            serverStatus.ok = response.ok;
+            serverStatus.checkedAt = Date.now();
+            updateNetworkStatus();
+            return response.ok;
+          })
+          .catch(function () {
+            serverStatus.ok = false;
+            serverStatus.checkedAt = Date.now();
+            updateNetworkStatus();
+            return false;
+          });
+      })
+      .catch(function () {
+        serverStatus.ok = false;
+        serverStatus.checkedAt = Date.now();
+        updateNetworkStatus();
+        return false;
+      });
+  }
+
+  function ensureServerAvailable() {
+    return pingServer(true).then(function (ok) {
+      if (!ok) {
+        alert("Нет связи с сервером LightWMS. Проверьте Wi-Fi.");
+        throw new Error("server_unavailable");
+      }
+      return true;
+    });
   }
 
   function setNavOrigin(value) {
@@ -261,6 +332,16 @@
     var name = partner.name || "";
     var code = partner.code ? " (" + partner.code + ")" : "";
     return name + code;
+  }
+
+  function getPartnerRoleForOp(op) {
+    if (op === "INBOUND") {
+      return "supplier";
+    }
+    if (op === "OUTBOUND") {
+      return "customer";
+    }
+    return "both";
   }
 
   function formatLocationLabel(code, name) {
@@ -770,10 +851,14 @@
       return rows
         .map(function (row) {
           var qtyText = String(row.qtyBase != null ? row.qtyBase : 0);
+          var locationLabel = formatLocationLabel(row.code, row.name);
+          if (row.hu) {
+            locationLabel += " - " + row.hu;
+          }
           return (
             '<div class="stock-location-row">' +
             '  <div class="stock-location-label">' +
-            escapeHtml(formatLocationLabel(row.code, row.name)) +
+            escapeHtml(locationLabel) +
             "</div>" +
             '  <div class="stock-location-qty">' +
             escapeHtml(qtyText) +
@@ -784,7 +869,30 @@
         .join("");
     }
 
-    function renderDetails(item, rows) {
+    function renderHuRows(rows, uom) {
+      if (!rows.length) {
+        return '<div class="stock-no-rows">Нет HU-разреза.</div>';
+      }
+      return rows
+        .map(function (row) {
+          var hu = row.hu || "-";
+          var locationCode = row.locationCode || "";
+          var qtyText = String(row.qty != null ? row.qty : 0);
+          var line =
+            hu +
+            " — " +
+            qtyText +
+            " " +
+            (uom || "шт") +
+            " (локация: " +
+            locationCode +
+            ")";
+          return '<div class="stock-hu-row">' + escapeHtml(line) + "</div>";
+        })
+        .join("");
+    }
+
+    function renderDetails(item, rows, huRows) {
       if (!detailsEl) {
         return;
       }
@@ -799,13 +907,22 @@
         skuParts.push("GTIN: " + item.gtin);
       }
       var skuLine = skuParts.join(" · ");
+      var uom = item.base_uom || item.base_uom_code || "шт";
       var locationsHtml = rows.length
         ? renderLocationRows(rows)
         : '<div class="stock-no-rows">Нет остатков по данным выгрузки.</div>';
+      var huHtml = "";
+      if (huRows) {
+        huHtml =
+          '<div class="stock-hu-block">' +
+          '<div class="stock-hu-title">По HU</div>' +
+          renderHuRows(huRows, uom) +
+          "</div>";
+      }
       detailsEl.innerHTML =
         '<div class="stock-card">' +
         '<div class="stock-title">' +
-        escapeHtml(item.name || "—") +
+        escapeHtml(item.name || "-") +
         "</div>" +
         (skuLine
           ? '<div class="stock-subtitle">' + escapeHtml(skuLine) + "</div>"
@@ -816,7 +933,22 @@
         '<div class="stock-locations">' +
         locationsHtml +
         "</div>" +
+        huHtml +
         "</div>";
+    }
+
+    function loadLocationNameMap() {
+      return TsdStorage.apiGetLocations()
+        .then(function (locations) {
+          var map = {};
+          locations.forEach(function (location) {
+            map[location.locationId] = location;
+          });
+          return map;
+        })
+        .catch(function () {
+          return {};
+        });
     }
 
     function showStockItem(item) {
@@ -824,11 +956,35 @@
         setStockMessage("Товар не найден в данных");
         return;
       }
+      var barcode = item.barcode || item.gtin;
+      if (!barcode) {
+        setStockMessage("У товара нет штрихкода");
+        return;
+      }
       clearSuggestions();
       setStockMessage("");
-      TsdStorage.getStockByItemId(item.itemId)
-        .then(function (rows) {
-          renderDetails(item, rows);
+      Promise.all([TsdStorage.apiGetStockByBarcode(barcode), loadLocationNameMap()])
+        .then(function (result) {
+          var stock = result[0] || {};
+          var locationMap = result[1] || {};
+          var rows = (stock.totalsByLocation || []).map(function (row) {
+            var location = locationMap[row.locationId] || {};
+            return {
+              qtyBase: row.qty,
+              code: row.locationCode || location.code || "",
+              name: location.name || "",
+              hu: null,
+            };
+          });
+          var huRows = (stock.byHu || []).map(function (row) {
+            var location = locationMap[row.locationId] || {};
+            return {
+              hu: row.hu,
+              qty: row.qty,
+              locationCode: row.locationCode || location.code || "",
+            };
+          });
+          renderDetails(item, rows, huRows);
         })
         .catch(function () {
           setStockMessage("Ошибка получения остатков");
@@ -841,7 +997,7 @@
         return;
       }
       setStockMessage("Ищем...");
-      TsdStorage.findItemByCode(trimmed)
+      TsdStorage.apiFindItemByCode(trimmed)
         .then(function (item) {
           if (item) {
             showStockItem(item);
@@ -858,33 +1014,27 @@
     }
 
     function updateDataStatus() {
-      TsdStorage.getDataStatus()
-        .then(function (status) {
-          var exported = status && status.exportedAt;
-          var ready =
-            status &&
-            status.counts &&
-            status.counts.items > 0 &&
-            status.counts.stock > 0;
-          dataReady = !!ready;
-          setStatusText(
-            exported ? "По состоянию на: " + exported : "Дата актуальности данных неизвестна"
-          );
-          if (!ready) {
-            setStockMessage("Нет данных. Загрузите данные с ПК в Настройках.");
+      pingServer(true)
+        .then(function (ok) {
+          dataReady = !!ok;
+          setStatusText(ok ? "Онлайн" : "Нет связи с сервером");
+          if (!ok) {
+            setStockMessage("Нет связи с сервером");
             if (searchInput) {
               searchInput.disabled = true;
             }
             clearDetails();
             clearSuggestions();
-          } else if (searchInput) {
-            searchInput.disabled = false;
-            setStockMessage("");
+            return;
           }
+          if (searchInput) {
+            searchInput.disabled = false;
+          }
+          setStockMessage("");
         })
         .catch(function () {
-          setStatusText("Дата актуальности данных неизвестна");
-          setStockMessage("Нет данных. Загрузите данные с ПК в Настройках.");
+          setStatusText("Нет связи с сервером");
+          setStockMessage("Нет связи с сервером");
           if (searchInput) {
             searchInput.disabled = true;
           }
@@ -941,7 +1091,7 @@
           clearSuggestions();
           return;
         }
-        TsdStorage.searchItems(value, 20)
+        TsdStorage.apiSearchItems(value, 20)
           .then(function (items) {
             renderSuggestionList(items);
           })
@@ -1080,6 +1230,7 @@
     var lookupError = null;
     var lookupConfirm = null;
     var lookupValue = null;
+    var lastHuRawInput = "";
     var scanBuffer = "";
     var scanBufferTimer = null;
     var overlayKeyListener = null;
@@ -1147,12 +1298,24 @@
 
     function loadHuDetails(huCode) {
       setMessage("");
-      if (!huCode) {
-        setMessage("Неверный формат HU.");
+      var normalized = extractHuCode(huCode);
+      if (!normalized) {
+        var rawValue = normalizeValue(huCode).toUpperCase();
+        if (!rawValue) {
+          rawValue = lastHuRawInput;
+        }
+        setMessage(
+          rawValue
+            ? "Неверный формат HU: " + rawValue
+            : "Неверный формат HU."
+        );
+        if (window.console) {
+          console.log("[hu] invalid code", { raw: rawValue, input: huCode });
+        }
         return;
       }
 
-      TsdStorage.getHuStockByCode(huCode)
+      TsdStorage.getHuStockByCode(normalized)
         .then(function (entry) {
           if (!entry) {
             setStatus("Данные по ПК: отсутствуют");
@@ -1171,10 +1334,10 @@
           });
           TsdStorage.getItemsByIds(itemIds)
             .then(function (itemsMap) {
-              renderDetails(huCode, entry, itemsMap || {});
+              renderDetails(normalized, entry, itemsMap || {});
             })
             .catch(function () {
-              renderDetails(huCode, entry, {});
+              renderDetails(normalized, entry, {});
             });
         })
         .catch(function () {
@@ -1182,24 +1345,57 @@
         });
     }
 
+    function extractHuCode(value) {
+      var normalized = normalizeValue(value).toUpperCase();
+      if (!normalized) {
+        return "";
+      }
+      normalized = normalized
+        .replace(/\u041D/g, "H") // Cyrillic Н -> Latin H
+        .replace(/\u0423/g, "U"); // Cyrillic У -> Latin U
+      var cleaned = normalized.replace(/[^A-Z0-9-]/g, "");
+      if (!cleaned) {
+        return "";
+      }
+      var match = cleaned.match(/HU-?\d{6}/);
+      if (!match) {
+        if (window.console) {
+          console.log("[hu] no match", { normalized: normalized, cleaned: cleaned });
+        }
+        return "";
+      }
+      var digits = match[0].replace(/[^0-9]/g, "");
+      if (digits.length !== 6) {
+        return "";
+      }
+      return "HU-" + digits;
+    }
+
     function isValidHuFormat(value) {
-      return /^HU-\d{6}$/.test(value);
+      return !!extractHuCode(value);
     }
 
     function setLookupValue(rawValue, showError) {
       if (!lookupInput) {
         return;
       }
-      var trimmed = normalizeValue(rawValue).toUpperCase();
-      if (!trimmed || !isValidHuFormat(trimmed)) {
+      var rawNormalized = normalizeValue(rawValue).toUpperCase();
+      lastHuRawInput = rawNormalized;
+      var trimmed = extractHuCode(rawValue);
+      if (!trimmed) {
         lookupValue = null;
-        lookupInput.value = trimmed;
+        lookupInput.value = rawNormalized;
         if (lookupError) {
           lookupError.textContent =
-            showError && trimmed ? "Неверный формат HU." : "";
+            showError && rawNormalized
+              ? "Неверный формат HU: " + rawNormalized
+              : "";
         }
         if (lookupConfirm) {
           lookupConfirm.disabled = true;
+        }
+        if (showError && window.console) {
+          console.log("[hu] scan raw", rawNormalized);
         }
         return;
       }
@@ -1222,26 +1418,31 @@
       }
     }
 
+    function finalizeScanBuffer(showError) {
+      if (!scanBuffer) {
+        return;
+      }
+      var value = scanBuffer;
+      clearScanBuffer();
+      setLookupValue(value, showError);
+    }
+
     function scheduleScanBufferReset() {
       if (scanBufferTimer) {
         clearTimeout(scanBufferTimer);
       }
       scanBufferTimer = window.setTimeout(function () {
-        clearScanBuffer();
-      }, 400);
+        finalizeScanBuffer(true);
+      }, 300);
     }
 
     function handleScanKeydown(event) {
       if (!lookupOverlay) {
         return;
       }
-      if (event.key === "Enter") {
-        if (scanBuffer) {
-          var value = scanBuffer;
-          clearScanBuffer();
-          setLookupValue(value, true);
-          event.preventDefault();
-        }
+      if (event.key === "Enter" || event.key === "Tab") {
+        finalizeScanBuffer(true);
+        event.preventDefault();
         return;
       }
       if (
@@ -1315,8 +1516,9 @@
         if (!lookupValue) {
           return;
         }
+        var confirmedValue = lookupValue;
         closeOverlay();
-        loadHuDetails(lookupValue);
+        loadHuDetails(confirmedValue);
       }
 
       if (lookupInput) {
@@ -1881,13 +2083,15 @@
     });
   }
 
-  function openPartnerPicker(onSelect) {
+  function openPartnerPicker(role, onSelect) {
     setScanHighlight(false);
     var overlay = buildOverlay("Контрагенты");
     var input = overlay.querySelector(".overlay-search");
     var recentsEl = overlay.querySelector(".overlay-recents");
     var resultsEl = overlay.querySelector(".overlay-results");
     var closeBtn = overlay.querySelector(".overlay-close");
+    var partnerList = null;
+    var partnerLoading = null;
 
     function close() {
       unlockOverlayScroll();
@@ -1902,22 +2106,48 @@
       }
     }
 
+    function ensurePartnerList() {
+      if (partnerList) {
+        return Promise.resolve(partnerList);
+      }
+      if (partnerLoading) {
+        return partnerLoading;
+      }
+      partnerLoading = TsdStorage.apiGetPartners(role)
+        .then(function (partners) {
+          partnerList = (partners || []).map(function (partner) {
+            partner.nameLower = String(partner.name || "").toLowerCase();
+            partner.codeLower = String(partner.code || "").toLowerCase();
+            partner.innLower = String(partner.inn || "").toLowerCase();
+            return partner;
+          });
+          return partnerList;
+        })
+        .catch(function () {
+          partnerList = [];
+          return partnerList;
+        })
+        .finally(function () {
+          partnerLoading = null;
+        });
+      return partnerLoading;
+    }
+
     function loadRecents() {
-      TsdStorage.getSetting("recentPartnerIds")
-        .then(function (ids) {
+      Promise.all([ensurePartnerList(), TsdStorage.getSetting("recentPartnerIds")])
+        .then(function (result) {
+          var partners = result[0] || [];
+          var ids = result[1];
           var list = Array.isArray(ids) ? ids.slice(0, 5) : [];
-          return Promise.all(
-            list.map(function (id) {
-              return TsdStorage.getPartnerById(id).catch(function () {
-                return null;
+          var filtered = list
+            .map(function (id) {
+              return partners.find(function (partner) {
+                return partner.partnerId === id;
               });
             })
-          );
-        })
-        .then(function (partners) {
-          var filtered = partners.filter(function (partner) {
-            return !!partner;
-          });
+            .filter(function (partner) {
+              return !!partner;
+            });
           renderOverlayList(
             recentsEl,
             filtered,
@@ -1939,9 +2169,21 @@
     }
 
     function runSearch(query) {
-      TsdStorage.searchPartners(query)
+      var q = String(query || "").trim().toLowerCase();
+      ensurePartnerList()
         .then(function (partners) {
-          var list = partners.map(function (partner) {
+          var list = partners.filter(function (partner) {
+            if (!q) {
+              return true;
+            }
+            return (
+              (partner.nameLower && partner.nameLower.indexOf(q) !== -1) ||
+              (partner.codeLower && partner.codeLower.indexOf(q) !== -1) ||
+              (partner.innLower && partner.innLower.indexOf(q) !== -1)
+            );
+          });
+
+          list.forEach(function (partner) {
             var sub = [];
             if (partner.code) {
               sub.push("Код: " + partner.code);
@@ -1950,8 +2192,8 @@
               sub.push("ИНН: " + partner.inn);
             }
             partner.subLabel = sub.join(" · ");
-            return partner;
           });
+
           renderOverlayList(
             resultsEl,
             list,
@@ -2019,7 +2261,7 @@
           var list = Array.isArray(ids) ? ids.slice(0, 5) : [];
           return Promise.all(
             list.map(function (id) {
-              return TsdStorage.getLocationById(id).catch(function () {
+              return TsdStorage.apiGetLocationById(id).catch(function () {
                 return null;
               });
             })
@@ -2050,7 +2292,7 @@
     }
 
     function runSearch(query) {
-      TsdStorage.searchLocations(query)
+      TsdStorage.apiSearchLocations(query)
         .then(function (locations) {
           renderOverlayList(
             resultsEl,
@@ -2696,7 +2938,7 @@
         return;
       }
       var token = (lookupToken += 1);
-      TsdStorage.findItemByCode(trimmed)
+      TsdStorage.apiFindItemByCode(trimmed)
         .then(function (item) {
           if (token !== lookupToken) {
             return;
@@ -2725,8 +2967,10 @@
     }
 
     function applyCatalogState(status) {
-      var hasPartners = status && status.counts && status.counts.partners > 0;
-      var hasLocations = status && status.counts && status.counts.locations > 0;
+      var online = serverStatus.ok !== false;
+      var hasPartners = online;
+      var hasLocations =
+        online || (status && status.counts && status.counts.locations > 0);
       var hasOrders = status && status.counts && status.counts.orders > 0;
 
       if (partnerPickerRow) {
@@ -2798,6 +3042,10 @@
         '    <div class="qty-overlay-barcode">' +
         escapeHtml(barcode) +
         "</div>" +
+        '    <div class="qty-overlay-stock">' +
+        '      <div class="qty-overlay-stock-title">Остаток сейчас</div>' +
+        '      <div class="qty-overlay-stock-body" id="qtyStockBody">Загрузка...</div>' +
+        "    </div>" +
         '    <div class="qty-overlay-quick">' +
         quickButtons +
         "    </div>" +
@@ -2815,6 +3063,89 @@
       var cancelBtn = qtyOverlay.querySelector("#qtyCancel");
       var closeBtn = qtyOverlay.querySelector(".overlay-close");
       var quickButtonsEls = qtyOverlay.querySelectorAll(".qty-overlay-quick-btn");
+      var stockBody = qtyOverlay.querySelector("#qtyStockBody");
+
+      if (stockBody) {
+        Promise.all([TsdStorage.apiGetStockByBarcode(barcode), TsdStorage.apiGetLocations()])
+          .then(function (result) {
+            var stock = result[0] || {};
+            var locations = result[1] || [];
+            var locationMap = {};
+            locations.forEach(function (location) {
+              locationMap[location.locationId] = location;
+            });
+            var totals = Array.isArray(stock.totalsByLocation) ? stock.totalsByLocation : [];
+            var byHu = Array.isArray(stock.byHu) ? stock.byHu : [];
+            var uom = (item && (item.base_uom || item.base_uom_code)) || "шт";
+
+            if (!totals.length && !byHu.length) {
+              stockBody.textContent = "Остатков нет";
+              return;
+            }
+
+            function renderTotalsRows(rows) {
+              if (!rows.length) {
+                return '<div class="qty-stock-empty">Нет данных</div>';
+              }
+              return rows
+                .map(function (row) {
+                  var location = locationMap[row.locationId] || {};
+                  var code = row.locationCode || location.code || "";
+                  var name = location.name || "";
+                  var label = formatLocationLabel(code, name);
+                  return (
+                    '<div class="qty-stock-row">' +
+                    '  <div class="qty-stock-label">' +
+                    escapeHtml(label) +
+                    "</div>" +
+                    '  <div class="qty-stock-qty">' +
+                    escapeHtml(String(row.qty)) +
+                    " шт</div>" +
+                    "</div>"
+                  );
+                })
+                .join("");
+            }
+
+            function renderHuRows(rows) {
+              if (!rows.length) {
+                return '<div class="qty-stock-empty">Нет HU-разреза</div>';
+              }
+              return rows
+                .map(function (row) {
+                  var code = row.locationCode || "";
+                  var line =
+                    row.hu +
+                    " — " +
+                    row.qty +
+                    " " +
+                    uom +
+                    " (локация: " +
+                    code +
+                    ")";
+                  return '<div class="qty-stock-row">' + escapeHtml(line) + "</div>";
+                })
+                .join("");
+            }
+
+            var totalsHtml = renderTotalsRows(totals);
+            var byHuHtml =
+              '<div class="qty-stock-section">' +
+              '  <div class="qty-stock-section-title">По HU</div>' +
+              renderHuRows(byHu) +
+              "</div>";
+
+            stockBody.innerHTML =
+              '<div class="qty-stock-section">' +
+              '  <div class="qty-stock-section-title">По локациям</div>' +
+              totalsHtml +
+              "</div>" +
+              byHuHtml;
+          })
+          .catch(function () {
+            stockBody.textContent = "Остаток недоступен";
+          });
+      }
 
       function setQtyError(message) {
         var errorEl = qtyOverlay.querySelector(".qty-overlay-error");
@@ -2908,7 +3239,7 @@
         finalizeLine(itemOverride);
         return;
       }
-      TsdStorage.findItemByCode(barcode)
+      TsdStorage.apiFindItemByCode(barcode)
         .then(function (item) {
           if (item) {
             finalizeLine(item);
@@ -2933,31 +3264,16 @@
           return Promise.resolve(true);
         }
         var fromHu = normalizeHuCode(lineData.from_hu);
-        return TsdStorage.getStockByItemId(itemId)
-          .then(function (rows) {
-            var locationRows = rows.filter(function (row) {
-              return row.locationId === doc.header.from_id;
-            });
-            if (!locationRows.length) {
-              return true;
-            }
-
-            var hasHuInfo = locationRows.some(function (row) {
-              return row.hu !== undefined;
-            });
-            if (!hasHuInfo) {
-              return true;
-            }
-
+        if (!fromHu) {
+          return Promise.resolve(true);
+        }
+        return TsdStorage.apiGetStockByBarcode(barcode)
+          .then(function (stock) {
+            var rows = stock && Array.isArray(stock.byHu) ? stock.byHu : [];
             var available = 0;
-            locationRows.forEach(function (row) {
-              var rowHu = normalizeHuCode(row.hu);
-              if (fromHu) {
-                if (rowHu === fromHu) {
-                  available += Number(row.qtyBase) || 0;
-                }
-              } else if (!rowHu) {
-                available += Number(row.qtyBase) || 0;
+            rows.forEach(function (row) {
+              if (row.locationId === doc.header.from_id && normalizeHuCode(row.hu) === fromHu) {
+                available += Number(row.qty) || 0;
               }
             });
 
@@ -3176,7 +3492,7 @@
 
       if (doc.header.from_id && !doc.header.from_name) {
         updates.push(
-          TsdStorage.getLocationById(doc.header.from_id).then(function (location) {
+          TsdStorage.apiGetLocationById(doc.header.from_id).then(function (location) {
             if (location) {
               doc.header.from = location.code || doc.header.from;
               doc.header.from_name = location.name || null;
@@ -3188,7 +3504,7 @@
 
       if (doc.header.to_id && !doc.header.to_name) {
         updates.push(
-          TsdStorage.getLocationById(doc.header.to_id).then(function (location) {
+          TsdStorage.apiGetLocationById(doc.header.to_id).then(function (location) {
             if (location) {
               doc.header.to = location.code || doc.header.to;
               doc.header.to_name = location.name || null;
@@ -3200,7 +3516,7 @@
 
       if (doc.header.location_id && !doc.header.location_name) {
         updates.push(
-          TsdStorage.getLocationById(doc.header.location_id).then(function (location) {
+          TsdStorage.apiGetLocationById(doc.header.location_id).then(function (location) {
             if (location) {
               doc.header.location = location.code || doc.header.location;
               doc.header.location_name = location.name || null;
@@ -3250,7 +3566,7 @@
       }
       var qtyMode = doc.header.qtyMode === "INC1" ? "INC1" : "ASK";
       if (qtyMode === "ASK") {
-        TsdStorage.findItemByCode(barcode)
+        TsdStorage.apiFindItemByCode(barcode)
           .then(function (item) {
             if (item) {
               openQuantityOverlay(barcode, item, function (quantity) {
@@ -3956,7 +4272,7 @@
         if (doc.status !== "DRAFT") {
           return;
         }
-        openPartnerPicker(applyPartnerSelection);
+        openPartnerPicker(getPartnerRoleForOp(doc.op), applyPartnerSelection);
       });
     }
 
@@ -4034,8 +4350,24 @@
           }
           return;
         }
-        doc.status = "READY";
-        saveDocState().then(refreshDocView);
+
+        finishBtn.disabled = true;
+        setDocStatus("Отправка на сервер...");
+        submitDocToServer(doc)
+          .then(function () {
+            setDocStatus("Отправлено на сервер");
+            return TsdStorage.deleteDoc(doc.id).catch(function () {
+              return true;
+            });
+          })
+          .then(function () {
+            navigate("/docs");
+          })
+          .catch(function (error) {
+            var message = error && error.message ? error.message : "Ошибка отправки на сервер";
+            setDocStatus(message);
+            finishBtn.disabled = false;
+          });
       });
     }
 
@@ -4299,7 +4631,11 @@
         dataCountsText.textContent = "";
         return;
       }
-      dataStatusText.textContent = "Данные обновлены: " + statusInfo.exportedAt;
+      var huStatus = statusInfo.huExportedAt
+        ? "HU: " + statusInfo.huExportedAt
+        : "HU: отсутствует";
+      dataStatusText.textContent =
+        "Данные обновлены: " + statusInfo.exportedAt + " (" + huStatus + ")";
       dataCountsText.textContent =
         "Товары: " +
         statusInfo.counts.items +
@@ -4308,7 +4644,9 @@
         " · Локации: " +
         statusInfo.counts.locations +
         " · Остатки: " +
-        statusInfo.counts.stock;
+        statusInfo.counts.stock +
+        " · HU: " +
+        (statusInfo.counts.huStock || 0);
     }
 
     TsdStorage.getDataStatus()
@@ -4350,6 +4688,9 @@
               })
               .then(function (statusInfo) {
                 renderDataStatus(statusInfo);
+                if (statusInfo && window.console) {
+                  console.log("[import] data status:", statusInfo);
+                }
               })
               .catch(function (error) {
                 if (dataStatusText) {
@@ -4391,7 +4732,10 @@
     var dateKey = getDateKey(now);
     var prefix = OPS[op].prefix;
 
-    TsdStorage.nextDocCounter(prefix, dateKey)
+    ensureServerAvailable()
+      .then(function () {
+        return TsdStorage.nextDocCounter(prefix, dateKey);
+      })
       .then(function (counter) {
         var docRef = prefix + "-" + dateKey + "-" + padNumber(counter, 3);
         var docId = createUuid();
@@ -4416,7 +4760,7 @@
         });
       })
       .catch(function () {
-        alert("Не удалось создать документ.");
+        return false;
       });
   }
 
@@ -4557,6 +4901,75 @@
         missing: missingFields,
       });
     }
+  }
+
+  function submitDocToServer(doc) {
+    if (!doc || !doc.lines || !doc.lines.length) {
+      return Promise.reject(new Error("Нет строк для отправки"));
+    }
+
+    return ensureServerAvailable()
+      .then(function () {
+        return Promise.all([getServerBaseUrl(), TsdStorage.getSetting("device_id")]);
+      })
+      .then(function (result) {
+        var baseUrl = result[0];
+        var deviceId = result[1] || null;
+
+        var ops = doc.lines.map(function (line) {
+          return {
+            schema_version: 1,
+            event_id: createUuid(),
+            ts: new Date().toISOString(),
+            device_id: deviceId,
+            op: doc.op,
+            doc_ref: doc.doc_ref || "",
+            barcode: line.barcode,
+            qty: Number(line.qty) || 0,
+            from_loc: line.from || null,
+            to_loc: line.to || null,
+            from_hu: normalizeHuCode(line.from_hu) || null,
+            to_hu: normalizeHuCode(line.to_hu) || null,
+            partner_code: (doc.header && doc.header.partner_code) || null,
+            order_ref: (doc.header && doc.header.order_ref) || null,
+            reason_code: line.reason_code || (doc.header && doc.header.reason_code) || null,
+          };
+        });
+
+        return ops.reduce(function (chain, op) {
+          return chain.then(function () {
+            return fetch(baseUrl + "/api/ops", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(op),
+            })
+              .then(function (response) {
+                return response
+                  .json()
+                  .catch(function () {
+                    return null;
+                  })
+                  .then(function (payload) {
+                    if (!response.ok) {
+                      var errorText = (payload && payload.error) || "SERVER_ERROR";
+                      if (errorText === "UNSUPPORTED_OP") {
+                        errorText = "Сервер пока принимает только MOVE.";
+                      }
+                      throw new Error(errorText);
+                    }
+                    if (payload && payload.ok === false) {
+                      var apiError = payload.error || "SERVER_ERROR";
+                      if (apiError === "UNSUPPORTED_OP") {
+                        apiError = "Сервер пока принимает только MOVE.";
+                      }
+                      throw new Error(apiError);
+                    }
+                    return true;
+                  });
+              });
+          });
+        }, Promise.resolve(true));
+      });
   }
 
   function buildLineData(op, header) {
@@ -5151,9 +5564,18 @@
         return TsdStorage.ensureDefaults();
       })
       .then(function () {
-        updateNetworkStatus();
-        window.addEventListener("online", updateNetworkStatus);
-        window.addEventListener("offline", updateNetworkStatus);
+        pingServer(true);
+        window.setInterval(function () {
+          pingServer(false);
+        }, SERVER_PING_INTERVAL);
+        window.addEventListener("online", function () {
+          pingServer(true);
+        });
+        window.addEventListener("offline", function () {
+          serverStatus.ok = false;
+          serverStatus.checkedAt = Date.now();
+          updateNetworkStatus();
+        });
 
         if (backBtn) {
           backBtn.addEventListener("click", function () {
@@ -5161,28 +5583,28 @@
               navigate("/docs");
               return;
             }
-        var origin = getNavOrigin();
-        if (currentRoute.name === "home") {
-          navigate("/docs");
-        } else if (currentRoute.name === "docs") {
-          navigate("/home");
-        } else if (currentRoute.name === "doc" || currentRoute.name === "new") {
-          if (origin === "history") {
-            navigate("/docs");
-          } else {
-            navigate("/home");
-          }
-        } else if (currentRoute.name === "orders") {
-          navigate("/home");
-        } else if (currentRoute.name === "order") {
-          navigate("/orders");
-        } else if (currentRoute.name === "stock" || currentRoute.name === "settings") {
-          navigate("/home");
-        } else {
-          navigate("/home");
+            var origin = getNavOrigin();
+            if (currentRoute.name === "home") {
+              navigate("/docs");
+            } else if (currentRoute.name === "docs") {
+              navigate("/home");
+            } else if (currentRoute.name === "doc" || currentRoute.name === "new") {
+              if (origin === "history") {
+                navigate("/docs");
+              } else {
+                navigate("/home");
+              }
+            } else if (currentRoute.name === "orders") {
+              navigate("/home");
+            } else if (currentRoute.name === "order") {
+              navigate("/orders");
+            } else if (currentRoute.name === "stock" || currentRoute.name === "settings") {
+              navigate("/home");
+            } else {
+              navigate("/home");
+            }
+          });
         }
-      });
-    }
 
         if (settingsBtn) {
           settingsBtn.addEventListener("click", function () {

@@ -1,30 +1,24 @@
 using System.Globalization;
 using LightWms.Core.Abstractions;
 using LightWms.Core.Models;
-using Microsoft.Data.Sqlite;
+using Npgsql;
 
 namespace LightWms.Data;
 
-public sealed class SqliteDataStore : IDataStore
+public sealed class PostgresDataStore : IDataStore
 {
     private readonly string _connectionString;
-    private readonly SqliteConnection? _connection;
-    private readonly SqliteTransaction? _transaction;
+    private readonly NpgsqlConnection? _connection;
+    private readonly NpgsqlTransaction? _transaction;
     private const string DocSelectBase = "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_id, d.order_ref, d.shipping_ref, d.comment, p.name, p.code FROM docs d LEFT JOIN partners p ON p.id = d.partner_id";
     private const string OrderSelectBase = "SELECT o.id, o.order_ref, o.partner_id, o.due_date, o.status, o.comment, o.created_at, p.name, p.code FROM orders o LEFT JOIN partners p ON p.id = o.partner_id";
 
-    public SqliteDataStore(string dbPath)
+    public PostgresDataStore(string connectionString)
     {
-        var directory = Path.GetDirectoryName(dbPath);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        _connectionString = $"Data Source={dbPath}";
+        _connectionString = connectionString;
     }
 
-    private SqliteDataStore(SqliteConnection connection, SqliteTransaction transaction)
+    private PostgresDataStore(NpgsqlConnection connection, NpgsqlTransaction transaction)
     {
         _connection = connection;
         _transaction = transaction;
@@ -33,29 +27,28 @@ public sealed class SqliteDataStore : IDataStore
 
     public void Initialize()
     {
-        using var connection = new SqliteConnection(_connectionString);
+        using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
 
         using var command = connection.CreateCommand();
         command.CommandText = @"
-PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     barcode TEXT UNIQUE,
     gtin TEXT,
     uom TEXT,
     base_uom TEXT NOT NULL DEFAULT 'шт',
-    default_packaging_id INTEGER
+    default_packaging_id BIGINT
 );
 CREATE TABLE IF NOT EXISTS uoms (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     name TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_uoms_name ON uoms(name);
 CREATE TABLE IF NOT EXISTS item_packaging (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    item_id BIGINT NOT NULL,
     code TEXT NOT NULL,
     name TEXT NOT NULL,
     factor_to_base REAL NOT NULL,
@@ -66,21 +59,21 @@ CREATE TABLE IF NOT EXISTS item_packaging (
 CREATE UNIQUE INDEX IF NOT EXISTS ix_item_packaging_item_code ON item_packaging(item_id, code);
 CREATE INDEX IF NOT EXISTS ix_item_packaging_item ON item_packaging(item_id);
 CREATE TABLE IF NOT EXISTS locations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     code TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS partners (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     code TEXT,
     created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_partners_code ON partners(code);
 CREATE TABLE IF NOT EXISTS orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     order_ref TEXT NOT NULL,
-    partner_id INTEGER NOT NULL,
+    partner_id BIGINT NOT NULL,
     due_date TEXT,
     status TEXT NOT NULL DEFAULT 'ACCEPTED',
     comment TEXT,
@@ -90,23 +83,23 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE INDEX IF NOT EXISTS ix_orders_ref ON orders(order_ref);
 CREATE INDEX IF NOT EXISTS ix_orders_partner ON orders(partner_id);
 CREATE TABLE IF NOT EXISTS order_lines (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id INTEGER NOT NULL,
-    item_id INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    order_id BIGINT NOT NULL,
+    item_id BIGINT NOT NULL,
     qty_ordered REAL NOT NULL,
     FOREIGN KEY (order_id) REFERENCES orders(id),
     FOREIGN KEY (item_id) REFERENCES items(id)
 );
 CREATE INDEX IF NOT EXISTS ix_order_lines_order ON order_lines(order_id);
 CREATE TABLE IF NOT EXISTS docs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     doc_ref TEXT NOT NULL,
     type TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     closed_at TEXT,
-    partner_id INTEGER,
-    order_id INTEGER,
+    partner_id BIGINT,
+    order_id BIGINT,
     order_ref TEXT,
     shipping_ref TEXT,
     comment TEXT,
@@ -115,24 +108,24 @@ CREATE TABLE IF NOT EXISTS docs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_docs_ref_type ON docs(doc_ref, type);
 CREATE TABLE IF NOT EXISTS doc_lines (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    doc_id INTEGER NOT NULL,
-    item_id INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    doc_id BIGINT NOT NULL,
+    item_id BIGINT NOT NULL,
     qty REAL NOT NULL,
     qty_input REAL,
     uom_code TEXT,
-    from_location_id INTEGER,
-    to_location_id INTEGER,
+    from_location_id BIGINT,
+    to_location_id BIGINT,
     from_hu TEXT,
     to_hu TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_doc_lines_doc ON doc_lines(doc_id);
 CREATE TABLE IF NOT EXISTS ledger (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     ts TEXT NOT NULL,
-    doc_id INTEGER NOT NULL,
-    item_id INTEGER NOT NULL,
-    location_id INTEGER NOT NULL,
+    doc_id BIGINT NOT NULL,
+    item_id BIGINT NOT NULL,
+    location_id BIGINT NOT NULL,
     qty_delta REAL NOT NULL,
     hu_code TEXT,
     hu TEXT
@@ -145,7 +138,7 @@ CREATE TABLE IF NOT EXISTS imported_events (
     device_id TEXT
 );
 CREATE TABLE IF NOT EXISTS import_errors (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     event_id TEXT,
     reason TEXT NOT NULL,
     raw_json TEXT NOT NULL,
@@ -153,14 +146,14 @@ CREATE TABLE IF NOT EXISTS import_errors (
 );
 CREATE TABLE IF NOT EXISTS api_docs (
     doc_uid TEXT PRIMARY KEY,
-    doc_id INTEGER NOT NULL,
+    doc_id BIGINT NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     doc_type TEXT,
     doc_ref TEXT,
-    partner_id INTEGER,
-    from_location_id INTEGER,
-    to_location_id INTEGER,
+    partner_id BIGINT,
+    from_location_id BIGINT,
+    to_location_id BIGINT,
     from_hu TEXT,
     to_hu TEXT,
     device_id TEXT
@@ -177,17 +170,17 @@ CREATE TABLE IF NOT EXISTS api_events (
 );
 CREATE INDEX IF NOT EXISTS ix_api_events_doc ON api_events(doc_uid);
 CREATE TABLE IF NOT EXISTS stock_reservation_lines (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     doc_uid TEXT NOT NULL,
-    item_id INTEGER NOT NULL,
-    location_id INTEGER NOT NULL,
+    item_id BIGINT NOT NULL,
+    location_id BIGINT NOT NULL,
     qty REAL NOT NULL,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_stock_reservation_doc ON stock_reservation_lines(doc_uid);
 CREATE INDEX IF NOT EXISTS ix_stock_reservation_item_loc ON stock_reservation_lines(item_id, location_id);
 CREATE TABLE IF NOT EXISTS hus (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     hu_code TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
     created_at TEXT NOT NULL,
@@ -203,10 +196,10 @@ CREATE INDEX IF NOT EXISTS idx_hus_created_at ON hus(created_at);
         EnsureColumn(connection, "items", "gtin", "TEXT");
         EnsureColumn(connection, "items", "uom", "TEXT");
         EnsureColumn(connection, "items", "base_uom", "TEXT NOT NULL DEFAULT 'шт'");
-        EnsureColumn(connection, "items", "default_packaging_id", "INTEGER");
+        EnsureColumn(connection, "items", "default_packaging_id", "BIGINT");
         EnsureColumn(connection, "partners", "created_at", "TEXT");
-        EnsureColumn(connection, "docs", "partner_id", "INTEGER");
-        EnsureColumn(connection, "docs", "order_id", "INTEGER");
+        EnsureColumn(connection, "docs", "partner_id", "BIGINT");
+        EnsureColumn(connection, "docs", "order_id", "BIGINT");
         EnsureColumn(connection, "docs", "order_ref", "TEXT");
         EnsureColumn(connection, "docs", "shipping_ref", "TEXT");
         EnsureColumn(connection, "docs", "comment", "TEXT");
@@ -218,9 +211,9 @@ CREATE INDEX IF NOT EXISTS idx_hus_created_at ON hus(created_at);
         EnsureColumn(connection, "ledger", "hu_code", "TEXT");
         EnsureColumn(connection, "api_docs", "doc_type", "TEXT");
         EnsureColumn(connection, "api_docs", "doc_ref", "TEXT");
-        EnsureColumn(connection, "api_docs", "partner_id", "INTEGER");
-        EnsureColumn(connection, "api_docs", "from_location_id", "INTEGER");
-        EnsureColumn(connection, "api_docs", "to_location_id", "INTEGER");
+        EnsureColumn(connection, "api_docs", "partner_id", "BIGINT");
+        EnsureColumn(connection, "api_docs", "from_location_id", "BIGINT");
+        EnsureColumn(connection, "api_docs", "to_location_id", "BIGINT");
         EnsureColumn(connection, "api_docs", "from_hu", "TEXT");
         EnsureColumn(connection, "api_docs", "to_hu", "TEXT");
         EnsureColumn(connection, "api_docs", "device_id", "TEXT");
@@ -245,11 +238,11 @@ CREATE INDEX IF NOT EXISTS idx_hus_created_at ON hus(created_at);
 
     public void ExecuteInTransaction(Action<IDataStore> work)
     {
-        using var connection = new SqliteConnection(_connectionString);
+        using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
         using var transaction = connection.BeginTransaction();
 
-        var scoped = new SqliteDataStore(connection, transaction);
+        var scoped = new PostgresDataStore(connection, transaction);
         work(scoped);
 
         transaction.Commit();
@@ -304,8 +297,8 @@ CREATE INDEX IF NOT EXISTS idx_hus_created_at ON hus(created_at);
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO items(name, barcode, gtin, base_uom, default_packaging_id)
-VALUES(@name, @barcode, @gtin, @base_uom, @default_packaging_id);
-SELECT last_insert_rowid();
+VALUES(@name, @barcode, @gtin, @base_uom, @default_packaging_id)
+RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
             command.Parameters.AddWithValue("@barcode", (object?)item.Barcode ?? DBNull.Value);
@@ -461,8 +454,8 @@ WHERE item_id = @item_id AND code = @code;");
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO item_packaging(item_id, code, name, factor_to_base, is_active, sort_order)
-VALUES(@item_id, @code, @name, @factor_to_base, @is_active, @sort_order);
-SELECT last_insert_rowid();
+VALUES(@item_id, @code, @name, @factor_to_base, @is_active, @sort_order)
+RETURNING id;
 ");
             command.Parameters.AddWithValue("@item_id", packaging.ItemId);
             command.Parameters.AddWithValue("@code", packaging.Code);
@@ -555,8 +548,8 @@ WHERE id = @id;
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO locations(code, name)
-VALUES(@code, @name);
-SELECT last_insert_rowid();
+VALUES(@code, @name)
+RETURNING id;
 ");
             command.Parameters.AddWithValue("@code", location.Code);
             command.Parameters.AddWithValue("@name", location.Name);
@@ -637,8 +630,8 @@ LIMIT 1;
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO uoms(name)
-VALUES(@name);
-SELECT last_insert_rowid();
+VALUES(@name)
+RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", uom.Name);
             return (long)(command.ExecuteScalar() ?? 0L);
@@ -694,8 +687,8 @@ SELECT last_insert_rowid();
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO partners(name, code, created_at)
-VALUES(@name, @code, @created_at);
-SELECT last_insert_rowid();
+VALUES(@name, @code, @created_at)
+RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", partner.Name);
             command.Parameters.AddWithValue("@code", (object?)partner.Code ?? DBNull.Value);
@@ -846,8 +839,8 @@ WHERE id = @id;
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO docs(doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, comment)
-VALUES(@doc_ref, @type, @status, @created_at, @closed_at, @partner_id, @order_id, @order_ref, @shipping_ref, @comment);
-SELECT last_insert_rowid();
+VALUES(@doc_ref, @type, @status, @created_at, @closed_at, @partner_id, @order_id, @order_ref, @shipping_ref, @comment)
+RETURNING id;
 ");
             command.Parameters.AddWithValue("@doc_ref", doc.DocRef);
             command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(doc.Type));
@@ -925,8 +918,8 @@ ORDER BY dl.id;
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO doc_lines(doc_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)
-VALUES(@doc_id, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id, @from_hu, @to_hu);
-SELECT last_insert_rowid();
+VALUES(@doc_id, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id, @from_hu, @to_hu)
+RETURNING id;
 ");
             command.Parameters.AddWithValue("@doc_id", line.DocId);
             command.Parameters.AddWithValue("@item_id", line.ItemId);
@@ -1061,8 +1054,8 @@ WHERE id = @id;
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO orders(order_ref, partner_id, due_date, status, comment, created_at)
-VALUES(@order_ref, @partner_id, @due_date, @status, @comment, @created_at);
-SELECT last_insert_rowid();
+VALUES(@order_ref, @partner_id, @due_date, @status, @comment, @created_at)
+RETURNING id;
 ");
             command.Parameters.AddWithValue("@order_ref", order.OrderRef);
             command.Parameters.AddWithValue("@partner_id", order.PartnerId);
@@ -1163,8 +1156,8 @@ ORDER BY i.name;
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO order_lines(order_id, item_id, qty_ordered)
-VALUES(@order_id, @item_id, @qty_ordered);
-SELECT last_insert_rowid();
+VALUES(@order_id, @item_id, @qty_ordered)
+RETURNING id;
 ");
             command.Parameters.AddWithValue("@order_id", line.OrderId);
             command.Parameters.AddWithValue("@item_id", line.ItemId);
@@ -1511,7 +1504,7 @@ HAVING COALESCE(SUM(qty_delta), 0) != 0;
             if (ownsTransaction)
             {
                 using var begin = connection.CreateCommand();
-                begin.CommandText = "BEGIN IMMEDIATE;";
+                begin.CommandText = "BEGIN;";
                 begin.ExecuteNonQuery();
             }
 
@@ -1519,8 +1512,8 @@ HAVING COALESCE(SUM(qty_delta), 0) != 0;
             {
                 using var insert = CreateCommand(connection, @"
 INSERT INTO hus(hu_code, status, created_at, created_by)
-VALUES('', 'ACTIVE', @created_at, @created_by);
-SELECT last_insert_rowid();
+VALUES('', 'ACTIVE', @created_at, @created_by)
+RETURNING id;
 ");
                 insert.Parameters.AddWithValue("@created_at", ToDbDate(createdAt));
                 insert.Parameters.AddWithValue("@created_by", string.IsNullOrWhiteSpace(createdBy) ? DBNull.Value : createdBy.Trim());
@@ -1598,7 +1591,7 @@ SELECT id, hu_code, status, created_at, created_by, closed_at, note
 FROM hus";
             if (!string.IsNullOrWhiteSpace(search))
             {
-                sql += " WHERE hu_code LIKE @search COLLATE NOCASE";
+                sql += " WHERE hu_code ILIKE @search";
             }
 
             sql += "\nORDER BY id DESC LIMIT @take;";
@@ -1661,7 +1654,7 @@ INNER JOIN items i ON i.id = led.item_id
 INNER JOIN locations l ON l.id = led.location_id
 WHERE (led.hu_code = @hu OR (led.hu_code IS NULL AND led.hu = @hu))
 GROUP BY i.id, i.name, i.base_uom, l.id, l.code
-HAVING qty != 0
+HAVING SUM(led.qty_delta) != 0
 ORDER BY i.name, l.code;
 ");
             command.Parameters.AddWithValue("@hu", code.Trim());
@@ -1718,8 +1711,8 @@ VALUES(@event_id, @imported_at, @source_file, @device_id);
         {
             using var command = CreateCommand(connection, @"
 INSERT INTO import_errors(event_id, reason, raw_json, created_at)
-VALUES(@event_id, @reason, @raw_json, @created_at);
-SELECT last_insert_rowid();
+VALUES(@event_id, @reason, @raw_json, @created_at)
+RETURNING id;
 ");
             command.Parameters.AddWithValue("@event_id", (object?)err.EventId ?? DBNull.Value);
             command.Parameters.AddWithValue("@reason", err.Reason);
@@ -1772,19 +1765,19 @@ SELECT last_insert_rowid();
         });
     }
 
-    private T WithConnection<T>(Func<SqliteConnection, T> action)
+    private T WithConnection<T>(Func<NpgsqlConnection, T> action)
     {
         if (_connection != null)
         {
             return action(_connection);
         }
 
-        using var connection = new SqliteConnection(_connectionString);
+        using var connection = new NpgsqlConnection(_connectionString);
         connection.Open();
         return action(connection);
     }
 
-    private SqliteCommand CreateCommand(SqliteConnection connection, string sql)
+    private NpgsqlCommand CreateCommand(NpgsqlConnection connection, string sql)
     {
         var command = connection.CreateCommand();
         command.CommandText = sql;
@@ -1796,7 +1789,7 @@ SELECT last_insert_rowid();
         return command;
     }
 
-    private static Item ReadItem(SqliteDataReader reader)
+    private static Item ReadItem(NpgsqlDataReader reader)
     {
         var baseUom = reader.IsDBNull(4) ? null : reader.GetString(4);
         return new Item
@@ -1810,7 +1803,7 @@ SELECT last_insert_rowid();
         };
     }
 
-    private static ItemPackaging ReadItemPackaging(SqliteDataReader reader)
+    private static ItemPackaging ReadItemPackaging(NpgsqlDataReader reader)
     {
         return new ItemPackaging
         {
@@ -1824,7 +1817,7 @@ SELECT last_insert_rowid();
         };
     }
 
-    private static Location ReadLocation(SqliteDataReader reader)
+    private static Location ReadLocation(NpgsqlDataReader reader)
     {
         return new Location
         {
@@ -1834,7 +1827,7 @@ SELECT last_insert_rowid();
         };
     }
 
-    private static Uom ReadUom(SqliteDataReader reader)
+    private static Uom ReadUom(NpgsqlDataReader reader)
     {
         return new Uom
         {
@@ -1843,7 +1836,7 @@ SELECT last_insert_rowid();
         };
     }
 
-    private static Partner ReadPartner(SqliteDataReader reader)
+    private static Partner ReadPartner(NpgsqlDataReader reader)
     {
         return new Partner
         {
@@ -1854,7 +1847,7 @@ SELECT last_insert_rowid();
         };
     }
 
-    private static Doc ReadDoc(SqliteDataReader reader)
+    private static Doc ReadDoc(NpgsqlDataReader reader)
     {
         var type = DocTypeMapper.FromOpString(reader.GetString(2)) ?? DocType.Inbound;
         var status = DocTypeMapper.StatusFromString(reader.GetString(3)) ?? DocStatus.Draft;
@@ -1920,7 +1913,7 @@ SELECT last_insert_rowid();
         };
     }
 
-    private static DocLine ReadDocLine(SqliteDataReader reader)
+    private static DocLine ReadDocLine(NpgsqlDataReader reader)
     {
         return new DocLine
         {
@@ -1937,7 +1930,7 @@ SELECT last_insert_rowid();
         };
     }
 
-    private static Order ReadOrder(SqliteDataReader reader)
+    private static Order ReadOrder(NpgsqlDataReader reader)
     {
         var status = OrderStatusMapper.StatusFromString(reader.GetString(4)) ?? OrderStatus.Accepted;
 
@@ -1960,7 +1953,7 @@ SELECT last_insert_rowid();
         };
     }
 
-    private static OrderLine ReadOrderLine(SqliteDataReader reader)
+    private static OrderLine ReadOrderLine(NpgsqlDataReader reader)
     {
         return new OrderLine
         {
@@ -1971,7 +1964,7 @@ SELECT last_insert_rowid();
         };
     }
 
-    private static ImportError ReadImportError(SqliteDataReader reader)
+    private static ImportError ReadImportError(NpgsqlDataReader reader)
     {
         return new ImportError
         {
@@ -1983,7 +1976,7 @@ SELECT last_insert_rowid();
         };
     }
 
-    private static HuRecord ReadHuRecord(SqliteDataReader reader)
+    private static HuRecord ReadHuRecord(NpgsqlDataReader reader)
     {
         return new HuRecord
         {
@@ -1997,7 +1990,7 @@ SELECT last_insert_rowid();
         };
     }
 
-    private static void EnsureColumn(SqliteConnection connection, string tableName, string columnName, string definition)
+    private static void EnsureColumn(NpgsqlConnection connection, string tableName, string columnName, string definition)
     {
         if (ColumnExists(connection, tableName, columnName))
         {
@@ -2009,39 +2002,42 @@ SELECT last_insert_rowid();
         command.ExecuteNonQuery();
     }
 
-    private static bool ColumnExists(SqliteConnection connection, string tableName, string columnName)
+    private static bool ColumnExists(NpgsqlConnection connection, string tableName, string columnName)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA table_info({tableName});";
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            var name = reader.GetString(1);
-            if (string.Equals(name, columnName, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool TableExists(SqliteConnection connection, string tableName)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = @name LIMIT 1;";
-        command.Parameters.AddWithValue("@name", tableName);
+        command.CommandText = @"
+SELECT 1
+FROM information_schema.columns
+WHERE table_schema = current_schema()
+  AND table_name = @table_name
+  AND column_name = @column_name
+LIMIT 1;";
+        command.Parameters.AddWithValue("@table_name", tableName.ToLowerInvariant());
+        command.Parameters.AddWithValue("@column_name", columnName.ToLowerInvariant());
         return command.ExecuteScalar() != null;
     }
 
-    private static void EnsureIndex(SqliteConnection connection, string indexName, string indexDefinition)
+    private static bool TableExists(NpgsqlConnection connection, string tableName)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT 1
+FROM information_schema.tables
+WHERE table_schema = current_schema()
+  AND table_name = @name
+LIMIT 1;";
+        command.Parameters.AddWithValue("@name", tableName.ToLowerInvariant());
+        return command.ExecuteScalar() != null;
+    }
+
+    private static void EnsureIndex(NpgsqlConnection connection, string indexName, string indexDefinition)
     {
         using var command = connection.CreateCommand();
         command.CommandText = $"CREATE INDEX IF NOT EXISTS {indexName} ON {indexDefinition};";
         command.ExecuteNonQuery();
     }
 
-    private static void BackfillPartnerCreatedAt(SqliteConnection connection)
+    private static void BackfillPartnerCreatedAt(NpgsqlConnection connection)
     {
         using var command = connection.CreateCommand();
         command.CommandText = "UPDATE partners SET created_at = @created_at WHERE created_at IS NULL OR created_at = '';";
@@ -2049,14 +2045,14 @@ SELECT last_insert_rowid();
         command.ExecuteNonQuery();
     }
 
-    private static void BackfillBaseUom(SqliteConnection connection)
+    private static void BackfillBaseUom(NpgsqlConnection connection)
     {
         using var command = connection.CreateCommand();
         command.CommandText = "UPDATE items SET base_uom = COALESCE(NULLIF(base_uom, ''), NULLIF(uom, ''), 'шт') WHERE base_uom IS NULL OR base_uom = '';";
         command.ExecuteNonQuery();
     }
 
-    private static void BackfillLedgerHuCode(SqliteConnection connection)
+    private static void BackfillLedgerHuCode(NpgsqlConnection connection)
     {
         if (!ColumnExists(connection, "ledger", "hu_code"))
         {
@@ -2073,7 +2069,7 @@ SELECT last_insert_rowid();
         command.ExecuteNonQuery();
     }
 
-    private static void BackfillHuRegistry(SqliteConnection connection)
+    private static void BackfillHuRegistry(NpgsqlConnection connection)
     {
         if (!TableExists(connection, "hus"))
         {
@@ -2102,11 +2098,12 @@ SELECT last_insert_rowid();
         }
 
         var sql = $@"
-INSERT OR IGNORE INTO hus(hu_code, status, created_at, created_by)
+INSERT INTO hus(hu_code, status, created_at, created_by)
 SELECT DISTINCT hu_code, 'OPEN', @created_at, 'backfill'
 FROM (
 {string.Join("\nUNION ALL\n", sources)}
-);";
+)
+ON CONFLICT (hu_code) DO NOTHING;";
         using var command = connection.CreateCommand();
         command.CommandText = sql;
         command.Parameters.AddWithValue("@created_at", ToDbDate(DateTime.Now));
@@ -2120,7 +2117,7 @@ FROM (
             return "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items ORDER BY name";
         }
 
-        return "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items WHERE name LIKE @search OR barcode LIKE @search ORDER BY name";
+        return "SELECT id, name, barcode, gtin, base_uom, default_packaging_id FROM items WHERE name ILIKE @search OR barcode ILIKE @search ORDER BY name";
     }
 
     private static string BuildStockQuery(string? search)
@@ -2134,10 +2131,10 @@ INNER JOIN locations l ON l.id = led.location_id
 
         if (!string.IsNullOrWhiteSpace(search))
         {
-            baseQuery += "WHERE i.name LIKE @search OR i.barcode LIKE @search OR l.code LIKE @search\n";
+            baseQuery += "WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR l.code ILIKE @search\n";
         }
 
-        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, l.id, COALESCE(led.hu_code, led.hu) HAVING qty != 0 ORDER BY i.name, l.code, COALESCE(led.hu_code, led.hu)";
+        baseQuery += "GROUP BY i.id, i.name, i.barcode, i.base_uom, l.id, COALESCE(led.hu_code, led.hu) HAVING SUM(led.qty_delta) != 0 ORDER BY i.name, l.code, COALESCE(led.hu_code, led.hu)";
         return baseQuery;
     }
 

@@ -12,4 +12,6 @@ public sealed class DocLineView
     public string BaseUom { get; init; } = "шт";
     public string? FromLocation { get; init; }
     public string? ToLocation { get; init; }
+    public string? FromHu { get; init; }
+    public string? ToHu { get; init; }
 }
