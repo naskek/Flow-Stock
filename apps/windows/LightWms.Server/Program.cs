@@ -521,9 +521,7 @@ app.MapPost("/api/ops", async (HttpRequest request, IDataStore store, DocumentSe
     OperationEventRequest? opEvent;
     try
     {
-        opEvent = JsonSerializer.Deserialize<OperationEventRequest>(
-            rawJson,
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        opEvent = JsonSerializer.Deserialize<OperationEventRequest>(rawJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true, IncludeFields = true });
     }
     catch (JsonException)
     {
