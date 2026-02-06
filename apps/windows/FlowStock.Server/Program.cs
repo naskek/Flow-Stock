@@ -893,7 +893,7 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
     }
 
     var docType = ParseDocType(createRequest.Type);
-    if (docType == null || docType is not (DocType.Inbound or DocType.Outbound or DocType.Move))
+    if (docType == null || docType is not (DocType.Inbound or DocType.Outbound or DocType.Move or DocType.Inventory or DocType.WriteOff))
     {
         return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
     }
@@ -1078,7 +1078,7 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
                 return Results.BadRequest(new ApiResult(false, "MISSING_PARTNER"));
             }
 
-            if (docType == DocType.Move || docType == DocType.Outbound)
+            if (docType == DocType.Move || docType == DocType.Outbound || docType == DocType.WriteOff)
             {
                 if (!fromLocationId.HasValue)
                 {
@@ -1086,7 +1086,7 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
                 }
             }
 
-            if (docType == DocType.Move || docType == DocType.Inbound)
+            if (docType == DocType.Move || docType == DocType.Inbound || docType == DocType.Inventory)
             {
                 if (!toLocationId.HasValue)
                 {
@@ -1108,6 +1108,9 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
 
             apiStore.UpdateApiDocHeader(docUid, partnerId, fromLocationId, toLocationId, fromHu, toHu);
         }
+
+        var resolvedShippingRef = ResolveDocShippingRef(docType.Value, fromHu, toHu);
+        UpdateDocShippingRefIfNeeded(store, existingDocInfo.DocId, resolvedShippingRef);
 
         return Results.Ok(new
         {
@@ -1148,7 +1151,7 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
     }
 
-    if (!draftOnly && (docType == DocType.Move || docType == DocType.Outbound))
+    if (!draftOnly && (docType == DocType.Move || docType == DocType.Outbound || docType == DocType.WriteOff))
     {
         if (!fromLocationIdValue.HasValue)
         {
@@ -1156,7 +1159,7 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         }
     }
 
-    if (!draftOnly && (docType == DocType.Move || docType == DocType.Inbound))
+    if (!draftOnly && (docType == DocType.Move || docType == DocType.Inbound || docType == DocType.Inventory))
     {
         if (!toLocationIdValue.HasValue)
         {
@@ -1195,6 +1198,7 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         });
     }
 
+    var resolvedShippingRefNew = ResolveDocShippingRef(docType.Value, normalizedFromHu, normalizedToHu);
     var requestedRefValue = string.IsNullOrWhiteSpace(createRequest.DocRef) ? null : createRequest.DocRef.Trim();
     var docRef = requestedRefValue;
     if (string.IsNullOrWhiteSpace(docRef))
@@ -1210,14 +1214,14 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
     long docId;
     try
     {
-        docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, null, null, null);
+        docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, null, resolvedShippingRefNew, null);
     }
     catch (ArgumentException ex) when (string.Equals(ex.ParamName, "docRef", StringComparison.Ordinal))
     {
         docRef = docs.GenerateDocRef(docType.Value, DateTime.Now);
         try
         {
-            docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, null, null, null);
+            docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, null, resolvedShippingRefNew, null);
         }
         catch (ArgumentException)
         {
@@ -1367,6 +1371,22 @@ app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest reques
             fromHu = NormalizeHu(docInfo.FromHu);
             toHu = NormalizeHu(docInfo.ToHu);
             if (!fromLocationId.HasValue || !toLocationId.HasValue)
+            {
+                return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+            }
+            break;
+        case DocType.WriteOff:
+            fromLocationId = docInfo.FromLocationId;
+            fromHu = NormalizeHu(docInfo.FromHu);
+            if (!fromLocationId.HasValue)
+            {
+                return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+            }
+            break;
+        case DocType.Inventory:
+            toLocationId = docInfo.ToLocationId;
+            toHu = NormalizeHu(docInfo.ToHu);
+            if (!toLocationId.HasValue)
             {
                 return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
             }
@@ -1636,6 +1656,40 @@ static string? NormalizeHu(string? value)
     return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
+static string? ResolveDocShippingRef(DocType type, string? fromHu, string? toHu)
+{
+    return type switch
+    {
+        DocType.Inbound => NormalizeHu(toHu),
+        DocType.Inventory => NormalizeHu(toHu),
+        DocType.Outbound => NormalizeHu(fromHu),
+        DocType.WriteOff => NormalizeHu(fromHu),
+        DocType.Move => NormalizeHu(toHu),
+        _ => null
+    };
+}
+
+static void UpdateDocShippingRefIfNeeded(IDataStore store, long docId, string? shippingRef)
+{
+    if (string.IsNullOrWhiteSpace(shippingRef))
+    {
+        return;
+    }
+
+    var doc = store.GetDoc(docId);
+    if (doc == null || doc.Status != DocStatus.Draft)
+    {
+        return;
+    }
+
+    if (!string.IsNullOrWhiteSpace(doc.ShippingRef))
+    {
+        return;
+    }
+
+    store.UpdateDocHeader(docId, doc.PartnerId, doc.OrderRef, shippingRef);
+}
+
 static LocationResolution ResolveLocationForEvent(IDataStore store, string? code, int? id)
 {
     if (id.HasValue)
@@ -1765,7 +1819,8 @@ static object MapDoc(Doc doc)
         order_id = doc.OrderId,
         order_ref = doc.OrderRef,
         shipping_ref = doc.ShippingRef,
-        comment = doc.Comment
+        comment = doc.Comment,
+        source_device_id = doc.SourceDeviceId
     };
 }
 

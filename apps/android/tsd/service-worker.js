@@ -1,4 +1,4 @@
-const CACHE_NAME = "tsd-shell-v8";
+const CACHE_NAME = "tsd-shell-v9";
 const ASSETS = [
   "./",
   "./index.html",
@@ -40,6 +40,10 @@ self.addEventListener("fetch", (event) => {
   }
   const url = new URL(event.request.url);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return;
+  }
+  if (url.pathname.startsWith("/api/")) {
+    event.respondWith(fetch(event.request));
     return;
   }
 

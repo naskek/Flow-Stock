@@ -75,21 +75,11 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <GroupBox Header="Как пользоваться (MVP)" Margin="0,0,0,8">
-                        <TextBlock Margin="8,4,8,8" TextWrapping="Wrap">
-                            1) Создай товары
-                            <LineBreak />
-                            2) Создай места хранения
-                            <LineBreak />
-                            3) Импортируй JSONL
-                            <LineBreak />
-                            4) Открой документ
-                            <LineBreak />
-                            5) Нажми "Закрыть" - появятся остатки
-                        </TextBlock>
-                    </GroupBox>
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="Новый документ" Click="NewDocMenu_Click" />
+                        <Button Content="Обновить" Click="DocsRefresh_Click" Margin="8,0,0,0" />
+                    </StackPanel>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
                         <TextBlock Text="Поиск" VerticalAlignment="Center" />
                         <TextBox x:Name="DocsSearchBox" Width="240" Margin="6,0,12,0"
@@ -115,19 +105,20 @@
                             <DataGridTextColumn Header="Закрыт" Binding="{Binding ClosedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
                         </DataGrid.Columns>
                     </DataGrid>
-                    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,8">
-                        <Button Content="Новый документ" Click="NewDocMenu_Click" />
-                        <Button Content="Обновить" Click="DocsRefresh_Click" Margin="8,0,0,0" />
-                    </StackPanel>
                 </Grid>
             </TabItem>
             <TabItem Header="Заказы">
                 <Grid>
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <DataGrid x:Name="OrdersGrid" Grid.Row="0" AutoGenerateColumns="False" IsReadOnly="True"
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="Новый" Click="OrdersNew_Click" />
+                        <Button Content="Удалить" Click="OrdersDelete_Click" Margin="8,0,0,0" />
+                        <Button Content="Обновить" Click="OrdersRefresh_Click" Margin="8,0,0,0" />
+                    </StackPanel>
+                    <DataGrid x:Name="OrdersGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
                               MouseDoubleClick="OrdersGrid_MouseDoubleClick"
                               KeyDown="OrdersGrid_KeyDown">
                         <DataGrid.Columns>
@@ -139,20 +130,19 @@
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
                         </DataGrid.Columns>
                     </DataGrid>
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,8">
-                        <Button Content="Новый" Click="OrdersNew_Click" />
-                        <Button Content="Удалить" Click="OrdersDelete_Click" Margin="8,0,0,0" />
-                        <Button Content="Обновить" Click="OrdersRefresh_Click" Margin="8,0,0,0" />
-                    </StackPanel>
                 </Grid>
             </TabItem>
             <TabItem Header="Товары">
                 <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="300" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
-                    <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                    <StackPanel Grid.Column="0" Grid.Row="0" Grid.RowSpan="2" Margin="0,0,12,0">
                         <GroupBox Header="Форма">
                             <StackPanel Margin="8">
                                 <TextBlock Text="Наименование" />
@@ -177,9 +167,20 @@
                             <Button x:Name="ItemSaveButton" Content="Сохранить" Click="UpdateItem_Click" Margin="8,0,0,0" TabIndex="8" />
                             <Button x:Name="ItemDeleteButton" Content="Удалить" Click="DeleteItem_Click" Margin="8,0,0,0" TabIndex="9" />
                         </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <Button Content="Импорт Excel..." Click="ImportItems_Click" Width="140" />
+                        </StackPanel>
                     </StackPanel>
-                    <DataGrid x:Name="ItemsGrid" Grid.Column="1" AutoGenerateColumns="False" IsReadOnly="True"
-                              SelectionChanged="ItemsGrid_SelectionChanged" TabIndex="20">
+                    <StackPanel Grid.Column="1" Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Поиск" VerticalAlignment="Center" />
+                        <TextBox x:Name="ItemsSearchBox" Width="240" Margin="6,0,12,0"
+                                 KeyDown="ItemsSearchBox_KeyDown" />
+                        <Button Content="Поиск" Click="ItemsSearch_Click" />
+                        <Button Content="Сброс" Click="ItemsResetSearch_Click" Margin="8,0,0,0" />
+                    </StackPanel>
+                    <DataGrid x:Name="ItemsGrid" Grid.Column="1" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                              SelectionMode="Extended" SelectionUnit="FullRow"
+                              SelectionChanged="ItemsGrid_SelectionChanged" KeyDown="ItemsGrid_KeyDown" TabIndex="20">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
                             <DataGridTextColumn Header="SKU / штрихкод" Binding="{Binding Barcode}" Width="180" />
@@ -249,6 +250,7 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="ИНН" Binding="{Binding Code}" Width="160" />
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
+                            <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="160" />
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="160" />
                         </DataGrid.Columns>
                     </DataGrid>

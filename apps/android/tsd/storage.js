@@ -231,11 +231,20 @@
     if (!id) {
       return null;
     }
+    var statusValue = String(doc.status || "").trim();
+    var commentValue = doc.comment != null ? String(doc.comment).trim() : "";
+    var sourceDeviceId = String(doc.source_device_id || doc.sourceDeviceId || "").trim();
+    if (
+      statusValue === "DRAFT" &&
+      (commentValue.toUpperCase().indexOf("TSD") === 0 || sourceDeviceId)
+    ) {
+      statusValue = "READY";
+    }
     return {
       id: id,
       doc_ref: String(doc.doc_ref || doc.docRef || ""),
       op: String(doc.op || doc.type || "").trim(),
-      status: String(doc.status || "").trim(),
+      status: statusValue,
       createdAt: doc.created_at || doc.createdAt || null,
       created_at: doc.created_at || doc.createdAt || null,
       closed_at: doc.closed_at || doc.closedAt || null,
@@ -244,6 +253,7 @@
       order_ref: String(doc.order_ref || doc.orderRef || "").trim(),
       shipping_ref: String(doc.shipping_ref || doc.shippingRef || "").trim(),
       comment: doc.comment || null,
+      source_device_id: sourceDeviceId || null,
     };
   }
 
@@ -289,25 +299,51 @@
     });
   }
 
+  function apiGetItemByBarcode(barcode) {
+    var clean = String(barcode || "").trim();
+    if (!clean) {
+      return Promise.resolve(null);
+    }
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(
+          baseUrl + "/api/items/by-barcode/" + encodeURIComponent(clean),
+          { method: "GET" }
+        );
+      })
+      .then(function (payload) {
+        var item = normalizeApiItem(payload);
+        return item || null;
+      })
+      .catch(function () {
+        return null;
+      });
+  }
+
   function apiFindItemByCode(code) {
     var clean = String(code || "").trim();
     if (!clean) {
       return Promise.resolve(null);
     }
-    return apiSearchItems(clean, 20).then(function (items) {
-      if (!items.length) {
-        return null;
+    return apiGetItemByBarcode(clean).then(function (item) {
+      if (item) {
+        return item;
       }
-      var exact = items.find(function (item) {
-        return item.barcode === clean || item.gtin === clean;
-      });
-      if (exact) {
-        return exact;
-      }
-      if (items.length === 1) {
+      return apiSearchItems(clean, 20).then(function (items) {
+        if (!items.length) {
+          return null;
+        }
+        var exact = items.find(function (entry) {
+          return entry.barcode === clean || entry.gtin === clean;
+        });
+        if (exact) {
+          return exact;
+        }
+        if (items.length === 1) {
+          return items[0];
+        }
         return items[0];
-      }
-      return items[0];
+      });
     });
   }
 
@@ -691,6 +727,33 @@
           };
         });
         return { totalsByLocation: totals, byHu: byHu };
+      });
+  }
+
+  function apiGetHuStockRows() {
+    return getBaseUrl()
+      .then(function (baseUrl) {
+        return fetchJsonWithTimeout(baseUrl + "/api/hu-stock", { method: "GET" });
+      })
+      .then(function (payload) {
+        if (!Array.isArray(payload)) {
+          throw new Error("INVALID_HU_STOCK");
+        }
+        return payload.map(function (row) {
+          var hu = String(row.hu || "").trim();
+          var itemId = Number(row.item_id);
+          var locationId = Number(row.location_id);
+          var qty = Number(row.qty);
+          if (!hu || !itemId || !locationId || isNaN(qty)) {
+            throw new Error("INVALID_HU_STOCK");
+          }
+          return {
+            hu: hu,
+            itemId: itemId,
+            locationId: locationId,
+            qty: qty,
+          };
+        });
       });
   }
 
@@ -2183,6 +2246,7 @@
     apiSearchLocations: apiSearchLocations,
     apiGetLocationById: apiGetLocationById,
     apiGetStockByBarcode: apiGetStockByBarcode,
+    apiGetHuStockRows: apiGetHuStockRows,
     apiGetPartners: apiGetPartners,
     apiGetDocs: apiGetDocs,
     apiGetNextDocRef: apiGetNextDocRef,

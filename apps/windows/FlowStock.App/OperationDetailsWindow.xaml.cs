@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
@@ -46,6 +47,7 @@ public partial class OperationDetailsWindow : Window
         DocHuCombo.ItemsSource = _huToOptions;
         DocHuFromCombo.ItemsSource = _huFromOptions;
         DocFromCombo.SelectionChanged += DocFromCombo_SelectionChanged;
+        DocToCombo.SelectionChanged += DocToCombo_SelectionChanged;
 
         LoadCatalog();
         LoadOrders();
@@ -133,6 +135,7 @@ public partial class OperationDetailsWindow : Window
 
         var lines = _services.Documents.GetDocLines(_docId);
         var isOutbound = _doc?.Type == DocType.Outbound;
+        var isInventory = _doc?.Type == DocType.Inventory;
         var availableByItem = isOutbound
             ? _services.Orders.GetItemAvailability()
             : new Dictionary<long, double>();
@@ -162,6 +165,20 @@ public partial class OperationDetailsWindow : Window
             var selectedPackaging = ResolvePackaging(packagings, line.UomCode);
             var inputQty = ResolveInputQty(line, selectedPackaging);
             var hasShortage = isOutbound && shortageByItem.ContainsKey(line.ItemId);
+            var inventoryDbQty = (double?)null;
+            var inventoryDiffQty = (double?)null;
+            var hasInventoryDiff = false;
+            if (isInventory)
+            {
+                var locationId = ResolveLocationId(line.ToLocation, locationLookup);
+                if (locationId.HasValue)
+                {
+                    var huCode = NormalizeHuValue(line.ToHu);
+                    inventoryDbQty = _services.DataStore.GetAvailableQty(line.ItemId, locationId.Value, huCode);
+                    inventoryDiffQty = line.Qty - inventoryDbQty.Value;
+                    hasInventoryDiff = Math.Abs(inventoryDiffQty.Value) > 0.000001;
+                }
+            }
             _docLines.Add(new DocLineDisplay
             {
                 Id = line.Id,
@@ -179,6 +196,11 @@ public partial class OperationDetailsWindow : Window
                     : null,
                 HasShortage = hasShortage,
                 ShortageQty = hasShortage ? shortageByItem[line.ItemId] : null,
+                InventoryDbQty = inventoryDbQty,
+                InventoryDiffQty = inventoryDiffQty,
+                InventoryDbQtyDisplay = inventoryDbQty.HasValue ? FormatQty(inventoryDbQty.Value) : string.Empty,
+                InventoryDiffQtyDisplay = inventoryDiffQty.HasValue ? FormatQty(inventoryDiffQty.Value) : string.Empty,
+                HasInventoryDiff = hasInventoryDiff,
                 FromLocation = FormatLocationDisplay(line.FromLocation, locationLookup),
                 ToLocation = FormatLocationDisplay(line.ToLocation, locationLookup)
             });
@@ -200,6 +222,16 @@ public partial class OperationDetailsWindow : Window
         }
 
         return lookup.TryGetValue(code, out var location) ? location.DisplayName : code;
+    }
+
+    private static long? ResolveLocationId(string? code, IReadOnlyDictionary<string, Location> lookup)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return null;
+        }
+
+        return lookup.TryGetValue(code, out var location) ? location.Id : null;
     }
 
     private void DocLines_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -562,6 +594,7 @@ public partial class OperationDetailsWindow : Window
         ApplyPartnerFilter();
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
         SelectOrderFromDoc(_doc);
+        ApplyHeaderLocationsFromLines();
         LoadHuOptions();
         SetHuSelection(_doc);
         _suppressDirtyTracking = false;
@@ -595,6 +628,84 @@ public partial class OperationDetailsWindow : Window
             DocOrderCombo.Text = doc.OrderRef ?? string.Empty;
         }
         _suppressOrderSync = false;
+    }
+
+    private void ApplyHeaderLocationsFromLines()
+    {
+        if (_doc == null)
+        {
+            return;
+        }
+
+        var lines = _services.DataStore.GetDocLines(_doc.Id);
+        if (lines.Count == 0)
+        {
+            return;
+        }
+
+        if (_doc.Type == DocType.Inbound || _doc.Type == DocType.Inventory)
+        {
+            if (DocToCombo.SelectedItem == null)
+            {
+                var toLocation = ResolveUniqueLocation(lines, line => line.ToLocationId);
+                if (toLocation != null)
+                {
+                    DocToCombo.SelectedItem = toLocation;
+                }
+            }
+            return;
+        }
+
+        if (_doc.Type == DocType.Outbound || _doc.Type == DocType.WriteOff)
+        {
+            if (DocFromCombo.SelectedItem == null)
+            {
+                var fromLocation = ResolveUniqueLocation(lines, line => line.FromLocationId);
+                if (fromLocation != null)
+                {
+                    DocFromCombo.SelectedItem = fromLocation;
+                }
+            }
+            return;
+        }
+
+        if (_doc.Type == DocType.Move)
+        {
+            if (DocFromCombo.SelectedItem == null)
+            {
+                var fromLocation = ResolveUniqueLocation(lines, line => line.FromLocationId);
+                if (fromLocation != null)
+                {
+                    DocFromCombo.SelectedItem = fromLocation;
+                }
+            }
+
+            if (DocToCombo.SelectedItem == null)
+            {
+                var toLocation = ResolveUniqueLocation(lines, line => line.ToLocationId);
+                if (toLocation != null)
+                {
+                    DocToCombo.SelectedItem = toLocation;
+                }
+            }
+        }
+    }
+
+    private Location? ResolveUniqueLocation(IReadOnlyList<DocLine> lines, Func<DocLine, long?> selector)
+    {
+        var ids = lines
+            .Select(selector)
+            .Where(id => id.HasValue)
+            .Select(id => id!.Value)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count != 1)
+        {
+            return null;
+        }
+
+        return _locations.FirstOrDefault(location => location.Id == ids[0]);
     }
 
     private void DocPartnerCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -749,14 +860,24 @@ public partial class OperationDetailsWindow : Window
 
     private void DocFromCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        if (_doc?.Type != DocType.Move)
+        if (_doc == null)
         {
             return;
         }
 
-        if (DocMoveInternalCheck.IsChecked == true)
+        if (_doc.Type == DocType.Move && DocMoveInternalCheck.IsChecked == true)
         {
             DocToCombo.SelectedItem = DocFromCombo.SelectedItem;
+        }
+
+        RefreshHuOptions();
+    }
+
+    private void DocToCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_doc == null)
+        {
+            return;
         }
 
         RefreshHuOptions();
@@ -844,6 +965,9 @@ public partial class OperationDetailsWindow : Window
             : Visibility.Collapsed;
         DocHeaderSaveButton.IsEnabled = isDraft;
 
+        var showInventory = doc.Type == DocType.Inventory;
+        DocInventoryDbColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
+        DocInventoryDiffColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
         DocToColumn.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Header = fromLabel;
@@ -856,7 +980,7 @@ public partial class OperationDetailsWindow : Window
         var closedAt = doc.ClosedAt.HasValue
             ? doc.ClosedAt.Value.ToString("dd'/'MM'/'yyyy HH':'mm", CultureInfo.InvariantCulture)
             : "-";
-        return $"Номер: {doc.DocRef} | Тип: {DocTypeMapper.ToDisplayName(doc.Type)} | Статус: {DocTypeMapper.StatusToDisplayName(doc.Status)} | Создан: {createdAt} | Проведена: {closedAt}";
+        return $"Номер: {doc.DocRef} | Тип: {DocTypeMapper.ToDisplayName(doc.Type)} | Статус: {doc.StatusDisplay} | Создан: {createdAt} | Проведена: {closedAt}";
     }
 
     private void UpdateLineButtons()
@@ -1269,6 +1393,8 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        var totalsByHuAll = _services.DataStore.GetLedgerTotalsByHu();
+
         if (_doc.Type == DocType.Move)
         {
             var fromLocation = DocFromCombo.SelectedItem as Location;
@@ -1289,25 +1415,28 @@ public partial class OperationDetailsWindow : Window
                 _huFromOptions.Add(new HuOption(null, "-"));
             }
 
-            var totalsByHu = _services.DataStore.GetLedgerTotalsByHu();
-            var availableCodes = GetAvailableHuCodes();
-            AddHuOptions(BuildHuOptions(totalsByHu, availableCodes), _huToOptions);
+            var toLocation = DocToCombo.SelectedItem as Location;
+            if (toLocation != null)
+            {
+                var totalsByLocation = GetHuTotalsByLocation(toLocation.Id);
+                var freeCodes = GetFreeHuCodes(totalsByHuAll);
+                AddHuOptions(BuildHuOptions(totalsByLocation, freeCodes), _huToOptions);
+            }
         }
         else
         {
-            var totalsByHu = _services.DataStore.GetLedgerTotalsByHu();
-            var availableCodes = _doc.Type == DocType.Inbound || _doc.Type == DocType.Inventory
-                ? GetAvailableHuCodes()
-                : Enumerable.Empty<string>();
-            AddHuOptions(BuildHuOptions(totalsByHu, availableCodes), _huToOptions);
+            var selectedLocation = _doc.Type == DocType.Inbound || _doc.Type == DocType.Inventory
+                ? DocToCombo.SelectedItem as Location
+                : DocFromCombo.SelectedItem as Location;
+            if (selectedLocation != null)
+            {
+                var totalsByLocation = GetHuTotalsByLocation(selectedLocation.Id);
+                var freeCodes = _doc.Type == DocType.Inbound || _doc.Type == DocType.Inventory
+                    ? GetFreeHuCodes(totalsByHuAll)
+                    : Enumerable.Empty<string>();
+                AddHuOptions(BuildHuOptions(totalsByLocation, freeCodes), _huToOptions);
+            }
             _huFromOptions.Add(new HuOption(null, "-"));
-        }
-
-        var current = NormalizeHuCode(_doc.ShippingRef);
-        if (!string.IsNullOrWhiteSpace(current)
-            && _huToOptions.All(option => !string.Equals(option.Code, current, StringComparison.OrdinalIgnoreCase)))
-        {
-            _huToOptions.Add(new HuOption(current, $"{current} (занят)"));
         }
 
         var previousSuppress = _suppressDirtyTracking;
@@ -1331,6 +1460,30 @@ public partial class OperationDetailsWindow : Window
         {
             return Enumerable.Empty<string>();
         }
+    }
+
+    private IReadOnlyDictionary<string, double> GetHuTotalsByLocation(long locationId)
+    {
+        var totals = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in _services.DataStore.GetHuStockRows())
+        {
+            if (row.LocationId != locationId || string.IsNullOrWhiteSpace(row.HuCode))
+            {
+                continue;
+            }
+
+            totals[row.HuCode] = totals.TryGetValue(row.HuCode, out var current)
+                ? current + row.Qty
+                : row.Qty;
+        }
+
+        return totals;
+    }
+
+    private IEnumerable<string> GetFreeHuCodes(IReadOnlyDictionary<string, double> totalsByHu)
+    {
+        return GetAvailableHuCodes()
+            .Where(code => !totalsByHu.TryGetValue(code, out var qty) || qty <= 0.000001);
     }
 
     private static bool IsSelectableHu(HuRecord record)
@@ -1390,11 +1543,15 @@ public partial class OperationDetailsWindow : Window
 
     private void SetHuSelection(Doc doc)
     {
-        var normalized = NormalizeHuCode(doc.ShippingRef);
+        var normalized = NormalizeHuCode(doc.ShippingRef) ?? ResolveHeaderHuFromLines(doc);
         var currentFromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
         _suppressDirtyTracking = true;
         if (!string.IsNullOrWhiteSpace(normalized))
         {
+            if (_huToOptions.All(option => !string.Equals(option.Code, normalized, StringComparison.OrdinalIgnoreCase)))
+            {
+                _huToOptions.Add(new HuOption(normalized, normalized));
+            }
             DocHuCombo.SelectedItem = _huToOptions.FirstOrDefault(option =>
                 string.Equals(option.Code, normalized, StringComparison.OrdinalIgnoreCase));
         }
@@ -1416,6 +1573,31 @@ public partial class OperationDetailsWindow : Window
                                           ?? _huFromOptions.FirstOrDefault();
         }
         _suppressDirtyTracking = false;
+    }
+
+    private string? ResolveHeaderHuFromLines(Doc doc)
+    {
+        var lines = _services.DataStore.GetDocLines(doc.Id);
+        if (lines.Count == 0)
+        {
+            return null;
+        }
+
+        IEnumerable<string?> values = doc.Type switch
+        {
+            DocType.Inbound or DocType.Inventory => lines.Select(line => line.ToHu),
+            DocType.Outbound or DocType.WriteOff => lines.Select(line => line.FromHu),
+            DocType.Move => lines.Select(line => line.ToHu),
+            _ => Enumerable.Empty<string?>()
+        };
+
+        var distinct = values
+            .Select(NormalizeHuCode)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return distinct.Count == 1 ? distinct[0] : null;
     }
 
     private static string? NormalizeHuCode(string? value)
@@ -1579,6 +1761,11 @@ public partial class OperationDetailsWindow : Window
                 }
                 return true;
             case DocType.Outbound:
+                if (fromLocation == null)
+                {
+                    MessageBox.Show("Для отгрузки выберите место хранения источника.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
                 return true;
             case DocType.Move:
                 if (fromLocation == null || toLocation == null)
@@ -1608,6 +1795,13 @@ public partial class OperationDetailsWindow : Window
                     && string.IsNullOrWhiteSpace(NormalizeHuValue(toHu)))
                 {
                     MessageBox.Show("Для перемещения места хранения должны быть разными. Если вы хотите упаковать в HU в том же месте - заполните HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+                return true;
+            case DocType.Inventory:
+                if (toLocation == null)
+                {
+                    MessageBox.Show("Для инвентаризации выберите место хранения.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 return true;
@@ -1658,6 +1852,11 @@ public partial class OperationDetailsWindow : Window
         public double? AvailableQty { get; init; }
         public bool HasShortage { get; init; }
         public double? ShortageQty { get; init; }
+        public double? InventoryDbQty { get; init; }
+        public double? InventoryDiffQty { get; init; }
+        public string InventoryDbQtyDisplay { get; init; } = string.Empty;
+        public string InventoryDiffQtyDisplay { get; init; } = string.Empty;
+        public bool HasInventoryDiff { get; init; }
         public string? FromLocation { get; init; }
         public string? ToLocation { get; init; }
     }

@@ -500,21 +500,16 @@
 
     if (route.name === "docs") {
       app.innerHTML = renderLoading();
-      Promise.all([
-        TsdStorage.listDocs().catch(function () { return []; }),
-        TsdStorage.apiGetDocs(route.op).catch(function () { return null; }),
-      ])
-        .then(function (results) {
-          var localDocs = results[0] || [];
-          var serverDocs = results[1];
+      TsdStorage.apiGetDocs(route.op)
+        .then(function (serverDocs) {
           var notice = null;
-          var combined = localDocs.slice();
+          var list = [];
           if (Array.isArray(serverDocs)) {
-            combined = combined.concat(serverDocs);
+            list = serverDocs;
           } else {
             notice = "Документы с сервера недоступны.";
           }
-          app.innerHTML = renderDocsList(combined, route.op, notice);
+          app.innerHTML = renderDocsList(list, route.op, notice);
           wireDocsList();
         })
         .catch(function () {
@@ -638,7 +633,6 @@
       '    <button class="btn menu-btn" data-op="MOVE">Перемещение</button>' +
       '    <button class="btn menu-btn" data-op="WRITE_OFF">Списание</button>' +
       '    <button class="btn menu-btn" data-route="stock">Остатки</button>' +
-      '    <button class="btn menu-btn" data-route="hu">HU / Паллеты</button>' +
       '    <button class="btn menu-btn" data-op="INVENTORY">Инвентаризация</button>' +
       '    <button class="btn menu-btn" data-route="orders">Заказы</button>' +
       '    <button class="btn menu-btn" data-route="docs">История операций</button>' +
@@ -867,13 +861,17 @@
       '<section class="screen">' +
       '  <div class="screen-card">' +
       '    <div class="section-title">Остатки</div>' +
-      '    <div id="stockStatus" class="stock-status">Дата актуальности: —</div>' +
-      '    <label class="form-label" for="stockSearchInput">Поиск товара</label>' +
-      '    <input class="form-input" id="stockSearchInput" type="text" autocomplete="off" placeholder="Сканируйте штрихкод или введите название/GTIN/SKU" />' +
-      '    <div id="stockSuggestions" class="stock-suggestions"></div>' +
+      '    <div id="stockStatus" class="stock-status">Дата актуальности: -</div>' +
+      '    <div class="section-subtitle">Сканирование</div>' +
+      '    <div class="scan-input-row">' +
+      '      <input class="form-input" id="stockScanInput" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly placeholder="Сканируйте HU или товар" />' +
+      '      <button class="btn btn-outline" id="stockScanBtn" type="button">Сканировать</button>' +
+      "    </div>" +
       '    <div id="stockMessage" class="stock-message"></div>' +
       '    <div id="stockDetails" class="stock-details"></div>' +
+      '    <div class="section-subtitle">Ручной поиск</div>' +
       '    <div class="actions-bar">' +
+      '      <button class="btn btn-outline" id="stockManualSearchBtn" type="button">Ручной поиск</button>' +
       '      <button class="btn btn-outline" id="stockClearBtn" type="button">Очистить</button>' +
       "    </div>" +
       "  </div>" +
@@ -899,12 +897,21 @@
 
   function wireStock() {
     var statusLabel = document.getElementById("stockStatus");
-    var searchInput = document.getElementById("stockSearchInput");
-    var suggestions = document.getElementById("stockSuggestions");
+    var scanInput = document.getElementById("stockScanInput");
+    var scanBtn = document.getElementById("stockScanBtn");
+    var manualSearchBtn = document.getElementById("stockManualSearchBtn");
     var messageEl = document.getElementById("stockMessage");
     var detailsEl = document.getElementById("stockDetails");
     var clearBtn = document.getElementById("stockClearBtn");
     var dataReady = false;
+    var scanBuffer = "";
+    var scanBufferTimer = null;
+    var locationMap = {};
+    var itemsById = {};
+    var itemsLoading = null;
+    var huStockCache = null;
+    var huStockCachedAt = 0;
+    var HU_STOCK_TTL_MS = 15000;
 
     function setStatusText(text) {
       if (statusLabel) {
@@ -921,12 +928,6 @@
     function clearDetails() {
       if (detailsEl) {
         detailsEl.innerHTML = "";
-      }
-    }
-
-    function clearSuggestions() {
-      if (suggestions) {
-        suggestions.innerHTML = "";
       }
     }
 
@@ -963,7 +964,7 @@
           var qtyText = String(row.qty != null ? row.qty : 0);
           var line =
             hu +
-            " — " +
+            " - " +
             qtyText +
             " " +
             (uom || "шт") +
@@ -1021,17 +1022,48 @@
     }
 
     function loadLocationNameMap() {
+      if (Object.keys(locationMap).length) {
+        return Promise.resolve(locationMap);
+      }
       return TsdStorage.apiGetLocations()
         .then(function (locations) {
           var map = {};
           locations.forEach(function (location) {
             map[location.locationId] = location;
           });
+          locationMap = map;
           return map;
         })
         .catch(function () {
-          return {};
+          locationMap = {};
+          return locationMap;
         });
+    }
+
+    function ensureItemsMap() {
+      if (Object.keys(itemsById).length) {
+        return Promise.resolve(itemsById);
+      }
+      if (itemsLoading) {
+        return itemsLoading;
+      }
+      itemsLoading = TsdStorage.apiSearchItems("")
+        .then(function (items) {
+          var map = {};
+          (items || []).forEach(function (item) {
+            map[item.itemId] = item;
+          });
+          itemsById = map;
+          return itemsById;
+        })
+        .catch(function () {
+          itemsById = {};
+          return itemsById;
+        })
+        .finally(function () {
+          itemsLoading = null;
+        });
+      return itemsLoading;
     }
 
     function showStockItem(item) {
@@ -1044,7 +1076,6 @@
         setStockMessage("У товара нет штрихкода");
         return;
       }
-      clearSuggestions();
       setStockMessage("");
       Promise.all([TsdStorage.apiGetStockByBarcode(barcode), loadLocationNameMap()])
         .then(function (result) {
@@ -1074,6 +1105,104 @@
         });
     }
 
+    function formatQty(value) {
+      var num = Number(value);
+      if (isNaN(num)) {
+        return "0";
+      }
+      return String(num);
+    }
+
+    function getHuStockRows() {
+      var now = Date.now();
+      if (huStockCache && now - huStockCachedAt < HU_STOCK_TTL_MS) {
+        return Promise.resolve(huStockCache);
+      }
+      return TsdStorage.apiGetHuStockRows()
+        .then(function (rows) {
+          huStockCache = rows || [];
+          huStockCachedAt = Date.now();
+          return huStockCache;
+        })
+        .catch(function () {
+          return [];
+        });
+    }
+
+    function renderHuDetails(huCode, rows) {
+      if (!detailsEl) {
+        return;
+      }
+      if (!rows.length) {
+        detailsEl.innerHTML = "";
+        return;
+      }
+        var linesHtml = rows
+          .map(function (row) {
+            var item = itemsById[row.itemId] || {};
+            var location = locationMap[row.locationId] || {};
+            var itemName = item.name || ("ID " + row.itemId);
+            var skuValue = item.sku || item.barcode || (Array.isArray(item.barcodes) ? item.barcodes[0] : "") || item.gtin || "";
+            var skuLabel = skuValue ? "SKU: " + skuValue : "";
+            var qtyLabel = formatQty(row.qty);
+            var uomLabel = item.base_uom || item.base_uom_code || "шт";
+            var locationLabel = location.code ? " (" + location.code + ")" : "";
+            return (
+              '<div class="hu-line">' +
+              "<div>" +
+              escapeHtml(itemName + locationLabel) +
+              (skuLabel
+                ? '<div class="line-barcode">' + escapeHtml(skuLabel) + "</div>"
+                : "") +
+              "</div>" +
+              "<div>" +
+              escapeHtml(qtyLabel + " " + uomLabel) +
+              "</div>" +
+            "</div>"
+          );
+        })
+        .join("");
+
+      detailsEl.innerHTML =
+        '<div class="hu-card">' +
+        '<div class="hu-card-title">HU: ' +
+        escapeHtml(huCode) +
+        "</div>" +
+        '<div class="hu-lines">' +
+        linesHtml +
+        "</div>" +
+        "</div>";
+    }
+
+    function showHuStock(rawHu) {
+      if (!dataReady) {
+        setStockMessage("Нет связи с сервером");
+        return;
+      }
+      var normalized = normalizeHuCode(rawHu);
+      if (!normalized) {
+        setStockMessage("Неверный код HU");
+        return;
+      }
+      setStockMessage("");
+      clearDetails();
+      Promise.all([getHuStockRows(), loadLocationNameMap(), ensureItemsMap()])
+        .then(function (result) {
+          var rows = result[0] || [];
+          var filtered = rows.filter(function (row) {
+            return String(row.hu || "").toUpperCase() === normalized;
+          });
+          if (!filtered.length) {
+            setStockMessage("HU не найден");
+            return;
+          }
+          renderHuDetails(normalized, filtered);
+        })
+        .catch(function () {
+          setStockMessage("Ошибка получения HU");
+        });
+    }
+
     function handleStockSearch(value) {
       var trimmed = String(value || "").trim();
       if (!trimmed || !dataReady) {
@@ -1083,10 +1212,8 @@
       TsdStorage.apiFindItemByCode(trimmed)
         .then(function (item) {
           if (item) {
+            itemsById[item.itemId] = item;
             showStockItem(item);
-            if (searchInput) {
-              searchInput.value = "";
-            }
           } else {
             setStockMessage("Товар не найден в данных");
           }
@@ -1096,6 +1223,190 @@
         });
     }
 
+    function openStockSearchOverlay() {
+      if (!dataReady) {
+        setStockMessage("Нет связи с сервером");
+        return;
+      }
+      setScanHighlight(false);
+      var overlay = document.createElement("div");
+      overlay.className = "overlay";
+      overlay.setAttribute("tabindex", "-1");
+      overlay.innerHTML =
+        '<div class="overlay-card">' +
+        '  <div class="overlay-header">' +
+        '    <div class="overlay-title">Ручной поиск</div>' +
+        '    <button class="btn btn-ghost overlay-close" type="button">Закрыть</button>' +
+        "  </div>" +
+        '  <label class="form-label" for="stockSearchField">Поиск товара</label>' +
+        '  <input class="form-input overlay-search" id="stockSearchField" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+        '  <div class="overlay-actions">' +
+        '    <button class="btn btn-outline" id="stockSearchKeyboard" type="button">Клавиатура</button>' +
+        '    <button class="btn btn-outline" id="stockSearchClear" type="button">Очистить</button>' +
+        "  </div>" +
+        '  <div class="overlay-section">' +
+        '    <div class="overlay-section-title">Результаты</div>' +
+        '    <div class="overlay-list overlay-results"></div>' +
+        "  </div>" +
+        '  <div class="stock-message" id="stockSearchMessage"></div>' +
+        "</div>";
+      var input = overlay.querySelector("#stockSearchField");
+      var resultsEl = overlay.querySelector(".overlay-results");
+      var messageEl = overlay.querySelector("#stockSearchMessage");
+      var closeBtn = overlay.querySelector(".overlay-close");
+      var keyboardBtn = overlay.querySelector("#stockSearchKeyboard");
+      var clearBtn = overlay.querySelector("#stockSearchClear");
+      var searchToken = 0;
+      var searchResults = [];
+
+      function setOverlayMessage(text) {
+        if (messageEl) {
+          messageEl.textContent = text || "";
+        }
+      }
+
+      function close() {
+        unlockOverlayScroll();
+        document.body.removeChild(overlay);
+        document.removeEventListener("keydown", onKeyDown);
+        enterScanMode();
+      }
+
+      function onKeyDown(event) {
+        if (event.key === "Escape") {
+          close();
+        }
+      }
+
+      function selectItem(item) {
+        if (!item) {
+          return;
+        }
+        itemsById[item.itemId] = item;
+        showStockItem(item);
+        close();
+      }
+
+      function renderResults(list) {
+        renderOverlayList(
+          resultsEl,
+          list,
+          function (item) {
+            return item.name || "-";
+          },
+          function (item) {
+            selectItem(item);
+          }
+        );
+      }
+
+      function runSearch(query) {
+        var q = String(query || "").trim();
+        if (q.length < 2) {
+          searchResults = [];
+          renderResults([]);
+          setOverlayMessage(q ? "Введите минимум 2 символа" : "");
+          return;
+        }
+        var token = (searchToken += 1);
+        setOverlayMessage("Ищем...");
+        TsdStorage.apiSearchItems(q, 20)
+          .then(function (items) {
+            if (token !== searchToken) {
+              return;
+            }
+            searchResults = items || [];
+            searchResults.forEach(function (item) {
+              var parts = [];
+              if (item.gtin) {
+                parts.push("GTIN: " + item.gtin);
+              }
+              if (item.sku) {
+                parts.push("SKU: " + item.sku);
+              }
+              if (item.barcode) {
+                parts.push("ШК: " + item.barcode);
+              }
+              item.subLabel = parts.join(" · ");
+            });
+            if (!searchResults.length) {
+              setOverlayMessage("Ничего не найдено");
+            } else {
+              setOverlayMessage("");
+            }
+            renderResults(searchResults);
+          })
+          .catch(function () {
+            if (token !== searchToken) {
+              return;
+            }
+            searchResults = [];
+            setOverlayMessage("Ошибка поиска");
+            renderResults([]);
+          });
+      }
+
+      if (input) {
+        input.placeholder = "Введите название/GTIN/SKU/штрихкод";
+        input.readOnly = true;
+        input.setAttribute("inputmode", "none");
+        input.addEventListener("input", function () {
+          runSearch(input.value);
+        });
+        input.addEventListener("keydown", function (event) {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            if (searchResults.length === 1) {
+              selectItem(searchResults[0]);
+              return;
+            }
+            runSearch(input.value);
+          }
+        });
+        input.addEventListener("blur", function () {
+          input.readOnly = true;
+          input.setAttribute("inputmode", "none");
+        });
+      }
+
+      if (keyboardBtn) {
+        keyboardBtn.addEventListener("click", function () {
+          if (!input) {
+            return;
+          }
+          input.readOnly = false;
+          input.setAttribute("inputmode", "text");
+          input.focus();
+        });
+      }
+
+      if (clearBtn) {
+        clearBtn.addEventListener("click", function () {
+          if (input) {
+            input.value = "";
+          }
+          searchResults = [];
+          renderResults([]);
+          setOverlayMessage("");
+        });
+      }
+
+      document.body.appendChild(overlay);
+      lockOverlayScroll();
+      document.addEventListener("keydown", onKeyDown);
+
+      overlay.addEventListener("click", function (event) {
+        if (event.target === overlay) {
+          close();
+        }
+      });
+
+      if (closeBtn) {
+        closeBtn.addEventListener("click", close);
+      }
+      focusOverlay(overlay);
+    }
+
     function updateDataStatus() {
       pingServer(true)
         .then(function (ok) {
@@ -1103,107 +1414,123 @@
           setStatusText(ok ? "Онлайн" : "Нет связи с сервером");
           if (!ok) {
             setStockMessage("Нет связи с сервером");
-            if (searchInput) {
-              searchInput.disabled = true;
+            if (manualSearchBtn) {
+              manualSearchBtn.disabled = true;
             }
             clearDetails();
-            clearSuggestions();
             return;
           }
-          if (searchInput) {
-            searchInput.disabled = false;
+          if (manualSearchBtn) {
+            manualSearchBtn.disabled = false;
           }
           setStockMessage("");
         })
         .catch(function () {
           setStatusText("Нет связи с сервером");
           setStockMessage("Нет связи с сервером");
-          if (searchInput) {
-            searchInput.disabled = true;
+          if (manualSearchBtn) {
+            manualSearchBtn.disabled = true;
           }
           dataReady = false;
           clearDetails();
-          clearSuggestions();
         });
     }
 
-    function renderSuggestionList(items) {
-      clearSuggestions();
-      if (!items.length) {
+    function clearScanBuffer() {
+      scanBuffer = "";
+      if (scanBufferTimer) {
+        clearTimeout(scanBufferTimer);
+        scanBufferTimer = null;
+      }
+      if (scanInput) {
+        scanInput.value = "";
+      }
+    }
+
+    function scheduleScanBufferReset() {
+      if (scanBufferTimer) {
+        clearTimeout(scanBufferTimer);
+      }
+      scanBufferTimer = window.setTimeout(function () {
+        clearScanBuffer();
+      }, 400);
+    }
+
+    function handleScannedValue(value) {
+      var trimmed = normalizeValue(value);
+      if (!trimmed) {
         return;
       }
-      items.forEach(function (item) {
-        var button = document.createElement("button");
-        button.type = "button";
-        button.className = "stock-suggestion";
-        var title = document.createElement("div");
-        title.className = "stock-suggestion-title";
-        title.textContent = item.name || "";
-        button.appendChild(title);
-        var metaParts = [];
-        if (item.sku) {
-          metaParts.push("SKU: " + item.sku);
+      if (scanInput) {
+        scanInput.value = trimmed;
+      }
+      if (normalizeHuCode(trimmed)) {
+        showHuStock(trimmed);
+        return;
+      }
+      handleStockSearch(trimmed);
+    }
+
+    function handleScanKeydown(event) {
+      if (isManualOverlayOpen()) {
+        return;
+      }
+      if (event.key === "Enter") {
+        if (scanBuffer) {
+          var value = scanBuffer;
+          clearScanBuffer();
+          handleScannedValue(value);
+          event.preventDefault();
         }
-        if (item.gtin) {
-          metaParts.push("GTIN: " + item.gtin);
+        return;
+      }
+      if (
+        event.key &&
+        event.key.length === 1 &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey
+      ) {
+        scanBuffer += event.key;
+        scheduleScanBufferReset();
+        if (scanInput) {
+          scanInput.value = scanBuffer;
         }
-        if (metaParts.length) {
-          var meta = document.createElement("div");
-          meta.className = "stock-suggestion-meta";
-          meta.textContent = metaParts.join(" · ");
-          button.appendChild(meta);
-        }
-        button.addEventListener("click", function () {
-          showStockItem(item);
-        });
-        if (suggestions) {
-          suggestions.appendChild(button);
-        }
+      }
+    }
+
+    handleScanKeydown.cleanup = function () {
+      clearScanBuffer();
+    };
+
+    setScanHandler(handleScanKeydown);
+
+    if (scanBtn) {
+      scanBtn.addEventListener("click", function () {
+        clearScanBuffer();
+        enterScanMode();
       });
     }
 
-    if (searchInput) {
-      searchInput.addEventListener("input", function () {
-        var value = searchInput.value.trim();
-        if (!dataReady || value.length < 2) {
-          clearSuggestions();
-          return;
-        }
-        var onlyDigits = /^[0-9]+$/.test(value);
-        if (onlyDigits) {
-          clearSuggestions();
-          return;
-        }
-        TsdStorage.apiSearchItems(value, 20)
-          .then(function (items) {
-            renderSuggestionList(items);
-          })
-          .catch(function () {
-            clearSuggestions();
-          });
+    if (scanInput) {
+      scanInput.addEventListener("click", function () {
+        clearScanBuffer();
+        enterScanMode();
       });
-      searchInput.addEventListener("keydown", function (event) {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          handleStockSearch(searchInput.value);
-        }
-      });
+    }
+
+    if (manualSearchBtn) {
+      manualSearchBtn.addEventListener("click", openStockSearchOverlay);
     }
 
     if (clearBtn) {
       clearBtn.addEventListener("click", function () {
-        if (searchInput) {
-          searchInput.value = "";
-          searchInput.focus();
+        if (scanInput) {
+          scanInput.value = "";
         }
-      clearSuggestions();
-      clearDetails();
-      setStockMessage("");
-    });
-  }
-
-    if (searchInput) {
-      searchInput.focus();
+        clearDetails();
+        setStockMessage("");
+      });
     }
 
     updateDataStatus();
@@ -1339,20 +1666,25 @@
         detailsEl.innerHTML = "";
         return;
       }
-      var linesHtml = entry.rows.map(function (row) {
-        var item = itemsMap[row.itemId] || {};
-        var itemName = item.name || ("ID " + row.itemId);
-        var baseUom = item.base_uom || "";
-        var qtyLabel = formatQty(row.qtyBase);
-        var uomLabel = baseUom ? " " + baseUom : "";
-        return (
-          '<div class="hu-line">' +
-          "<div>" +
-          escapeHtml(itemName) +
-          "</div>" +
-          "<div>" +
-          escapeHtml(qtyLabel + uomLabel) +
-          "</div>" +
+        var linesHtml = entry.rows.map(function (row) {
+          var item = itemsMap[row.itemId] || {};
+          var itemName = item.name || ("ID " + row.itemId);
+          var skuValue = item.sku || item.barcode || "";
+          var skuLabel = skuValue ? "SKU: " + skuValue : "";
+          var baseUom = item.base_uom || "";
+          var qtyLabel = formatQty(row.qtyBase);
+          var uomLabel = baseUom ? " " + baseUom : "";
+          return (
+            '<div class="hu-line">' +
+            "<div>" +
+            escapeHtml(itemName) +
+            (skuLabel
+              ? '<div class="line-barcode">' + escapeHtml(skuLabel) + "</div>"
+              : "") +
+            "</div>" +
+            "<div>" +
+            escapeHtml(qtyLabel + uomLabel) +
+            "</div>" +
           "</div>"
         );
       }).join("");
@@ -1925,6 +2257,37 @@
     );
   }
 
+  function resolveDocHuFromLines(op, lines) {
+    var field = "";
+    var opValue = String(op || "").toUpperCase();
+    if (opValue === "INBOUND" || opValue === "INVENTORY") {
+      field = "toHu";
+    } else if (opValue === "OUTBOUND" || opValue === "WRITE_OFF") {
+      field = "fromHu";
+    } else if (opValue === "MOVE") {
+      field = "toHu";
+    } else {
+      return "";
+    }
+
+    var unique = [];
+    (lines || []).forEach(function (line) {
+      if (!line) {
+        return;
+      }
+      var raw = field === "fromHu" ? line.fromHu : line.toHu;
+      var normalized = normalizeHuCode(raw);
+      if (!normalized) {
+        return;
+      }
+      if (unique.indexOf(normalized) === -1) {
+        unique.push(normalized);
+      }
+    });
+
+    return unique.length === 1 ? unique[0] : "";
+  }
+
   function renderServerDoc(doc, lines) {
     var opLabel = OPS[doc.op] ? OPS[doc.op].label : doc.op;
     var statusLabel = STATUS_LABELS[doc.status] || doc.status;
@@ -1933,10 +2296,21 @@
       ? doc.partnerCode + " - " + doc.partnerName
       : doc.partnerCode || doc.partnerName || "-";
     var orderRef = doc.order_ref || "-";
-    var shippingRef = doc.shipping_ref || "-";
+    var shippingRef = doc.shipping_ref || "";
     var createdAt = formatDateTime(doc.created_at || doc.createdAt);
     var closedAt = formatDateTime(doc.closed_at || doc.closedAt);
     var linesHtml = renderServerDocLines(lines);
+    var showOrder = String(doc.op || "").toUpperCase() === "OUTBOUND";
+    var orderRowHtml = showOrder
+      ? '      <div class="order-field-row">' +
+        '        <div class="order-field-label">Заказ</div>' +
+        '        <div class="order-field-value">' +
+        escapeHtml(orderRef) +
+        "</div>" +
+        "      </div>"
+      : "";
+    var resolvedHuFromLines = resolveDocHuFromLines(doc.op, lines || []);
+    var shippingLabel = shippingRef || resolvedHuFromLines || "-";
 
     return (
       '<section class="screen">' +
@@ -1965,16 +2339,11 @@
       escapeHtml(partnerLabel) +
       "</div>" +
       "      </div>" +
-      '      <div class="order-field-row">' +
-      '        <div class="order-field-label">Заказ</div>' +
-      '        <div class="order-field-value">' +
-      escapeHtml(orderRef) +
-      "</div>" +
-      "      </div>" +
+      orderRowHtml +
       '      <div class="order-field-row">' +
       '        <div class="order-field-label">HU</div>' +
       '        <div class="order-field-value">' +
-      escapeHtml(shippingRef) +
+      escapeHtml(shippingLabel) +
       "</div>" +
       "      </div>" +
       '      <div class="order-field-row">' +
@@ -3095,6 +3464,9 @@
     var huModalValue = null;
     var huModalTarget = "hu";
     var huModalKeyListener = null;
+    var huLocationCache = null;
+    var huLocationCachedAt = 0;
+    var HU_LOCATION_TTL_MS = 10000;
 
     function setDocStatus(text) {
       if (!docActionStatus) {
@@ -3733,6 +4105,9 @@
       if (doc.status !== "DRAFT") {
         return;
       }
+      if (!ensureLocationSelectedForOperation(true)) {
+        return;
+      }
       var barcode = normalizeValue(
         barcodeOverride != null ? barcodeOverride : barcodeInput ? barcodeInput.value : ""
       );
@@ -4022,6 +4397,155 @@
       nodes.valueEl.textContent = label;
     }
 
+    function getLocationFieldForHu(target) {
+      if (doc.op === "MOVE") {
+        if (target === "from_hu") {
+          return "from";
+        }
+        if (target === "to_hu") {
+          return "to";
+        }
+        return null;
+      }
+      if (doc.op === "INBOUND") {
+        return "to";
+      }
+      if (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF") {
+        return "from";
+      }
+      if (doc.op === "INVENTORY") {
+        return "location";
+      }
+      return null;
+    }
+
+    function hasSelectedLocation(field) {
+      if (field === "from") {
+        return !!normalizeValue(doc.header.from) || !!doc.header.from_id;
+      }
+      if (field === "to") {
+        return !!normalizeValue(doc.header.to) || !!doc.header.to_id;
+      }
+      if (field === "location") {
+        return !!normalizeValue(doc.header.location) || !!doc.header.location_id;
+      }
+      return false;
+    }
+
+    function getLocationErrorMessage(field) {
+      if (doc.op === "INBOUND" && field === "to") {
+        return "Для приемки выберите место хранения (Куда).";
+      }
+      return "Укажите место хранения";
+    }
+
+    function ensureLocationSelectedForHu(target, showAlert) {
+      var field = getLocationFieldForHu(target);
+      if (!field) {
+        return true;
+      }
+      if (hasSelectedLocation(field)) {
+        return true;
+      }
+      var message = getLocationErrorMessage(field);
+      setLocationError(field, message);
+      if (showAlert) {
+        alert(message);
+      }
+      return false;
+    }
+
+    function ensureLocationSelectedForOperation(showAlert) {
+      var valid = true;
+      var alertMessage = "";
+      setLocationError("from", "");
+      setLocationError("to", "");
+      setLocationError("location", "");
+
+      if (doc.op === "INBOUND") {
+        if (!hasSelectedLocation("to")) {
+          var inboundMessage = getLocationErrorMessage("to");
+          setLocationError("to", inboundMessage);
+          valid = false;
+          alertMessage = alertMessage || inboundMessage;
+        }
+      } else if (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF") {
+        if (!hasSelectedLocation("from")) {
+          var fromMessage = getLocationErrorMessage("from");
+          setLocationError("from", fromMessage);
+          valid = false;
+          alertMessage = alertMessage || fromMessage;
+        }
+      } else if (doc.op === "MOVE") {
+        if (!hasSelectedLocation("from")) {
+          var moveFromMessage = getLocationErrorMessage("from");
+          setLocationError("from", moveFromMessage);
+          valid = false;
+          alertMessage = alertMessage || moveFromMessage;
+        }
+        if (!hasSelectedLocation("to")) {
+          var moveToMessage = getLocationErrorMessage("to");
+          setLocationError("to", moveToMessage);
+          valid = false;
+          alertMessage = alertMessage || moveToMessage;
+        }
+      } else if (doc.op === "INVENTORY") {
+        if (!hasSelectedLocation("location")) {
+          var inventoryMessage = getLocationErrorMessage("location");
+          setLocationError("location", inventoryMessage);
+          valid = false;
+          alertMessage = alertMessage || inventoryMessage;
+        }
+      }
+
+      if (showAlert && !valid && alertMessage) {
+        alert(alertMessage);
+      }
+
+      return valid;
+    }
+
+    function getHuLocationRows() {
+      var now = Date.now();
+      if (huLocationCache && now - huLocationCachedAt < HU_LOCATION_TTL_MS) {
+        return Promise.resolve(huLocationCache);
+      }
+      return TsdStorage.apiGetHuStockRows()
+        .then(function (rows) {
+          huLocationCache = rows || [];
+          huLocationCachedAt = Date.now();
+          return huLocationCache;
+        })
+        .catch(function (error) {
+          if (huLocationCache) {
+            return huLocationCache;
+          }
+          throw error;
+        });
+    }
+
+    function checkHuLocationAvailability(huCode, target) {
+      var field = getLocationFieldForHu(target);
+      if (!field) {
+        return Promise.resolve({ ok: true });
+      }
+      var locationId =
+        field === "from"
+          ? doc.header.from_id
+          : field === "to"
+            ? doc.header.to_id
+            : doc.header.location_id;
+      if (!locationId) {
+        return Promise.resolve({ ok: true });
+      }
+      return getHuLocationRows().then(function (rows) {
+        if (isHuInOtherLocation(rows, huCode, locationId)) {
+          return { ok: false, message: "HU уже находится в другой локации." };
+        }
+        return { ok: true };
+      });
+    }
+
     function validateHuField(field, showAlert) {
       var target = field || "hu";
       var current = normalizeValue(doc.header[target]);
@@ -4096,7 +4620,11 @@
         return;
       }
 
-      huModalTarget = targetField || "hu";
+      var target = targetField || "hu";
+      if (!ensureLocationSelectedForHu(target, true)) {
+        return;
+      }
+      huModalTarget = target;
       setScanHighlight(false);
       var huTitle = "Сканировать HU";
       if (huModalTarget === "from_hu") {
@@ -4158,11 +4686,40 @@
         if (!huModalValue) {
           return;
         }
-        doc.header[huModalTarget] = huModalValue;
-        setHuError("", huModalTarget);
-        setHuDisplay(huModalValue, huModalTarget);
-        saveDocState();
-        closeOverlay();
+        if (!ensureLocationSelectedForHu(huModalTarget, true)) {
+          return;
+        }
+        var pendingValue = huModalValue;
+        if (huModalConfirm) {
+          huModalConfirm.disabled = true;
+        }
+        checkHuLocationAvailability(pendingValue, huModalTarget)
+          .then(function (result) {
+            if (!result || result.ok === false) {
+              var message =
+                result && result.message ? result.message : "HU недоступен для выбранной локации.";
+              if (huModalError) {
+                huModalError.textContent = message;
+              }
+              setHuError(message, huModalTarget);
+              return;
+            }
+            doc.header[huModalTarget] = pendingValue;
+            setHuError("", huModalTarget);
+            setHuDisplay(pendingValue, huModalTarget);
+            saveDocState();
+            closeOverlay();
+          })
+          .catch(function () {
+            if (huModalError) {
+              huModalError.textContent = "Ошибка проверки HU.";
+            }
+          })
+          .then(function () {
+            if (huModalConfirm) {
+              huModalConfirm.disabled = false;
+            }
+          });
       }
 
       huOverlay.addEventListener("click", function (event) {
@@ -4537,7 +5094,11 @@
             });
           })
           .then(function () {
-            navigate("/docs");
+            var targetRoute = "/docs";
+            if (doc && doc.op && OPS[doc.op]) {
+              targetRoute = "/docs/" + encodeURIComponent(doc.op);
+            }
+            navigate(targetRoute);
           })
           .catch(function (error) {
             var message = error && error.message ? error.message : "Ошибка отправки на сервер";
@@ -4945,6 +5506,30 @@
     return trimmed.toUpperCase();
   }
 
+  function isHuInOtherLocation(rows, huCode, locationId) {
+    if (!locationId) {
+      return false;
+    }
+    var normalized = normalizeHuCode(huCode);
+    if (!normalized) {
+      return false;
+    }
+    var hasOther = false;
+    rows.forEach(function (row) {
+      if (hasOther) {
+        return;
+      }
+      var rowHu = normalizeHuCode(row.hu);
+      if (!rowHu || rowHu !== normalized) {
+        return;
+      }
+      if (row.locationId !== locationId) {
+        hasOther = true;
+      }
+    });
+    return hasOther;
+  }
+
   function getMissingLocationFields(doc) {
     var header = (doc && doc.header) || {};
     var missing = [];
@@ -5010,7 +5595,13 @@
       return Promise.reject(new Error("Нет строк для отправки"));
     }
 
-    if (doc.op !== "INBOUND" && doc.op !== "OUTBOUND" && doc.op !== "MOVE") {
+    if (
+      doc.op !== "INBOUND" &&
+      doc.op !== "OUTBOUND" &&
+      doc.op !== "MOVE" &&
+      doc.op !== "WRITE_OFF" &&
+      doc.op !== "INVENTORY"
+    ) {
       return Promise.reject(new Error("Операция пока не поддерживается на сервере."));
     }
 
@@ -5077,7 +5668,55 @@
         });
     }
 
+    function validateHuLocationsForSubmit(currentDoc) {
+      var header = (currentDoc && currentDoc.header) || {};
+      var fromLocationId = header.from_id || null;
+      var toLocationId = header.to_id || null;
+      var mainHu = normalizeHuCode(header.hu);
+      var fromHu = normalizeHuCode(header.from_hu) || null;
+      var toHu = normalizeHuCode(header.to_hu) || null;
+
+      if (currentDoc.op === "INVENTORY") {
+        toLocationId = header.location_id || toLocationId;
+      }
+
+      if (currentDoc.op === "INBOUND") {
+        toHu = mainHu || toHu;
+      } else if (currentDoc.op === "OUTBOUND" || currentDoc.op === "WRITE_OFF") {
+        fromHu = mainHu || fromHu;
+      } else if (currentDoc.op === "INVENTORY") {
+        toHu = mainHu || toHu;
+      }
+
+      var checks = [];
+      if (fromHu && fromLocationId) {
+        checks.push({ hu: fromHu, locationId: fromLocationId });
+      }
+      if (toHu && toLocationId) {
+        checks.push({ hu: toHu, locationId: toLocationId });
+      }
+      if (!checks.length) {
+        return Promise.resolve(true);
+      }
+
+      return TsdStorage.apiGetHuStockRows()
+        .then(function (rows) {
+          for (var i = 0; i < checks.length; i += 1) {
+            if (isHuInOtherLocation(rows, checks[i].hu, checks[i].locationId)) {
+              throw new Error("HU уже находится в другой локации.");
+            }
+          }
+          return true;
+        })
+        .catch(function () {
+          throw new Error("Ошибка проверки HU.");
+        });
+    }
+
     return ensureServerAvailable()
+      .then(function () {
+        return validateHuLocationsForSubmit(doc);
+      })
       .then(function () {
         return Promise.all([getServerBaseUrl(), TsdStorage.getSetting("device_id")]);
       })
@@ -5092,10 +5731,16 @@
         var fromHu = normalizeHuCode(header.from_hu) || null;
         var toHu = normalizeHuCode(header.to_hu) || null;
 
+        if (doc.op === "INVENTORY") {
+          toLocationId = header.location_id || toLocationId;
+        }
+
         if (doc.op === "INBOUND") {
           toHu = mainHu || toHu;
-        } else if (doc.op === "OUTBOUND") {
+        } else if (doc.op === "OUTBOUND" || doc.op === "WRITE_OFF") {
           fromHu = mainHu || fromHu;
+        } else if (doc.op === "INVENTORY") {
+          toHu = mainHu || toHu;
         }
 
         var docPayload = {

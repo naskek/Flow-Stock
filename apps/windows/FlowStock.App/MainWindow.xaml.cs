@@ -3,8 +3,10 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Windows;
 using System.Windows.Input;
+using ExcelDataReader;
 using FlowStock.Core.Models;
 using Microsoft.Win32;
 using Npgsql;
@@ -17,13 +19,14 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Item> _items = new();
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Uom> _uoms = new();
-    private readonly ObservableCollection<Partner> _partners = new();
+    private readonly ObservableCollection<PartnerRow> _partners = new();
     private readonly ObservableCollection<Doc> _docs = new();
     private readonly ObservableCollection<Order> _orders = new();
     private readonly ObservableCollection<StockDisplayRow> _stock = new();
     private readonly ObservableCollection<StockLocationFilterOption> _stockLocationFilters = new();
     private readonly ObservableCollection<StockHuFilterOption> _stockHuFilters = new();
     private readonly ObservableCollection<PackagingOption> _itemPackagingOptions = new();
+    private static bool _excelEncodingRegistered;
     private readonly List<PartnerStatusOption> _partnerStatusOptions = new()
     {
         new PartnerStatusOption(PartnerStatus.Supplier, "Поставщик"),
@@ -97,6 +100,19 @@ public partial class MainWindow : Window
 
     private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Delete)
+        {
+            if (MainTabs.SelectedIndex == TabItemsIndex
+                && ItemsGrid.IsKeyboardFocusWithin
+                && ItemsGrid.SelectedItems.Count > 0)
+            {
+                e.Handled = true;
+                DeleteItem_Click(ItemsGrid, new RoutedEventArgs());
+            }
+
+            return;
+        }
+
         if (Keyboard.Modifiers != ModifierKeys.Control)
         {
             return;
@@ -119,10 +135,12 @@ public partial class MainWindow : Window
         }
     }
 
-    private void LoadItems()
+    private void LoadItems(string? search = null)
     {
         _items.Clear();
-        foreach (var item in _services.Catalog.GetItems(null))
+        var query = search ?? ItemsSearchBox?.Text;
+        var normalized = NormalizeIdentifier(query);
+        foreach (var item in _services.Catalog.GetItems(normalized))
         {
             _items.Add(item);
         }
@@ -251,7 +269,8 @@ public partial class MainWindow : Window
         _partners.Clear();
         foreach (var partner in _services.Catalog.GetPartners())
         {
-            _partners.Add(partner);
+            var status = _services.PartnerStatuses.GetStatus(partner.Id);
+            _partners.Add(new PartnerRow(partner, GetPartnerStatusLabel(status)));
         }
     }
 
@@ -364,6 +383,29 @@ public partial class MainWindow : Window
     private void StatusSearch_Click(object sender, RoutedEventArgs e)
     {
         LoadStock(StatusSearchBox.Text);
+    }
+
+    private void ItemsSearch_Click(object sender, RoutedEventArgs e)
+    {
+        LoadItems(ItemsSearchBox?.Text);
+    }
+
+    private void ItemsResetSearch_Click(object sender, RoutedEventArgs e)
+    {
+        if (ItemsSearchBox != null)
+        {
+            ItemsSearchBox.Text = string.Empty;
+        }
+        LoadItems(null);
+    }
+
+    private void ItemsSearchBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            LoadItems(ItemsSearchBox?.Text);
+        }
     }
 
     private void StatusRefresh_Click(object sender, RoutedEventArgs e)
@@ -644,6 +686,38 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ImportItems_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Filter = "Excel файлы (*.xlsx;*.xls)|*.xlsx;*.xls|Все файлы (*.*)|*.*",
+            Title = "Импорт товаров из Excel"
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var summary = ImportItemsFromExcel(dialog.FileName);
+            LoadItems();
+            var message =
+                "Импорт завершен.\n" +
+                $"Создано: {summary.Created}\n" +
+                $"Пропущено (дубликаты): {summary.Duplicates}\n" +
+                $"Пропущено (пустые строки): {summary.EmptyRows}\n" +
+                $"Пропущено (некорректные строки): {summary.InvalidRows}\n" +
+                $"Ошибки: {summary.Errors}";
+            MessageBox.Show(message, "Товары", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void ItemPackaging_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedItem == null)
@@ -766,6 +840,17 @@ public partial class MainWindow : Window
         LoadItemPackagingOptions(_selectedItem);
     }
 
+    private void ItemsGrid_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Delete)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        DeleteItem_Click(sender, new RoutedEventArgs());
+    }
+
     private void UpdateItem_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedItem == null)
@@ -806,15 +891,239 @@ public partial class MainWindow : Window
         }
     }
 
+    private ImportItemsSummary ImportItemsFromExcel(string filePath)
+    {
+        EnsureExcelEncoding();
+
+        var existingItems = _services.Catalog.GetItems(null);
+        var existingCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in existingItems)
+        {
+            AddBarcodeVariants(existingCodes, item.Barcode);
+            AddBarcodeVariants(existingCodes, item.Gtin);
+        }
+        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var created = 0;
+        var duplicates = 0;
+        var emptyRows = 0;
+        var invalidRows = 0;
+        var errors = 0;
+        var rowIndex = 0;
+
+        using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = ExcelReaderFactory.CreateReader(stream);
+
+        do
+        {
+            while (reader.Read())
+            {
+                var code = NormalizeImportedBarcode(ReadExcelCell(reader, 0));
+                var name = NormalizeIdentifier(ReadExcelCell(reader, 1));
+
+                if (rowIndex == 0 && IsHeaderRow(code, name))
+                {
+                    rowIndex++;
+                    continue;
+                }
+
+                rowIndex++;
+
+                if (string.IsNullOrWhiteSpace(code) && string.IsNullOrWhiteSpace(name))
+                {
+                    emptyRows++;
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name))
+                {
+                    invalidRows++;
+                    continue;
+                }
+
+                if (IsBarcodeSeen(seenCodes, code))
+                {
+                    duplicates++;
+                    continue;
+                }
+
+                if (existingCodes.Contains(code))
+                {
+                    duplicates++;
+                    continue;
+                }
+
+                try
+                {
+                    AddBarcodeVariants(seenCodes, code);
+                    var gtin = IsDigitsOnly(code) ? code : null;
+                    _services.Catalog.CreateItem(name, code, gtin, null);
+                    created++;
+                    AddBarcodeVariants(existingCodes, code);
+                    AddBarcodeVariants(existingCodes, gtin);
+                }
+                catch (ArgumentException)
+                {
+                    invalidRows++;
+                }
+                catch (PostgresException ex) when (IsPostgresConstraint(ex))
+                {
+                    duplicates++;
+                }
+                catch
+                {
+                    errors++;
+                }
+            }
+
+            break;
+        } while (reader.NextResult());
+
+        return new ImportItemsSummary(created, duplicates, emptyRows, invalidRows, errors);
+    }
+
+    private static void EnsureExcelEncoding()
+    {
+        if (_excelEncodingRegistered)
+        {
+            return;
+        }
+
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        _excelEncodingRegistered = true;
+    }
+
+    private static string? ReadExcelCell(IExcelDataReader reader, int index)
+    {
+        if (index < 0 || index >= reader.FieldCount)
+        {
+            return null;
+        }
+
+        var value = reader.GetValue(index);
+        if (value == null)
+        {
+            return null;
+        }
+
+        if (value is double number)
+        {
+            return number.ToString("0", CultureInfo.InvariantCulture);
+        }
+
+        if (value is float numberFloat)
+        {
+            return numberFloat.ToString("0", CultureInfo.InvariantCulture);
+        }
+
+        if (value is decimal numberDecimal)
+        {
+            return numberDecimal.ToString("0", CultureInfo.InvariantCulture);
+        }
+
+        return Convert.ToString(value, CultureInfo.InvariantCulture);
+    }
+
+    private static bool IsHeaderRow(string? code, string? name)
+    {
+        var combined = $"{code} {name}".Trim();
+        if (string.IsNullOrWhiteSpace(combined))
+        {
+            return false;
+        }
+
+        var lower = combined.ToLowerInvariant();
+        return lower.Contains("sku")
+               || lower.Contains("gtin")
+               || lower.Contains("штрих")
+               || lower.Contains("наимен")
+               || lower.Contains("name");
+    }
+
+    private static string? NormalizeImportedBarcode(string? value)
+    {
+        var trimmed = NormalizeIdentifier(value);
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            return null;
+        }
+
+        if (!IsDigitsOnly(trimmed))
+        {
+            return trimmed;
+        }
+
+        return trimmed.Length < 14 ? trimmed.PadLeft(14, '0') : trimmed;
+    }
+
+    private static void AddBarcodeVariants(HashSet<string> target, string? code)
+    {
+        var trimmed = NormalizeIdentifier(code);
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            return;
+        }
+
+        target.Add(trimmed);
+        if (!IsDigitsOnly(trimmed))
+        {
+            return;
+        }
+
+        if (trimmed.Length == 13)
+        {
+            target.Add("0" + trimmed);
+        }
+        else if (trimmed.Length == 14 && trimmed.StartsWith("0", StringComparison.Ordinal))
+        {
+            target.Add(trimmed.Substring(1));
+        }
+    }
+
+    private static bool IsBarcodeSeen(HashSet<string> seen, string? code)
+    {
+        var trimmed = NormalizeIdentifier(code);
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            return false;
+        }
+
+        if (seen.Contains(trimmed))
+        {
+            return true;
+        }
+
+        if (!IsDigitsOnly(trimmed))
+        {
+            return false;
+        }
+
+        if (trimmed.Length == 13)
+        {
+            return seen.Contains("0" + trimmed);
+        }
+
+        if (trimmed.Length == 14 && trimmed.StartsWith("0", StringComparison.Ordinal))
+        {
+            return seen.Contains(trimmed.Substring(1));
+        }
+
+        return false;
+    }
+
     private void DeleteItem_Click(object sender, RoutedEventArgs e)
     {
-        if (_selectedItem == null)
+        var itemsToDelete = GetSelectedItemsForDelete();
+        if (itemsToDelete.Count == 0)
         {
             MessageBox.Show("Выберите товар.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var confirm = MessageBox.Show("Удалить выбранный товар?", "Товары", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        var confirmMessage = itemsToDelete.Count == 1
+            ? "Удалить выбранный товар?"
+            : $"Удалить выбранные товары ({itemsToDelete.Count})?";
+        var confirm = MessageBox.Show(confirmMessage, "Товары", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
         if (confirm != MessageBoxResult.Yes)
         {
             return;
@@ -822,14 +1131,42 @@ public partial class MainWindow : Window
 
         try
         {
-            _services.Catalog.DeleteItem(_selectedItem.Id);
+            var failed = new List<string>();
+            foreach (var item in itemsToDelete)
+            {
+                try
+                {
+                    _services.Catalog.DeleteItem(item.Id);
+                }
+                catch (Exception ex)
+                {
+                    failed.Add($"{item.Name}: {ex.Message}");
+                }
+            }
+
             LoadItems();
             ClearItemForm();
+
+            if (failed.Count > 0)
+            {
+                var message = "Не удалось удалить:\n" + string.Join("\n", failed);
+                MessageBox.Show(message, "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private IReadOnlyList<Item> GetSelectedItemsForDelete()
+    {
+        if (ItemsGrid.SelectedItems != null && ItemsGrid.SelectedItems.Count > 0)
+        {
+            return ItemsGrid.SelectedItems.Cast<Item>().ToList();
+        }
+
+        return _selectedItem != null ? new List<Item> { _selectedItem } : Array.Empty<Item>();
     }
 
     private void LocationsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -898,7 +1235,8 @@ public partial class MainWindow : Window
 
     private void PartnersGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        _selectedPartner = PartnersGrid.SelectedItem as Partner;
+        var row = PartnersGrid.SelectedItem as PartnerRow;
+        _selectedPartner = row?.Partner;
         PartnerSaveButton.IsEnabled = _selectedPartner != null;
         PartnerDeleteButton.IsEnabled = _selectedPartner != null;
         if (_selectedPartner == null)
@@ -1254,6 +1592,17 @@ public partial class MainWindow : Window
                                           ?? _partnerStatusOptions.LastOrDefault();
     }
 
+    private static string GetPartnerStatusLabel(PartnerStatus status)
+    {
+        return status switch
+        {
+            PartnerStatus.Supplier => "Поставщик",
+            PartnerStatus.Client => "Клиент",
+            PartnerStatus.Both => "Клиент и поставщик",
+            _ => "Неизвестно"
+        };
+    }
+
     private void PartnerCodeBox_PreviewTextInput(object sender, TextCompositionEventArgs e)
     {
         e.Handled = !IsDigitsOnly(e.Text);
@@ -1412,6 +1761,14 @@ public partial class MainWindow : Window
 
     private sealed record PartnerStatusOption(PartnerStatus Status, string Name);
 
+    private sealed record PartnerRow(Partner Partner, string StatusDisplay)
+    {
+        public long Id => Partner.Id;
+        public string Name => Partner.Name;
+        public string? Code => Partner.Code;
+        public DateTime CreatedAt => Partner.CreatedAt;
+    }
+
     private sealed record StockDisplayRow
     {
         public string ItemName { get; init; } = string.Empty;
@@ -1427,5 +1784,7 @@ public partial class MainWindow : Window
     private sealed record StockHuFilterOption(string? Code, string Name);
 
     private sealed record PackagingOption(long? PackagingId, string Name);
+
+    private sealed record ImportItemsSummary(int Created, int Duplicates, int EmptyRows, int InvalidRows, int Errors);
 }
 

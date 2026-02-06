@@ -29,6 +29,7 @@
 - Stock is derived only from ledger.
 - Closed documents are immutable.
 - Corrections are separate documents (out of MVP scope).
+- HU code can have stock only in one location at a time.
 
 ## JSONL exchange (offline sync)
 - JSONL is the only offline format.
@@ -69,13 +70,13 @@
 - WRITE_OFF: -qty from from-location.
 - MOVE: -qty from from-location and +qty to to-location.
 - OUTBOUND: -qty from from-location.
-- INVENTORY: ledger logic deferred in MVP (document can be closed, but no ledger entries yet).
+- INVENTORY: for each item+location(+HU) in the document, adjust ledger by (counted qty - current qty). Only the specified locations are affected.
 
 ## UI screens (MVP)
 - Status: stock list + search.
 - Documents: list with JSONL import panel and access to import errors.
 - Document: lines + "Close" action.
-- Items: list + create (name, barcode, gtin, uom).
+- Items: list + create (name, barcode, gtin, uom) + Excel import (SKU/GTIN, name).
 - Locations: list + create (code, name).
 - Partners: list + create.
 - Orders: list + details (see spec_orders.md).

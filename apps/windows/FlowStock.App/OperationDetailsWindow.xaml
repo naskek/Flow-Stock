@@ -87,6 +87,9 @@
                         <DataTrigger Binding="{Binding HasShortage}" Value="True">
                             <Setter Property="Background" Value="#FFF4CCCC" />
                         </DataTrigger>
+                        <DataTrigger Binding="{Binding HasInventoryDiff}" Value="True">
+                            <Setter Property="Background" Value="#FFFFF2CC" />
+                        </DataTrigger>
                     </Style.Triggers>
                 </Style>
             </DataGrid.RowStyle>
@@ -95,6 +98,8 @@
                 <DataGridTextColumn Header="Ввод" Binding="{Binding InputQtyDisplay}" Width="120" />
                 <DataGridTextColumn Header="Ед. ввода" Binding="{Binding InputUomDisplay}" Width="220" />
                 <DataGridTextColumn Header="В base" Binding="{Binding BaseQtyDisplay}" Width="140" />
+                <DataGridTextColumn x:Name="DocInventoryDbColumn" Header="В базе" Binding="{Binding InventoryDbQtyDisplay}" Width="140" />
+                <DataGridTextColumn x:Name="DocInventoryDiffColumn" Header="Расхождение" Binding="{Binding InventoryDiffQtyDisplay}" Width="140" />
                 <DataGridTextColumn Header="Доступно" Binding="{Binding AvailableQty, StringFormat={}{0:0.###}}" Width="140" />
                 <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="220" />
                 <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="220" />
