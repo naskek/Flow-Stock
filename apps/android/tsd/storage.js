@@ -353,6 +353,17 @@
     });
   }
 
+  function apiCreateItemRequest(payload) {
+    var body = payload || {};
+    return getBaseUrl().then(function (baseUrl) {
+      return fetchJsonWithTimeout(baseUrl + "/api/item-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    });
+  }
+
   var apiLocationsCache = null;
   var apiLocationsCachedAt = 0;
   var API_LOCATIONS_TTL_MS = 60000;
@@ -2248,6 +2259,7 @@
     getBaseUrl: getBaseUrl,
     apiSearchItems: apiSearchItems,
     apiFindItemByCode: apiFindItemByCode,
+    apiCreateItemRequest: apiCreateItemRequest,
     apiGetLocations: apiGetLocations,
     apiSearchLocations: apiSearchLocations,
     apiGetLocationById: apiGetLocationById,

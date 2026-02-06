@@ -13,6 +13,7 @@
   var cachedLocationsById = {};
   var cachedStockRows = [];
   var cachedHuRows = [];
+  var cachedCombinedRows = [];
 
   function normalizePlatform(value) {
     var normalized = String(value || "").trim().toUpperCase();
@@ -162,6 +163,12 @@
     return num < 10 ? "0" + num : String(num);
   }
 
+  function formatQtyDisplay(qty, itemId) {
+    var item = cachedItemsById[Number(itemId)] || {};
+    var unit = item.base_uom || "";
+    return qty + (unit ? " " + unit : "");
+  }
+
   function escapeHtml(value) {
     return String(value || "")
       .replace(/&/g, "&amp;")
@@ -281,14 +288,14 @@
     );
   }
 
-  function renderStockTable(rows, useHu) {
+  function renderStockTable(rows) {
     if (!rows || !rows.length) {
       return '<div class="empty-state">Нет данных по остаткам.</div>';
     }
-    var huColumn = useHu ? "<th>HU</th>" : "";
     var body = rows
       .map(function (row) {
         var qtyLabel = row.qtyDisplay || row.qty;
+        var huLabel = row.hu ? row.hu : "-";
         return (
           "<tr>" +
           "<td>" +
@@ -298,12 +305,11 @@
           escapeHtml(row.barcode || "-") +
           "</td>" +
           "<td>" +
-          escapeHtml(row.gtin || "-") +
-          "</td>" +
-          "<td>" +
           escapeHtml(row.locationCode || "-") +
           "</td>" +
-          (useHu ? "<td>" + escapeHtml(row.hu || "-") + "</td>" : "") +
+          "<td>" +
+          escapeHtml(huLabel) +
+          "</td>" +
           "<td>" +
           escapeHtml(String(qtyLabel)) +
           "</td>" +
@@ -316,9 +322,8 @@
       "<thead><tr>" +
       "<th>Товар</th>" +
       "<th>SKU / ШК</th>" +
-      "<th>GTIN</th>" +
       "<th>Место</th>" +
-      huColumn +
+      "<th>HU</th>" +
       "<th>Кол-во</th>" +
       "</tr></thead>" +
       "<tbody>" +
@@ -394,7 +399,41 @@
           hu: row.hu || "",
         };
       });
+
+      buildCombinedRows();
     });
+  }
+
+  function buildCombinedRows() {
+    var totalsByKey = {};
+    cachedHuRows.forEach(function (row) {
+      var key = row.itemId + "|" + row.locationId;
+      totalsByKey[key] = (totalsByKey[key] || 0) + row.qty;
+    });
+
+    var combined = cachedHuRows.slice();
+    cachedStockRows.forEach(function (row) {
+      var key = row.itemId + "|" + row.locationId;
+      var huQty = totalsByKey[key] || 0;
+      var diff = row.qty - huQty;
+      if (Math.abs(diff) < 0.000001) {
+        return;
+      }
+
+      combined.push({
+        itemId: row.itemId,
+        locationId: row.locationId,
+        qty: diff,
+        qtyDisplay: formatQtyDisplay(diff, row.itemId),
+        itemName: row.itemName,
+        barcode: row.barcode,
+        gtin: row.gtin,
+        locationCode: row.locationCode,
+        hu: "",
+      });
+    });
+
+    cachedCombinedRows = combined;
   }
 
   function wireStock() {
@@ -418,7 +457,7 @@
       var query = searchInput ? searchInput.value.trim().toLowerCase() : "";
       var locationId = locationSelect ? Number(locationSelect.value) : 0;
       var hu = huSelect ? String(huSelect.value || "").trim() : "";
-      var source = hu ? cachedHuRows : cachedStockRows;
+      var source = cachedCombinedRows.length ? cachedCombinedRows : cachedStockRows;
 
       var rows = source.filter(function (row) {
         if (locationId && Number(row.locationId) !== locationId) {
@@ -439,7 +478,44 @@
       });
 
       setStatus("Строк: " + rows.length);
-      tableWrap.innerHTML = renderStockTable(rows, !!hu);
+      tableWrap.innerHTML = renderStockTable(rows);
+    }
+
+    function updateHuOptions() {
+      if (!huSelect) {
+        return;
+      }
+
+      var locationId = locationSelect ? Number(locationSelect.value) : 0;
+      var previous = String(huSelect.value || "");
+      var hus = cachedHuRows
+        .filter(function (row) {
+          return !locationId || Number(row.locationId) === locationId;
+        })
+        .map(function (row) {
+          return row.hu;
+        })
+        .filter(function (value) {
+          return !!value;
+        })
+        .filter(function (value, index, arr) {
+          return arr.indexOf(value) === index;
+        })
+        .sort();
+      var huOptions =
+        '<option value="">Все HU</option>' +
+        hus
+          .map(function (code) {
+            return '<option value="' + escapeHtml(code) + '">' + escapeHtml(code) + "</option>";
+          })
+          .join("");
+      huSelect.innerHTML = huOptions;
+
+      if (previous && hus.indexOf(previous) !== -1) {
+        huSelect.value = previous;
+        return;
+      }
+      huSelect.value = "";
     }
 
     function fillFilters() {
@@ -461,27 +537,7 @@
         locationSelect.innerHTML = options;
       }
 
-      if (huSelect) {
-        var hus = cachedHuRows
-          .map(function (row) {
-            return row.hu;
-          })
-          .filter(function (value) {
-            return !!value;
-          })
-          .filter(function (value, index, arr) {
-            return arr.indexOf(value) === index;
-          })
-          .sort();
-        var huOptions =
-          '<option value="">Все HU</option>' +
-          hus
-            .map(function (code) {
-              return '<option value="' + escapeHtml(code) + '">' + escapeHtml(code) + "</option>";
-            })
-            .join("");
-        huSelect.innerHTML = huOptions;
-      }
+      updateHuOptions();
     }
 
     function scheduleRender() {
@@ -508,7 +564,10 @@
       searchInput.addEventListener("input", scheduleRender);
     }
     if (locationSelect) {
-      locationSelect.addEventListener("change", renderRows);
+      locationSelect.addEventListener("change", function () {
+        updateHuOptions();
+        renderRows();
+      });
     }
     if (huSelect) {
       huSelect.addEventListener("change", renderRows);
