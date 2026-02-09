@@ -285,7 +285,9 @@ app.MapGet("/api/items/by-barcode/{barcode}", (string barcode, IDataStore store)
         name = item.Name,
         barcode = item.Barcode,
         gtin = item.Gtin,
-        base_uom_code = item.BaseUom
+        base_uom_code = item.BaseUom,
+        brand = item.Brand,
+        volume = item.Volume
     });
 });
 
@@ -297,7 +299,7 @@ app.MapGet("/api/items", (HttpRequest request) =>
     using var connection = OpenConnection(postgresConnectionString);
     using var command = connection.CreateCommand();
    command.CommandText = @"
-SELECT id, name, barcode, gtin, base_uom, uom
+SELECT id, name, barcode, gtin, base_uom, uom, brand, volume
 FROM items
 WHERE @search::text IS NULL
    OR name ILIKE @search::text
@@ -322,7 +324,9 @@ ORDER BY name;"
             name = reader.GetString(1),
             barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
             gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
-            base_uom_code = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom
+            base_uom_code = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom,
+            brand = reader.IsDBNull(6) ? null : reader.GetString(6),
+            volume = reader.IsDBNull(7) ? null : reader.GetString(7)
         });
     }
 

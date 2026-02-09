@@ -148,6 +148,10 @@ body.pc-body {
   vertical-align: top;
 }
 
+.pc-qty {
+  font-weight: 700;
+}
+
 .pc-table th {
   font-size: 11px;
   text-transform: uppercase;

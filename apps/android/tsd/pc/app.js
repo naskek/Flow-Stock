@@ -271,7 +271,7 @@
       '  <div class="pc-toolbar">' +
       '    <div class="form-field">' +
       '      <label class="form-label" for="stockSearchInput">Поиск</label>' +
-      '      <input class="form-input" id="stockSearchInput" type="text" autocomplete="off" placeholder="Название, SKU, GTIN, штрихкод" />' +
+      '      <input class="form-input" id="stockSearchInput" type="text" autocomplete="off" placeholder="Название, бренд, объем, SKU, GTIN, штрихкод" />' +
       "    </div>" +
       '    <div class="form-field">' +
       '      <label class="form-label" for="stockLocationFilter">Место хранения</label>' +
@@ -302,6 +302,12 @@
           escapeHtml(row.itemName || "-") +
           "</td>" +
           "<td>" +
+          escapeHtml(row.brand || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(row.volume || "-") +
+          "</td>" +
+          "<td>" +
           escapeHtml(row.barcode || "-") +
           "</td>" +
           "<td>" +
@@ -310,9 +316,9 @@
           "<td>" +
           escapeHtml(huLabel) +
           "</td>" +
-          "<td>" +
+          '<td><span class="pc-qty">' +
           escapeHtml(String(qtyLabel)) +
-          "</td>" +
+          "</span></td>" +
           "</tr>"
         );
       })
@@ -321,6 +327,8 @@
       '<table class="pc-table">' +
       "<thead><tr>" +
       "<th>Товар</th>" +
+      "<th>Бренд</th>" +
+      "<th>Объем</th>" +
       "<th>SKU / ШК</th>" +
       "<th>Место</th>" +
       "<th>HU</th>" +
@@ -352,6 +360,8 @@
           name: item.name || "",
           barcode: item.barcode || "",
           gtin: item.gtin || "",
+          brand: item.brand || "",
+          volume: item.volume || "",
           base_uom: item.base_uom_code || item.base_uom || "",
         };
       });
@@ -378,6 +388,8 @@
           itemName: item.name || "-",
           barcode: item.barcode || "",
           gtin: item.gtin || "",
+          brand: item.brand || "",
+          volume: item.volume || "",
           locationCode: loc.code || "",
         };
       });
@@ -395,6 +407,8 @@
           itemName: item.name || "-",
           barcode: item.barcode || "",
           gtin: item.gtin || "",
+          brand: item.brand || "",
+          volume: item.volume || "",
           locationCode: loc.code || "",
           hu: row.hu || "",
         };
@@ -428,6 +442,8 @@
         itemName: row.itemName,
         barcode: row.barcode,
         gtin: row.gtin,
+        brand: row.brand,
+        volume: row.volume,
         locationCode: row.locationCode,
         hu: "",
       });
@@ -471,6 +487,8 @@
         }
         return (
           (row.itemName && row.itemName.toLowerCase().indexOf(query) !== -1) ||
+          (row.brand && row.brand.toLowerCase().indexOf(query) !== -1) ||
+          (row.volume && row.volume.toLowerCase().indexOf(query) !== -1) ||
           (row.barcode && row.barcode.toLowerCase().indexOf(query) !== -1) ||
           (row.gtin && row.gtin.toLowerCase().indexOf(query) !== -1) ||
           (row.locationCode && row.locationCode.toLowerCase().indexOf(query) !== -1)

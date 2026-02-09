@@ -161,6 +161,8 @@
       barcode: String(item.barcode || "").trim(),
       gtin: String(item.gtin || "").trim(),
       sku: String(item.sku || "").trim(),
+      brand: String(item.brand || "").trim(),
+      volume: String(item.volume || "").trim(),
       base_uom: String(item.base_uom_code || item.base_uom || "").trim(),
       base_uom_code: String(item.base_uom_code || item.base_uom || "").trim(),
     };

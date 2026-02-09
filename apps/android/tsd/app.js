@@ -1050,6 +1050,14 @@
         skuParts.push("GTIN: " + item.gtin);
       }
       var skuLine = skuParts.join(" · ");
+      var metaParts = [];
+      if (item.brand) {
+        metaParts.push("Бренд: " + item.brand);
+      }
+      if (item.volume) {
+        metaParts.push("Объем: " + item.volume);
+      }
+      var metaLine = metaParts.join(" · ");
       var uom = item.base_uom || item.base_uom_code || "шт";
       var locationsHtml = rows.length
         ? renderLocationRows(rows)
@@ -1069,6 +1077,9 @@
         "</div>" +
         (skuLine
           ? '<div class="stock-subtitle">' + escapeHtml(skuLine) + "</div>"
+          : "") +
+        (metaLine
+          ? '<div class="stock-subtitle">' + escapeHtml(metaLine) + "</div>"
           : "") +
         '<div class="stock-total">Итого: ' +
         escapeHtml(total) +
