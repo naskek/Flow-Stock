@@ -4,6 +4,7 @@ public sealed class DocLineView
 {
     public long Id { get; init; }
     public long ItemId { get; init; }
+    public long? OrderLineId { get; init; }
     public string ItemName { get; init; } = string.Empty;
     public string? Barcode { get; init; }
     public double Qty { get; init; }

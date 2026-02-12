@@ -140,6 +140,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_docs_ref ON docs(doc_ref);
 CREATE TABLE IF NOT EXISTS doc_lines (
     id BIGSERIAL PRIMARY KEY,
     doc_id BIGINT NOT NULL,
+    order_line_id BIGINT,
     item_id BIGINT NOT NULL,
     qty REAL NOT NULL,
     qty_input REAL,
@@ -296,6 +297,7 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
         EnsureColumn(connection, "docs", "reason_code", "TEXT");
         EnsureColumn(connection, "docs", "comment", "TEXT");
         EnsureColumn(connection, "docs", "production_batch_no", "TEXT");
+        EnsureColumn(connection, "doc_lines", "order_line_id", "BIGINT");
         EnsureColumn(connection, "doc_lines", "qty_input", "REAL");
         EnsureColumn(connection, "doc_lines", "uom_code", "TEXT");
         EnsureColumn(connection, "doc_lines", "from_hu", "TEXT");
@@ -320,6 +322,7 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
         EnsureIndex(connection, "ix_item_packaging_item", "item_packaging(item_id)");
         EnsureIndex(connection, "ix_taras_name", "taras(name)");
         EnsureIndex(connection, "ix_item_requests_status", "item_requests(status)");
+        EnsureIndex(connection, "ix_doc_lines_order_line", "doc_lines(order_line_id)");
         EnsureIndex(connection, "ix_ledger_item_loc_hu", "ledger(item_id, location_id, hu)");
         EnsureIndex(connection, "ix_ledger_item_loc_hu_code", "ledger(item_id, location_id, hu_code)");
         EnsureIndex(connection, "idx_hus_status", "hus(status)");
@@ -1128,7 +1131,7 @@ RETURNING id;
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, doc_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu FROM doc_lines WHERE doc_id = @doc_id ORDER BY id");
+            using var command = CreateCommand(connection, "SELECT id, doc_id, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu FROM doc_lines WHERE doc_id = @doc_id ORDER BY id");
             command.Parameters.AddWithValue("@doc_id", docId);
             using var reader = command.ExecuteReader();
             var lines = new List<DocLine>();
@@ -1146,7 +1149,7 @@ RETURNING id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-SELECT dl.id, dl.item_id, i.name, i.barcode, dl.qty, dl.qty_input, dl.uom_code, i.base_uom, lf.code, lt.code, dl.from_hu, dl.to_hu
+SELECT dl.id, dl.order_line_id, dl.item_id, i.name, i.barcode, dl.qty, dl.qty_input, dl.uom_code, i.base_uom, lf.code, lt.code, dl.from_hu, dl.to_hu
 FROM doc_lines dl
 INNER JOIN items i ON i.id = dl.item_id
 LEFT JOIN locations lf ON lf.id = dl.from_location_id
@@ -1162,17 +1165,18 @@ ORDER BY dl.id;
                 lines.Add(new DocLineView
                 {
                     Id = reader.GetInt64(0),
-                    ItemId = reader.GetInt64(1),
-                    ItemName = reader.GetString(2),
-                    Barcode = reader.IsDBNull(3) ? null : reader.GetString(3),
-                    Qty = reader.GetDouble(4),
-                    QtyInput = reader.IsDBNull(5) ? null : reader.GetDouble(5),
-                    UomCode = reader.IsDBNull(6) ? null : reader.GetString(6),
-                    BaseUom = reader.IsDBNull(7) ? "шт" : reader.GetString(7),
-                    FromLocation = reader.IsDBNull(8) ? null : reader.GetString(8),
-                    ToLocation = reader.IsDBNull(9) ? null : reader.GetString(9),
-                    FromHu = reader.IsDBNull(10) ? null : reader.GetString(10),
-                    ToHu = reader.IsDBNull(11) ? null : reader.GetString(11)
+                    OrderLineId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                    ItemId = reader.GetInt64(2),
+                    ItemName = reader.GetString(3),
+                    Barcode = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    Qty = reader.GetDouble(5),
+                    QtyInput = reader.IsDBNull(6) ? null : reader.GetDouble(6),
+                    UomCode = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    BaseUom = reader.IsDBNull(8) ? "èâ" : reader.GetString(8),
+                    FromLocation = reader.IsDBNull(9) ? null : reader.GetString(9),
+                    ToLocation = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    FromHu = reader.IsDBNull(11) ? null : reader.GetString(11),
+                    ToHu = reader.IsDBNull(12) ? null : reader.GetString(12)
                 });
             }
 
@@ -1185,11 +1189,12 @@ ORDER BY dl.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO doc_lines(doc_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)
-VALUES(@doc_id, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id, @from_hu, @to_hu)
+INSERT INTO doc_lines(doc_id, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)
+VALUES(@doc_id, @order_line_id, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id, @from_hu, @to_hu)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@doc_id", line.DocId);
+            command.Parameters.AddWithValue("@order_line_id", line.OrderLineId.HasValue ? line.OrderLineId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@item_id", line.ItemId);
             command.Parameters.AddWithValue("@qty", line.Qty);
             command.Parameters.AddWithValue("@qty_input", line.QtyInput.HasValue ? line.QtyInput.Value : DBNull.Value);
@@ -1466,6 +1471,100 @@ ORDER BY i.name;
         });
     }
 
+    public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT ol.id,
+       ol.order_id,
+       ol.item_id,
+       i.name,
+       ol.qty_ordered,
+       COALESCE(r.sum_qty, 0) AS received_qty,
+       (ol.qty_ordered - COALESCE(r.sum_qty, 0)) AS remaining
+FROM order_lines ol
+INNER JOIN items i ON i.id = ol.item_id
+LEFT JOIN (
+    SELECT dl.order_line_id, SUM(dl.qty) AS sum_qty
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    WHERE d.status = @status AND d.type = @doc_type AND dl.order_line_id IS NOT NULL
+    GROUP BY dl.order_line_id
+) r ON r.order_line_id = ol.id
+WHERE ol.order_id = @order_id
+ORDER BY ol.id;
+");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.ProductionReceipt));
+            using var reader = command.ExecuteReader();
+            var lines = new List<OrderReceiptLine>();
+            while (reader.Read())
+            {
+                lines.Add(new OrderReceiptLine
+                {
+                    OrderLineId = reader.GetInt64(0),
+                    OrderId = reader.GetInt64(1),
+                    ItemId = reader.GetInt64(2),
+                    ItemName = reader.GetString(3),
+                    QtyOrdered = reader.GetDouble(4),
+                    QtyReceived = reader.GetDouble(5),
+                    QtyRemaining = reader.GetDouble(6)
+                });
+            }
+
+            return lines;
+        });
+    }
+
+    public IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT ol.id,
+       ol.order_id,
+       ol.item_id,
+       i.name,
+       ol.qty_ordered,
+       COALESCE(s.sum_qty, 0) AS shipped_qty,
+       (ol.qty_ordered - COALESCE(s.sum_qty, 0)) AS remaining
+FROM order_lines ol
+INNER JOIN items i ON i.id = ol.item_id
+LEFT JOIN (
+    SELECT dl.order_line_id, SUM(dl.qty) AS sum_qty
+    FROM doc_lines dl
+    INNER JOIN docs d ON d.id = dl.doc_id
+    WHERE d.status = @status AND d.type = @doc_type AND dl.order_line_id IS NOT NULL
+    GROUP BY dl.order_line_id
+) s ON s.order_line_id = ol.id
+WHERE ol.order_id = @order_id
+ORDER BY ol.id;
+");
+            command.Parameters.AddWithValue("@order_id", orderId);
+            command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@doc_type", DocTypeMapper.ToOpString(DocType.Outbound));
+            using var reader = command.ExecuteReader();
+            var lines = new List<OrderShipmentLine>();
+            while (reader.Read())
+            {
+                lines.Add(new OrderShipmentLine
+                {
+                    OrderLineId = reader.GetInt64(0),
+                    OrderId = reader.GetInt64(1),
+                    ItemId = reader.GetInt64(2),
+                    ItemName = reader.GetString(3),
+                    QtyOrdered = reader.GetDouble(4),
+                    QtyShipped = reader.GetDouble(5),
+                    QtyRemaining = reader.GetDouble(6)
+                });
+            }
+
+            return lines;
+        });
+    }
+
     public long AddOrderLine(OrderLine line)
     {
         return WithConnection(connection =>
@@ -1530,6 +1629,34 @@ FROM docs d
 INNER JOIN doc_lines dl ON dl.doc_id = d.id
 WHERE d.type = @type AND d.status = @status AND d.order_id = @order_id
 GROUP BY dl.item_id;
+");
+            command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(DocType.Outbound));
+            command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
+            command.Parameters.AddWithValue("@order_id", orderId);
+            using var reader = command.ExecuteReader();
+            var totals = new Dictionary<long, double>();
+            while (reader.Read())
+            {
+                totals[reader.GetInt64(0)] = reader.GetDouble(1);
+            }
+
+            return totals;
+        });
+    }
+
+    public IReadOnlyDictionary<long, double> GetShippedTotalsByOrderLine(long orderId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT dl.order_line_id, COALESCE(SUM(dl.qty), 0)
+FROM docs d
+INNER JOIN doc_lines dl ON dl.doc_id = d.id
+WHERE d.type = @type
+  AND d.status = @status
+  AND d.order_id = @order_id
+  AND dl.order_line_id IS NOT NULL
+GROUP BY dl.order_line_id;
 ");
             command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(DocType.Outbound));
             command.Parameters.AddWithValue("@status", DocTypeMapper.StatusToString(DocStatus.Closed));
@@ -2324,14 +2451,15 @@ RETURNING id;
         {
             Id = reader.GetInt64(0),
             DocId = reader.GetInt64(1),
-            ItemId = reader.GetInt64(2),
-            Qty = reader.GetDouble(3),
-            QtyInput = reader.IsDBNull(4) ? null : reader.GetDouble(4),
-            UomCode = reader.IsDBNull(5) ? null : reader.GetString(5),
-            FromLocationId = reader.IsDBNull(6) ? null : reader.GetInt64(6),
-            ToLocationId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
-            FromHu = reader.FieldCount > 8 && !reader.IsDBNull(8) ? reader.GetString(8) : null,
-            ToHu = reader.FieldCount > 9 && !reader.IsDBNull(9) ? reader.GetString(9) : null
+            OrderLineId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
+            ItemId = reader.GetInt64(3),
+            Qty = reader.GetDouble(4),
+            QtyInput = reader.IsDBNull(5) ? null : reader.GetDouble(5),
+            UomCode = reader.IsDBNull(6) ? null : reader.GetString(6),
+            FromLocationId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+            ToLocationId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
+            FromHu = reader.FieldCount > 9 && !reader.IsDBNull(9) ? reader.GetString(9) : null,
+            ToHu = reader.FieldCount > 10 && !reader.IsDBNull(10) ? reader.GetString(10) : null
         };
     }
 
@@ -2637,6 +2765,27 @@ RETURNING id;");
         });
     }
 
+    public void UpdateKmCodeBatchOrder(long batchId, long? orderId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE km_code_batch SET order_id = @order_id WHERE id = @id");
+            command.Parameters.AddWithValue("@order_id", orderId.HasValue ? orderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@id", batchId);
+            command.ExecuteNonQuery();
+
+            using var codesCommand = CreateCommand(connection, @"
+UPDATE km_code
+SET order_id = @order_id
+WHERE batch_id = @batch_id AND status = @status;");
+            codesCommand.Parameters.AddWithValue("@order_id", orderId.HasValue ? orderId.Value : DBNull.Value);
+            codesCommand.Parameters.AddWithValue("@batch_id", batchId);
+            codesCommand.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.InPool));
+            codesCommand.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public KmCodeBatch? GetKmCodeBatch(long batchId)
     {
         return WithConnection(connection =>
@@ -2814,8 +2963,9 @@ RETURNING id;");
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT COUNT(*) FROM km_code WHERE receipt_line_id = @line_id");
+            using var command = CreateCommand(connection, "SELECT COUNT(*) FROM km_code WHERE receipt_line_id = @line_id AND status = @status");
             command.Parameters.AddWithValue("@line_id", receiptLineId);
+            command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.OnHand));
             return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -2824,8 +2974,9 @@ RETURNING id;");
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT COUNT(*) FROM km_code WHERE ship_line_id = @line_id");
+            using var command = CreateCommand(connection, "SELECT COUNT(*) FROM km_code WHERE ship_line_id = @line_id AND status = @status");
             command.Parameters.AddWithValue("@line_id", shipLineId);
+            command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.Shipped));
             return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -2838,13 +2989,22 @@ RETURNING id;");
 SELECT c.id
 FROM km_code c
 WHERE c.status = @status
-  AND (c.sku_id = @sku_id OR (c.sku_id IS NULL AND @gtin14 IS NOT NULL AND c.gtin14 = @gtin14))
-  AND (@batch_id IS NULL OR c.batch_id = @batch_id)
-  AND (@order_id IS NULL OR c.order_id = @order_id)
+  AND (c.sku_id = @sku_id OR (c.sku_id IS NULL AND @gtin14::text IS NOT NULL AND c.gtin14 = @gtin14::text))
+  AND (@batch_id::bigint IS NULL OR c.batch_id = @batch_id::bigint)
+  AND (
+    @order_id::bigint IS NULL
+    OR c.order_id = @order_id::bigint
+    OR EXISTS (
+        SELECT 1
+        FROM km_code_batch b
+        WHERE b.id = c.batch_id AND b.order_id = @order_id::bigint
+    )
+  )
 ORDER BY c.id
+FOR UPDATE SKIP LOCKED
 LIMIT @take;";
             using var command = CreateCommand(connection, sql);
-            command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.Imported));
+            command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.InPool));
             command.Parameters.AddWithValue("@sku_id", skuId);
             command.Parameters.AddWithValue("@gtin14", string.IsNullOrWhiteSpace(gtin14) ? DBNull.Value : gtin14.Trim());
             command.Parameters.AddWithValue("@batch_id", batchId.HasValue ? batchId.Value : DBNull.Value);
@@ -2877,7 +3037,7 @@ SET status = @status,
     location_id = @location_id
 WHERE id = @id AND status = @expected_status;");
                 command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.OnHand));
-                command.Parameters.AddWithValue("@expected_status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.Imported));
+                command.Parameters.AddWithValue("@expected_status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.InPool));
                 command.Parameters.AddWithValue("@doc_id", docId);
                 command.Parameters.AddWithValue("@line_id", lineId);
                 command.Parameters.AddWithValue("@hu_id", huId.HasValue ? huId.Value : DBNull.Value);

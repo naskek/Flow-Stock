@@ -28,6 +28,12 @@ public sealed class CreateDocRequest
     [JsonPropertyName("partner_id")]
     public long? PartnerId { get; set; }
 
+    [JsonPropertyName("order_id")]
+    public long? OrderId { get; set; }
+
+    [JsonPropertyName("order_ref")]
+    public string? OrderRef { get; set; }
+
     [JsonPropertyName("from_location_id")]
     public long? FromLocationId { get; set; }
 
@@ -65,11 +71,20 @@ public sealed class AddDocLineRequest
     [JsonPropertyName("item_id")]
     public long? ItemId { get; set; }
 
+    [JsonPropertyName("order_line_id")]
+    public long? OrderLineId { get; set; }
+
     [JsonPropertyName("qty")]
     public double Qty { get; set; }
 
     [JsonPropertyName("uom_code")]
     public string? UomCode { get; set; }
+
+    [JsonPropertyName("from_location_id")]
+    public long? FromLocationId { get; set; }
+
+    [JsonPropertyName("to_location_id")]
+    public long? ToLocationId { get; set; }
 
     [JsonPropertyName("from_hu")]
     public string? FromHu { get; set; }

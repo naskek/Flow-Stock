@@ -4,6 +4,7 @@ public sealed class DocLine
 {
     public long Id { get; init; }
     public long DocId { get; init; }
+    public long? OrderLineId { get; init; }
     public long ItemId { get; init; }
     public double Qty { get; init; }
     public double? QtyInput { get; init; }

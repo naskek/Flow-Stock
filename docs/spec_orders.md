@@ -20,6 +20,7 @@
 Связь с отгрузками:
 - В `docs` добавлено поле `order_id` (NULL, FK -> `orders.id`)
 - OUTBOUND, созданные из заказа, получают `order_id` и `order_ref`.
+- В `doc_lines` используется `order_line_id` для связи строки отгрузки с позицией заказа.
 
 Индексы:
 - `orders(order_ref)`
@@ -32,7 +33,7 @@
 
 Для каждой позиции:
 - `available_qty` = сумма `ledger.qty_delta` по `item_id` (по всем местам хранения)
-- `shipped_qty` = сумма `doc_lines.qty` по закрытым OUTBOUND с `order_id` и соответствующим `item_id`
+- `shipped_qty` = сумма `doc_lines.qty` по закрытым OUTBOUND, где `doc_lines.order_line_id = order_lines.id`
 - `remaining_qty` = max(0, `qty_ordered` - `shipped_qty`)
 - `can_ship_now` = min(`remaining_qty`, max(0, `available_qty`))
 - `shortage` = max(0, `remaining_qty` - max(0, `available_qty`))

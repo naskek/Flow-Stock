@@ -1208,6 +1208,70 @@ body {
   font-weight: 600;
 }
 
+.picklist-card {
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 16px;
+  padding: 12px;
+  box-shadow: var(--shadow);
+}
+
+.picklist-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1b3a57;
+  margin-bottom: 8px;
+}
+
+.picklist-hint {
+  font-size: 12px;
+  color: #486581;
+  margin-bottom: 8px;
+}
+
+.picklist-body {
+  display: grid;
+  gap: 8px;
+}
+
+.picklist-row {
+  display: grid;
+  grid-template-columns: 1.2fr 0.7fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #f7fbfc;
+  border: 1px solid #e2ecf1;
+}
+
+.picklist-row.is-selected {
+  border-color: #9fbce2;
+  background: #eaf2ff;
+}
+
+.picklist-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.picklist-hu {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.picklist-meta {
+  font-size: 12px;
+  color: #486581;
+}
+
+.picklist-qty {
+  text-align: right;
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
 .line-actions {
   display: flex;
   align-items: center;

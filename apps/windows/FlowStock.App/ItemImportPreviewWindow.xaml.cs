@@ -470,7 +470,7 @@ public partial class ItemImportPreviewWindow : Window
         e.Column.IsReadOnly = true;
     }
 
-    private void PreviewGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+    private void PreviewGrid_CellEditEnding(object? sender, DataGridCellEditEndingEventArgs e)
     {
         if (e.Column.Header?.ToString() != "Импорт")
         {

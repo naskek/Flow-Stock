@@ -79,11 +79,14 @@ public interface IDataStore
     void UpdateOrderStatus(long orderId, OrderStatus status);
     IReadOnlyList<OrderLine> GetOrderLines(long orderId);
     IReadOnlyList<OrderLineView> GetOrderLineViews(long orderId);
+    IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId);
+    IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId);
     long AddOrderLine(OrderLine line);
     void DeleteOrderLines(long orderId);
     void DeleteOrder(long orderId);
     IReadOnlyDictionary<long, double> GetLedgerTotalsByItem();
     IReadOnlyDictionary<long, double> GetShippedTotalsByOrder(long orderId);
+    IReadOnlyDictionary<long, double> GetShippedTotalsByOrderLine(long orderId);
     DateTime? GetOrderShippedAt(long orderId);
     bool HasOutboundDocs(long orderId);
 
@@ -121,6 +124,7 @@ public interface IDataStore
     KmCodeBatch? GetKmCodeBatch(long batchId);
     KmCodeBatch? FindKmCodeBatchByHash(string fileHash);
     IReadOnlyList<KmCodeBatch> GetKmCodeBatches();
+    void UpdateKmCodeBatchOrder(long batchId, long? orderId);
 
     long AddKmCode(KmCode code);
     KmCode? FindKmCodeByRaw(string codeRaw);

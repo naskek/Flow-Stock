@@ -523,7 +523,7 @@ app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) 
         return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
     }
 
-    var shippedByItem = store.GetShippedTotalsByOrder(orderId);
+    var shippedByLine = store.GetShippedTotalsByOrderLine(orderId);
     using var connection = OpenConnection(postgresConnectionString);
     using var command = connection.CreateCommand();
     command.CommandText = @"
@@ -538,14 +538,15 @@ ORDER BY i.name;";
     var lines = new List<object>();
     while (reader.Read())
     {
+        var lineId = reader.GetInt64(0);
         var itemId = reader.GetInt64(2);
         var ordered = reader.GetDouble(3);
-        var shipped = shippedByItem.TryGetValue(itemId, out var shippedQty) ? shippedQty : 0;
+        var shipped = shippedByLine.TryGetValue(lineId, out var shippedQty) ? shippedQty : 0;
         var left = Math.Max(0, ordered - shipped);
 
         lines.Add(new
         {
-            id = reader.GetInt64(0),
+            id = lineId,
             order_id = reader.GetInt64(1),
             item_id = itemId,
             item_name = reader.GetString(4),
@@ -657,8 +658,83 @@ ORDER BY COALESCE(led.hu_code, led.hu), l.code;";
     });
 });
 
-app.MapGet("/api/hu-stock", (IDataStore store) =>
+app.MapGet("/api/hu-stock", (HttpRequest request, IDataStore store) =>
 {
+    var orderIdText = request.Query["order_id"].ToString();
+    var itemIdText = request.Query["item_id"].ToString();
+    if (long.TryParse(orderIdText, out var orderId)
+        && orderId > 0
+        && long.TryParse(itemIdText, out var itemId)
+        && itemId > 0)
+    {
+        var item = store.FindItemById(itemId);
+        if (item == null)
+        {
+            return Results.Ok(new List<object>());
+        }
+
+        if (item.IsMarked)
+        {
+            using var connection = OpenConnection(postgresConnectionString);
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT h.hu_code, c.location_id, COUNT(*)::double precision AS qty
+FROM km_code c
+JOIN hus h ON h.id = c.hu_id
+WHERE c.status = @status
+  AND c.hu_id IS NOT NULL
+  AND c.location_id IS NOT NULL
+  AND h.hu_code IS NOT NULL
+  AND (c.sku_id = @item_id OR (c.sku_id IS NULL AND @gtin14::text IS NOT NULL AND c.gtin14 = @gtin14::text))
+  AND (
+    c.order_id = @order_id::bigint
+    OR EXISTS (
+        SELECT 1
+        FROM km_code_batch b
+        WHERE b.id = c.batch_id AND b.order_id = @order_id::bigint
+    )
+  )
+GROUP BY h.hu_code, c.location_id
+ORDER BY h.hu_code;";
+            AddParam(command, "@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.OnHand));
+            AddParam(command, "@item_id", itemId);
+            AddParam(command, "@gtin14", string.IsNullOrWhiteSpace(item.Gtin) ? DBNull.Value : item.Gtin.Trim());
+            AddParam(command, "@order_id", orderId);
+            using var reader = command.ExecuteReader();
+            var list = new List<object>();
+            while (reader.Read())
+            {
+                if (reader.IsDBNull(0))
+                {
+                    continue;
+                }
+
+                list.Add(new
+                {
+                    hu = reader.GetString(0),
+                    item_id = itemId,
+                    location_id = reader.GetInt64(1),
+                    qty = reader.GetDouble(2)
+                });
+            }
+
+            return Results.Ok(list);
+        }
+
+        var filtered = store.GetHuStockRows()
+            .Where(row => row.ItemId == itemId)
+            .Select(row => new
+            {
+                hu = row.HuCode,
+                item_id = row.ItemId,
+                location_id = row.LocationId,
+                qty = row.Qty
+            })
+            .ToList();
+
+        return Results.Ok(filtered);
+    }
+
     var rows = store.GetHuStockRows()
         .Select(row => new
         {
@@ -1022,6 +1098,18 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
     }
 
+    var requestedOrderId = createRequest.OrderId;
+    var requestedOrderRef = string.IsNullOrWhiteSpace(createRequest.OrderRef) ? null : createRequest.OrderRef.Trim();
+    Order? requestedOrder = null;
+    if (requestedOrderId.HasValue)
+    {
+        requestedOrder = store.GetOrder(requestedOrderId.Value);
+        if (requestedOrder == null)
+        {
+            return Results.BadRequest(new ApiResult(false, "UNKNOWN_ORDER"));
+        }
+    }
+
     var existingEvent = apiStore.GetEvent(createRequest.EventId);
     if (existingEvent != null)
     {
@@ -1080,6 +1168,26 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         var fromHu = existingDocInfo.FromHu;
         var toHu = existingDocInfo.ToHu;
         var updated = false;
+
+        if (requestedOrderId.HasValue)
+        {
+            if (existingDoc.OrderId.HasValue && existingDoc.OrderId.Value != requestedOrderId.Value)
+            {
+                return Results.BadRequest(new ApiResult(false, "DUPLICATE_DOC_UID"));
+            }
+
+            if (!existingDoc.OrderId.HasValue)
+            {
+                store.UpdateDocOrder(existingDocInfo.DocId, requestedOrderId.Value, requestedOrder?.OrderRef);
+                updated = true;
+            }
+
+            if (requestedOrder != null && !partnerId.HasValue)
+            {
+                partnerId = requestedOrder.PartnerId;
+                updated = true;
+            }
+        }
 
         if (createRequest.PartnerId.HasValue)
         {
@@ -1287,6 +1395,15 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
     }
 
     var partnerIdValue = createRequest.PartnerId;
+    if (requestedOrder != null)
+    {
+        if (partnerIdValue.HasValue && partnerIdValue.Value != requestedOrder.PartnerId)
+        {
+            return Results.BadRequest(new ApiResult(false, "ORDER_PARTNER_MISMATCH"));
+        }
+
+        partnerIdValue = requestedOrder.PartnerId;
+    }
     if (partnerIdValue.HasValue && store.GetPartner(partnerIdValue.Value) == null)
     {
         return Results.BadRequest(new ApiResult(false, "UNKNOWN_PARTNER"));
@@ -1375,14 +1492,14 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
     long docId;
     try
     {
-        docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, null, resolvedShippingRefNew, null);
+        docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, requestedOrderRef, resolvedShippingRefNew, requestedOrderId);
     }
     catch (ArgumentException ex) when (string.Equals(ex.ParamName, "docRef", StringComparison.Ordinal))
     {
         docRef = docs.GenerateDocRef(docType.Value, DateTime.Now);
         try
         {
-            docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, null, resolvedShippingRefNew, null);
+            docId = docs.CreateDoc(docType.Value, docRef, comment, partnerIdValue, requestedOrderRef, resolvedShippingRefNew, requestedOrderId);
         }
         catch (ArgumentException)
         {
@@ -1578,8 +1695,14 @@ app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest reques
             }
             break;
         case DocType.Outbound:
-            fromLocationId = docInfo.FromLocationId;
-            fromHu = NormalizeHu(docInfo.FromHu);
+            if (lineRequest.FromLocationId.HasValue && store.FindLocationById(lineRequest.FromLocationId.Value) == null)
+            {
+                return Results.BadRequest(new ApiResult(false, "UNKNOWN_LOCATION"));
+            }
+            fromLocationId = lineRequest.FromLocationId ?? docInfo.FromLocationId;
+            fromHu = !string.IsNullOrWhiteSpace(requestedFromHu)
+                ? requestedFromHu
+                : NormalizeHu(docInfo.FromHu);
             if (!fromLocationId.HasValue)
             {
                 return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
@@ -1628,7 +1751,8 @@ app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest reques
             null,
             lineRequest.UomCode,
             fromHu,
-            toHu);
+            toHu,
+            lineRequest.OrderLineId);
     }
     catch (Exception ex)
     {
@@ -2069,6 +2193,7 @@ static object MapDocLine(DocLineView line)
     return new
     {
         id = line.Id,
+        order_line_id = line.OrderLineId,
         item_id = line.ItemId,
         item_name = line.ItemName,
         barcode = line.Barcode,

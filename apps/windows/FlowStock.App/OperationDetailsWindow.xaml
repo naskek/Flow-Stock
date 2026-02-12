@@ -10,6 +10,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
         <StackPanel Grid.Row="0" Margin="0,0,0,8">
             <DockPanel LastChildFill="True">
@@ -94,6 +95,7 @@
         </StackPanel>
         <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
             <Button x:Name="AddItemButton" Content="+ Товар" Click="DocAddLine_Click" />
+            <Button x:Name="FillFromOrderButton" Content="Заполнить из заказа" Click="DocFillFromOrder_Click" Margin="8,0,0,0" />
             <Button x:Name="EditLineButton" Content="Изменить количество..." Click="DocEditLine_Click" Margin="8,0,0,0" />
             <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
             <Button x:Name="KmCodesButton" Content="Коды КМ..." Click="KmCodes_Click" Margin="8,0,0,0" />
@@ -121,12 +123,43 @@
                 <DataGridTextColumn x:Name="DocInventoryDbColumn" Header="В базе" Binding="{Binding InventoryDbQtyDisplay}" Width="140" />
                 <DataGridTextColumn x:Name="DocInventoryDiffColumn" Header="Расхождение" Binding="{Binding InventoryDiffQtyDisplay}" Width="140" />
                 <DataGridTextColumn Header="Доступно" Binding="{Binding AvailableQty, StringFormat={}{0:0.###}}" Width="140" />
+                <DataGridTextColumn x:Name="DocOrderLineColumn" Header="По заказу" Binding="{Binding OrderLineDisplay}" Width="160">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="ToolTip" Value="{Binding OrderLineHint}" />
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+                <DataGridTemplateColumn x:Name="DocKmColumn" Header="КМ" Width="220">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding KmDisplay}" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                <Button Content="Распределить" Click="KmDistribute_Click" IsEnabled="{Binding KmDistributeEnabled}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTextColumn x:Name="DocHuColumn" Header="HU" Binding="{Binding HuDisplay}" Width="180" />
                 <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="220" />
                 <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="220" />
             </DataGrid.Columns>
         </DataGrid>
-        <TextBlock x:Name="DocShortageText" Grid.Row="3" Margin="0,6,0,0" Foreground="DarkRed" Visibility="Collapsed" />
+        <StackPanel x:Name="OutboundHuPanel" Grid.Row="3" Margin="0,6,0,0" Visibility="Collapsed">
+            <TextBlock Text="Где лежит (HU)" FontWeight="SemiBold" Margin="0,0,0,6" />
+            <DataGrid x:Name="OutboundHuGrid" AutoGenerateColumns="False" IsReadOnly="True" Height="160"
+                      SelectionChanged="OutboundHuGrid_SelectionChanged">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="HU" Binding="{Binding HuCode}" Width="180" />
+                    <DataGridTextColumn Header="Локация" Binding="{Binding LocationDisplay}" Width="*" />
+                    <DataGridTextColumn Header="Доступно" Binding="{Binding QtyDisplay}" Width="140" />
+                </DataGrid.Columns>
+            </DataGrid>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
+                <Button x:Name="OutboundHuApplyButton" Content="Добавить HU" Click="OutboundHuApply_Click" />
+            </StackPanel>
+        </StackPanel>
+        <TextBlock x:Name="DocShortageText" Grid.Row="4" Margin="0,6,0,0" Foreground="DarkRed" Visibility="Collapsed" />
     </Grid>
 </Window>
 

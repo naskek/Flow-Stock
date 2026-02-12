@@ -13,7 +13,7 @@ public partial class KmBatchDetailsWindow : Window
     private readonly List<StatusOption> _statusOptions = new()
     {
         new StatusOption(null, "Все"),
-        new StatusOption(KmCodeStatus.Imported, "Импортирован"),
+        new StatusOption(KmCodeStatus.InPool, "В пуле"),
         new StatusOption(KmCodeStatus.OnHand, "На складе"),
         new StatusOption(KmCodeStatus.Shipped, "Отгружен")
     };

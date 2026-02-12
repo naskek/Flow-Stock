@@ -43,6 +43,11 @@ public sealed class KmService
         return _data.GetKmCodesByShipmentLine(shipLineId);
     }
 
+    public void UpdateBatchOrder(long batchId, long? orderId)
+    {
+        _data.ExecuteInTransaction(store => store.UpdateKmCodeBatchOrder(batchId, orderId));
+    }
+
     public KmImportResult ImportCodes(string filePath, long? orderId, string? importedBy)
     {
         if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
@@ -143,7 +148,7 @@ public sealed class KmService
                         Gtin14 = gtin14,
                         SkuId = skuId,
                         ProductName = string.IsNullOrWhiteSpace(nameRaw) ? null : nameRaw,
-                        Status = KmCodeStatus.Imported,
+                        Status = KmCodeStatus.InPool,
                         OrderId = orderId
                     });
                     imported++;
@@ -185,21 +190,27 @@ public sealed class KmService
 
         var required = EnsureIntegerQty(line.Qty);
         var gtin14 = NormalizeGtin(item.Gtin, out _);
-        var ids = _data.GetAvailableKmCodeIds(batchId, orderId, item.Id, gtin14, required);
-        if (ids.Count < required)
+        var assigned = 0;
+        _data.ExecuteInTransaction(store =>
         {
-            throw new InvalidOperationException($"Недостаточно кодов для {item.Name}. Нужно {required}, доступно {ids.Count}.");
-        }
+            var ids = store.GetAvailableKmCodeIds(batchId, orderId, item.Id, gtin14, required);
+            if (ids.Count < required)
+            {
+                throw new InvalidOperationException($"Недостаточно кодов для {item.Name}. Нужно {required}, доступно {ids.Count}.");
+            }
 
-        var huId = ResolveHuId(line.ToHu);
-        var locationId = line.ToLocationId;
-        var updated = _data.AssignKmCodesToReceipt(ids, docId, line.Id, huId, locationId);
-        if (updated != required)
-        {
-            throw new InvalidOperationException($"Не удалось привязать все коды. Привязано {updated} из {required}.");
-        }
+            var huId = ResolveHuId(store, line.ToHu);
+            var locationId = line.ToLocationId;
+            var updated = store.AssignKmCodesToReceipt(ids, docId, line.Id, huId, locationId);
+            if (updated != required)
+            {
+                throw new InvalidOperationException($"Не удалось привязать все коды. Привязано {updated} из {required}.");
+            }
 
-        return updated;
+            assigned = updated;
+        });
+
+        return assigned;
     }
 
     public void AssignCodeToShipment(string codeRaw, long docId, DocLine line, Item item, long? orderId)
@@ -229,14 +240,14 @@ public sealed class KmService
         _data.MarkKmCodeShipped(code.Id, docId, line.Id, orderId);
     }
 
-    private long? ResolveHuId(string? huCode)
+    private static long? ResolveHuId(IDataStore store, string? huCode)
     {
         if (string.IsNullOrWhiteSpace(huCode))
         {
             return null;
         }
 
-        var record = _data.GetHuByCode(huCode.Trim());
+        var record = store.GetHuByCode(huCode.Trim());
         return record?.Id;
     }
 

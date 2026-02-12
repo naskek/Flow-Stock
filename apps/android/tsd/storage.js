@@ -215,6 +215,7 @@
       return null;
     }
     return {
+      orderLineId: line.id != null ? Number(line.id) : null,
       orderId: orderId,
       itemId: itemId,
       itemName: String(line.item_name || line.itemName || ""),
@@ -289,6 +290,7 @@
       return null;
     }
     return {
+      orderLineId: line.order_line_id != null ? Number(line.order_line_id) : null,
       itemId: Number(line.item_id),
       itemName: String(line.item_name || line.itemName || ""),
       barcode: String(line.barcode || ""),
@@ -768,10 +770,22 @@
       });
   }
 
-  function apiGetHuStockRows() {
+  function apiGetHuStockRows(options) {
+    var query = "";
+    if (options && options.orderId && options.itemId) {
+      var orderId = Number(options.orderId);
+      var itemId = Number(options.itemId);
+      if (orderId > 0 && itemId > 0) {
+        query =
+          "?order_id=" +
+          encodeURIComponent(orderId) +
+          "&item_id=" +
+          encodeURIComponent(itemId);
+      }
+    }
     return getBaseUrl()
       .then(function (baseUrl) {
-        return fetchJsonWithTimeout(baseUrl + "/api/hu-stock", { method: "GET" });
+        return fetchJsonWithTimeout(baseUrl + "/api/hu-stock" + query, { method: "GET" });
       })
       .then(function (payload) {
         if (!Array.isArray(payload)) {
@@ -2316,6 +2330,7 @@
     apiGetDocById: apiGetDocById,
     apiGetDocLines: apiGetDocLines,
     apiCreateDocDraft: apiCreateDocDraft,
+    apiGetOrderLines: apiGetOrderLines,
     apiLogin: apiLogin,
   };
 

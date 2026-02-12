@@ -1212,6 +1212,10 @@
             }
             return TsdStorage.apiGetDocLines(route.id)
               .then(function (lines) {
+                if (doc.status === "DRAFT" && doc.doc_uid) {
+                  startDraftDoc(doc, lines || []);
+                  return;
+                }
                 app.innerHTML = renderServerDoc(doc, lines || []);
                 wireServerDoc(doc, lines || []);
                 applySoftKeyboardSetting(app);
@@ -2249,6 +2253,7 @@
   function renderDoc(doc) {
     var headerFields = renderHeaderFields(doc);
     var linesHtml = renderLines(doc);
+    var pickListHtml = renderOutboundPickList(doc);
     var totals = getDocTotals(doc.lines);
     var totalsHtml =
       '    <div class="doc-totals">' +
@@ -2302,6 +2307,9 @@
       linesHtml +
       totalsHtml +
       "    </div>" +
+      (pickListHtml
+        ? '    <div class="section-subtitle">Где лежит</div>' + pickListHtml
+        : "") +
       '    <div id="docActionStatus" class="status"></div>' +
       '    <div class="actions-bar">' +
       '      <button class="btn btn-outline" id="undoBtn" ' +
@@ -2811,6 +2819,8 @@
       return '<div class="empty-state">Добавьте товары сканированием.</div>';
     }
     var showInventoryHu = doc.op === "INVENTORY";
+    var selectedIndex =
+      typeof doc.selectedLineIndex === "number" ? doc.selectedLineIndex : -1;
 
     var rows = lines
       .map(function (line, index) {
@@ -2819,8 +2829,11 @@
         var minusDisabledAttr = qtyValue <= 1 ? ' disabled' : "";
         var minusClassDisabled = qtyValue <= 1 ? " is-disabled" : "";
         var lineHu = showInventoryHu ? normalizeHuCode(line.to_hu) : null;
+        var rowClass = "lines-row" + (index === selectedIndex ? " is-selected" : "");
         return (
-          '<div class="lines-row" data-line-index="' +
+          '<div class="' +
+          rowClass +
+          '" data-line-index="' +
           index +
           '">' +
           '  <div class="lines-cell">' +
@@ -2872,6 +2885,41 @@
         "</div>"
       );
     }
+
+  function renderOutboundPickList(doc) {
+    if (doc.op !== "OUTBOUND") {
+      return "";
+    }
+    var lines = doc.lines || [];
+    if (!lines.length) {
+      return '<div class="empty-state">Нет строк для подбора.</div>';
+    }
+    var index = typeof doc.selectedLineIndex === "number" ? doc.selectedLineIndex : 0;
+    if (index < 0 || index >= lines.length) {
+      index = 0;
+    }
+    var line = lines[index] || {};
+    var title = line.itemName || line.barcode || "Позиция";
+    var huMap = {};
+    lines.forEach(function (entry) {
+      var hu = normalizeHuCode(entry.from_hu);
+      if (hu) {
+        huMap[hu] = true;
+      }
+    });
+    var huCount = Object.keys(huMap).length;
+    return (
+      '<div class="picklist-card">' +
+      '  <div class="picklist-title">Где лежит: ' +
+      escapeHtml(title) +
+      "</div>" +
+      '  <div class="picklist-hint">Выбрано HU: ' +
+      escapeHtml(String(huCount)) +
+      ". Можно использовать несколько HU.</div>" +
+      '  <div id="outboundPickList" class="picklist-body">Загрузка...</div>' +
+      "</div>"
+    );
+  }
 
   function renderSettings() {
     var debugScanner = isDebugMode();
@@ -3204,11 +3252,14 @@
           qty: Number(line.qty) || 0,
           from: line.fromLocation || null,
           to: line.toLocation || null,
+          from_id: null,
+          to_id: null,
           from_hu: line.fromHu || null,
           to_hu: line.toHu || null,
           reason_code: null,
           itemId: line.itemId || null,
           itemName: line.itemName || null,
+          orderLineId: line.orderLineId || null,
         };
       })
       .filter(function (line) {
@@ -3348,11 +3399,14 @@
           qty: Number(line.qty) || 0,
           from: line.fromLocation || null,
           to: line.toLocation || null,
+          from_id: null,
+          to_id: null,
           from_hu: line.fromHu || null,
           to_hu: line.toHu || null,
           reason_code: null,
           itemId: line.itemId || null,
           itemName: line.itemName || null,
+          orderLineId: line.orderLineId || null,
         };
       })
       .filter(function (line) {
@@ -4530,6 +4584,8 @@
     var API_ITEMS_CACHE_MS = 60000;
     var lastScanHandledAt = 0;
     var lastScanHandledValue = "";
+    var outboundPickToken = 0;
+    var outboundPickCandidates = [];
 
     function clearBarcodeInput(keepScanInfo) {
       if (barcodeInput) {
@@ -4930,12 +4986,20 @@
               doc.lines[lineIndex].itemName = itemName;
               doc.lines[lineIndex].itemId = itemId;
             }
+            if (lineData.from_id && !doc.lines[lineIndex].from_id) {
+              doc.lines[lineIndex].from_id = lineData.from_id;
+            }
+            if (lineData.to_id && !doc.lines[lineIndex].to_id) {
+              doc.lines[lineIndex].to_id = lineData.to_id;
+            }
           } else {
             doc.lines.push({
               barcode: barcode,
               qty: qtyValue,
               from: lineData.from,
               to: lineData.to,
+              from_id: lineData.from_id || null,
+              to_id: lineData.to_id || null,
               from_hu: lineData.from_hu,
               to_hu: lineData.to_hu,
               reason_code: lineData.reason_code,
@@ -5608,6 +5672,53 @@
         });
     }
 
+    function formatQtyValue(value) {
+      var num = Number(value);
+      if (isNaN(num)) {
+        return "0";
+      }
+      return String(num);
+    }
+
+    function updateSelectedLineHighlight(index) {
+      var rows = document.querySelectorAll(".lines-row[data-line-index]");
+      rows.forEach(function (row) {
+        var rowIndex = parseInt(row.getAttribute("data-line-index"), 10);
+        row.classList.toggle("is-selected", rowIndex === index);
+      });
+    }
+
+    function getSelectedOutboundLine() {
+      var lines = doc.lines || [];
+      if (!lines.length) {
+        return { line: null, index: -1 };
+      }
+      var index =
+        typeof doc.selectedLineIndex === "number" ? doc.selectedLineIndex : 0;
+      if (index < 0 || index >= lines.length) {
+        index = 0;
+      }
+      return { line: lines[index], index: index };
+    }
+
+    function setSelectedLineIndex(index, persist) {
+      if (!Array.isArray(doc.lines) || !doc.lines.length) {
+        return;
+      }
+      if (index < 0 || index >= doc.lines.length) {
+        return;
+      }
+      if (doc.selectedLineIndex === index) {
+        return;
+      }
+      doc.selectedLineIndex = index;
+      updateSelectedLineHighlight(index);
+      loadOutboundPickList();
+      if (persist) {
+        saveDocState();
+      }
+    }
+
     function getLocationFieldForHu(target) {
       if (doc.op === "MOVE") {
         if (target === "from_hu") {
@@ -5733,6 +5844,234 @@
           }
           throw error;
         });
+    }
+
+    function getOutboundHuLocationRows(line) {
+      var orderId = doc.header.order_id || null;
+      if (orderId && line && line.itemId) {
+        return TsdStorage.apiGetHuStockRows({ orderId: orderId, itemId: line.itemId });
+      }
+      return getHuLocationRows();
+    }
+
+    function loadOutboundPickList() {
+      var container = document.getElementById("outboundPickList");
+      if (!container) {
+        return;
+      }
+      if (doc.op !== "OUTBOUND") {
+        container.innerHTML = "";
+        return;
+      }
+      var selection = getSelectedOutboundLine();
+      if (!selection.line) {
+        container.innerHTML = '<div class="empty-state">Нет строк для подбора.</div>';
+        return;
+      }
+      updateSelectedLineHighlight(selection.index);
+
+      var line = selection.line;
+      if (!line.itemId) {
+        container.innerHTML = '<div class="empty-state">Выберите строку.</div>';
+        return;
+      }
+
+      container.innerHTML = '<div class="status">Загрузка...</div>';
+      var token = (outboundPickToken += 1);
+      Promise.all([getOutboundHuLocationRows(line), TsdStorage.apiGetLocations().catch(function () { return []; })])
+        .then(function (result) {
+          if (token !== outboundPickToken) {
+            return;
+          }
+          var rows = result[0] || [];
+          var locations = result[1] || [];
+          var locationsById = {};
+          locations.forEach(function (location) {
+            if (!location || !location.locationId) {
+              return;
+            }
+            locationsById[location.locationId] = location;
+          });
+
+          var reservedByHu = {};
+          (doc.lines || []).forEach(function (lineEntry) {
+            var hu = normalizeHuCode(lineEntry.from_hu);
+            var locationId = lineEntry.from_id;
+            if (!hu || !locationId) {
+              return;
+            }
+            var key = hu + "|" + locationId;
+            var qty = Number(lineEntry.qty) || 0;
+            reservedByHu[key] = (reservedByHu[key] || 0) + qty;
+          });
+
+          var candidates = rows
+            .filter(function (row) {
+              return row.itemId === line.itemId && row.qty > 0 && row.hu;
+            })
+            .map(function (row) {
+              var hu = normalizeHuCode(row.hu);
+              if (!hu) {
+                return null;
+              }
+              var location = locationsById[row.locationId] || null;
+              var locationCode = location ? location.code : String(row.locationId);
+              var locationLabel = formatLocationLabel(locationCode, location ? location.name : "");
+              var key = hu + "|" + row.locationId;
+              var reserved = reservedByHu[key] || 0;
+              var available = Number(row.qty) - reserved;
+              if (available <= 0) {
+                return null;
+              }
+              return {
+                hu: hu,
+                locationId: row.locationId,
+                locationCode: locationCode,
+                locationLabel: locationLabel,
+                available: available,
+              };
+            })
+            .filter(function (entry) {
+              return !!entry;
+            });
+
+          candidates.sort(function (a, b) {
+            var locCompare = String(a.locationLabel).localeCompare(String(b.locationLabel));
+            if (locCompare !== 0) {
+              return locCompare;
+            }
+            return String(a.hu).localeCompare(String(b.hu));
+          });
+
+          outboundPickCandidates = candidates;
+          if (!candidates.length) {
+            container.innerHTML = '<div class="empty-state">Нет остатков по HU.</div>';
+            return;
+          }
+
+          var activeHu = normalizeHuCode(line.from_hu);
+          var activeLocationId = line.from_id || null;
+          var rowsHtml = candidates
+            .map(function (candidate, index) {
+              var isActive =
+                activeHu &&
+                candidate.hu === activeHu &&
+                activeLocationId === candidate.locationId;
+              var rowClass = "picklist-row" + (isActive ? " is-selected" : "");
+              return (
+                '<div class="' +
+                rowClass +
+                '">' +
+                '  <div class="picklist-info">' +
+                '    <div class="picklist-hu">' +
+                escapeHtml(candidate.hu) +
+                "</div>" +
+                '    <div class="picklist-meta">' +
+                escapeHtml(candidate.locationLabel) +
+                "</div>" +
+                "  </div>" +
+                '  <div class="picklist-qty">' +
+                escapeHtml(formatQtyValue(candidate.available)) +
+                " шт</div>" +
+                '  <button class="btn btn-outline picklist-apply" data-pick-index="' +
+                index +
+                '" type="button">Отгрузить</button>' +
+                "</div>"
+              );
+            })
+            .join("");
+
+          container.innerHTML = rowsHtml;
+          var buttons = container.querySelectorAll(".picklist-apply");
+          buttons.forEach(function (button) {
+            button.addEventListener("click", function () {
+              var index = parseInt(button.getAttribute("data-pick-index"), 10);
+              if (isNaN(index)) {
+                return;
+              }
+              applyOutboundHuCandidate(index);
+            });
+          });
+        })
+        .catch(function () {
+          if (token !== outboundPickToken) {
+            return;
+          }
+          container.innerHTML = '<div class="empty-state">Не удалось загрузить HU.</div>';
+        });
+    }
+
+    function applyOutboundHuCandidate(index) {
+      var selection = getSelectedOutboundLine();
+      var line = selection.line;
+      if (!line) {
+        return;
+      }
+      var candidate = outboundPickCandidates[index];
+      if (!candidate) {
+        return;
+      }
+      var candidateHu = normalizeHuCode(candidate.hu);
+      if (!candidateHu) {
+        return;
+      }
+      var existingHu = normalizeHuCode(line.from_hu);
+      if (existingHu && existingHu !== candidateHu) {
+        alert("Строка уже привязана к другому HU.");
+        return;
+      }
+
+      var available = Number(candidate.available) || 0;
+      if (available <= 0) {
+        alert("Нет доступного остатка на выбранном HU.");
+        return;
+      }
+
+      var lineQty = Number(line.qty) || 0;
+      var allocQty = Math.min(lineQty, available);
+      if (allocQty <= 0) {
+        return;
+      }
+
+      function applyAllocation() {
+        var remainingQty = lineQty - allocQty;
+        if (remainingQty <= 0.000001) {
+          line.qty = allocQty;
+          line.from = candidate.locationCode;
+          line.from_id = candidate.locationId;
+          line.from_hu = candidateHu;
+        } else {
+          line.qty = remainingQty;
+          var newLine = {
+            barcode: line.barcode,
+            qty: allocQty,
+            from: candidate.locationCode,
+            to: line.to,
+            from_id: candidate.locationId,
+            to_id: line.to_id || null,
+            from_hu: candidateHu,
+            to_hu: line.to_hu || null,
+            reason_code: line.reason_code,
+            itemId: line.itemId,
+            itemName: line.itemName,
+            orderLineId: line.orderLineId || null,
+          };
+          doc.lines.splice(selection.index + 1, 0, newLine);
+        }
+        saveDocState().then(refreshDocView);
+      }
+
+      if (allocQty < lineQty) {
+        openConfirmOverlay(
+          "Частичная отгрузка",
+          "На HU доступно " + formatQtyValue(available) + " шт. Отгрузить?",
+          "Отгрузить",
+          applyAllocation
+        );
+        return;
+      }
+
+      applyAllocation();
     }
 
     function checkHuLocationAvailability(huCode, target) {
@@ -6241,6 +6580,22 @@
       });
     });
 
+    var lineRows = document.querySelectorAll(".lines-row[data-line-index]");
+    lineRows.forEach(function (row) {
+      row.addEventListener("click", function (event) {
+        if (event && event.target && event.target.closest("button")) {
+          return;
+        }
+        var index = parseInt(row.getAttribute("data-line-index"), 10);
+        if (isNaN(index)) {
+          return;
+        }
+        setSelectedLineIndex(index, true);
+      });
+    });
+
+    loadOutboundPickList();
+
     function applyPartnerSelection(partner) {
       setPartnerError("");
       doc.header.partner_id = partner.partnerId;
@@ -6255,7 +6610,82 @@
       doc.header.order_id = order.orderId || order.order_id || order.id || null;
       doc.header.order_ref =
         order.number || order.orderNumber || order.order_id || order.orderId || "";
+      if (doc.op === "OUTBOUND") {
+        applyOutboundOrderLines(order);
+        return;
+      }
       saveDocState().then(refreshDocView);
+    }
+
+    function applyOutboundOrderLines(order) {
+      var orderId = order.orderId || order.order_id || order.id || null;
+      if (!orderId) {
+        saveDocState().then(refreshDocView);
+        return;
+      }
+
+      function applyLines() {
+        setDocStatus("Загрузка строк заказа...");
+        var lineData = buildLineData(doc.op, doc.header);
+        TsdStorage.apiGetOrderLines(orderId)
+          .then(function (lines) {
+            var nextLines = (lines || [])
+              .filter(function (line) {
+                var left = Number(line.leftQty);
+                if (isNaN(left)) {
+                  var ordered = Number(line.orderedQty) || 0;
+                  var shipped = Number(line.shippedQty) || 0;
+                  left = Math.max(ordered - shipped, 0);
+                }
+                return left > 0;
+              })
+              .map(function (line) {
+                var remaining = Number(line.leftQty);
+                if (isNaN(remaining)) {
+                  var ordered = Number(line.orderedQty) || 0;
+                  var shipped = Number(line.shippedQty) || 0;
+                  remaining = Math.max(ordered - shipped, 0);
+                }
+                return {
+                  barcode: line.barcode || "",
+                  qty: remaining,
+                  from: lineData.from,
+                  to: lineData.to,
+                  from_id: lineData.from_id || null,
+                  to_id: lineData.to_id || null,
+                  from_hu: lineData.from_hu || null,
+                  to_hu: lineData.to_hu || null,
+                  reason_code: lineData.reason_code,
+                  itemId: line.itemId,
+                  itemName: line.itemName || "",
+                  orderLineId: line.orderLineId || null,
+                };
+              });
+            doc.lines = nextLines;
+            doc.selectedLineIndex = nextLines.length ? 0 : null;
+            doc.updatedAt = new Date().toISOString();
+            saveDocState().then(refreshDocView);
+            if (!nextLines.length) {
+              alert("По заказу нет остатка к отгрузке.");
+            }
+          })
+          .catch(function () {
+            alert("Не удалось загрузить строки заказа.");
+            refreshDocView();
+          });
+      }
+
+      if (doc.lines && doc.lines.length) {
+        openConfirmOverlay(
+          "Заменить строки?",
+          "Заменить текущие строки данными из заказа?",
+          "Заменить",
+          applyLines
+        );
+        return;
+      }
+
+      applyLines();
     }
 
     function applyLocationSelection(field, location) {
@@ -7226,6 +7656,8 @@
           comment: "TSD",
           reason_code: doc.op === "WRITE_OFF" ? normalizeValue(header.reason_code) || null : null,
           partner_id: header.partner_id || null,
+          order_id: header.order_id || null,
+          order_ref: header.order_ref ? header.order_ref : null,
           from_location_id: fromLocationId,
           to_location_id: toLocationId,
           from_hu: fromHu || null,
@@ -7258,6 +7690,18 @@
               } else {
                 linePayload.barcode = line.barcode || "";
               }
+              var lineOrderId = line.orderLineId != null ? Number(line.orderLineId) : null;
+              if (lineOrderId && !isNaN(lineOrderId)) {
+                linePayload.order_line_id = lineOrderId;
+              }
+              var lineFromId = line.from_id != null ? Number(line.from_id) : null;
+              if (lineFromId && !isNaN(lineFromId)) {
+                linePayload.from_location_id = lineFromId;
+              }
+              var lineToId = line.to_id != null ? Number(line.to_id) : null;
+              if (lineToId && !isNaN(lineToId)) {
+                linePayload.to_location_id = lineToId;
+              }
               if (lineFromHu) {
                 linePayload.from_hu = lineFromHu;
               }
@@ -7277,25 +7721,41 @@
     var reason = null;
     var fromHu = null;
     var toHu = null;
+    var fromId = null;
+    var toId = null;
 
     if (op === "INBOUND") {
       to = normalizeValue(header.to) || null;
+      toId = header.to_id || null;
     } else if (op === "OUTBOUND") {
       from = normalizeValue(header.from) || null;
+      fromId = header.from_id || null;
     } else if (op === "MOVE") {
       from = normalizeValue(header.from) || null;
       to = normalizeValue(header.to) || null;
+      fromId = header.from_id || null;
+      toId = header.to_id || null;
       fromHu = normalizeHuCode(header.from_hu) || null;
       toHu = normalizeHuCode(header.to_hu) || null;
     } else if (op === "WRITE_OFF") {
       from = normalizeValue(header.from) || null;
+      fromId = header.from_id || null;
       reason = normalizeValue(header.reason_code) || null;
     } else if (op === "INVENTORY") {
       to = normalizeValue(header.location) || null;
+      toId = header.location_id || null;
       toHu = normalizeHuCode(header.hu) || null;
     }
 
-    return { from: from, to: to, from_hu: fromHu, to_hu: toHu, reason_code: reason };
+    return {
+      from: from,
+      to: to,
+      from_id: fromId,
+      to_id: toId,
+      from_hu: fromHu,
+      to_hu: toHu,
+      reason_code: reason,
+    };
   }
 
   function buildLineKey(op, barcode, lineData) {

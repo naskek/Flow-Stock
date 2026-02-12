@@ -22,7 +22,7 @@
 - orders(id, order_ref, partner_id, due_date, status, comment, created_at)
 - order_lines(id, order_id, item_id, qty_ordered)
 - docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment, production_batch_no)
-- doc_lines(id, doc_id, item_id, qty, from_location_id, to_location_id, uom, from_hu, to_hu)
+- doc_lines(id, doc_id, order_line_id, item_id, qty, from_location_id, to_location_id, uom, from_hu, to_hu)
 - ledger(id, ts, doc_id, item_id, location_id, qty_delta, hu_code)
 - km_code_batch(id, order_id, file_name, file_hash, imported_at, imported_by, total_codes, error_count)
 - km_code(id, batch_id, code_raw, gtin14, sku_id, product_name, status, receipt_doc_id, receipt_line_id, hu_id, location_id, ship_doc_id, ship_line_id, order_id)
@@ -57,11 +57,17 @@
 - Item requests: bell notification + list with resolve action.
 
 ## Documents (extra)
-- Выпуск продукции: приемка готовой продукции на склад (плюс в ledger), HU обязателен, партия производства хранится в `production_batch_no`.
+- Выпуск продукции: приемка готовой продукции на склад (плюс в ledger), HU обязателен, партия производства хранится в `production_batch_no`, документ может быть связан с заказом (order_id/order_ref).
+  - При выборе заказа автоматически подставляются остатки по строкам заказа (order_line_id) с учетом уже закрытых выпусков.
+- Отгрузка по заказу: OUTBOUND может быть связан с заказом (order_id/order_ref).
+  - При выборе заказа автоматически подставляются остатки по строкам заказа (order_line_id) с учетом уже закрытых отгрузок.
+  - TSD показывает pick list HU/локаций по выбранной строке и позволяет привязать HU/локацию к строке отгрузки.
+  - Для маркируемых SKU pick list строится по `km_code` (status=OnHand) с фильтром по заказу; для немаркируемых — по ledger.
 
 ## Marking (KM) MVP
 - Импорт CSV/TSV кодов в `km_code_batch` + `km_code` (защита по hash файла и UNIQUE(code_raw)).
 - Привязка пакета к заказу через `order_id`.
-- Коды переходят в статус `OnHand` только через документ "Выпуск продукции".
-- Для маркируемых SKU (items.is_marked = true) требуется привязать ровно Qty кодов к строке документа.
+- Коды в пуле имеют статус `InPool`, переходят в статус `OnHand` только через документ "Выпуск продукции".
+- Для маркируемых SKU (items.is_marked = true) требуется привязать ровно Qty кодов к строке документа (receipt_line_id, hu_id, location_id).
+- Распределение кодов в выпуске выполняется по строке (HU+SKU+Qty) из пула `InPool` по заказу или выбранному пакету.
 - Отгрузка переводит коды в статус `Shipped` и связывает с документом отгрузки.

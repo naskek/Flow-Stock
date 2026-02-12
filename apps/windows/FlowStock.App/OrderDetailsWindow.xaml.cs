@@ -307,14 +307,14 @@ public partial class OrderDetailsWindow : Window
     private void RefreshLineMetrics()
     {
         var availableByItem = _services.Orders.GetItemAvailability();
-        var shippedByItem = _orderId.HasValue
+        var shippedByLine = _orderId.HasValue
             ? _services.Orders.GetShippedTotals(_orderId.Value)
             : new Dictionary<long, double>();
 
         foreach (var line in _lines)
         {
             var available = availableByItem.TryGetValue(line.ItemId, out var availableQty) ? availableQty : 0;
-            var shipped = shippedByItem.TryGetValue(line.ItemId, out var shippedQty) ? shippedQty : 0;
+            var shipped = shippedByLine.TryGetValue(line.Id, out var shippedQty) ? shippedQty : 0;
             var remaining = Math.Max(0, line.QtyOrdered - shipped);
             var availableForShip = Math.Max(0, available);
             var canShip = Math.Min(remaining, availableForShip);

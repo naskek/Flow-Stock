@@ -22,10 +22,12 @@ public partial class OperationDetailsWindow : Window
     private readonly ObservableCollection<HuOption> _huToOptions = new();
     private readonly ObservableCollection<HuOption> _huFromOptions = new();
     private readonly List<WriteOffReasonOption> _writeOffReasons = new();
-    private readonly Dictionary<long, double> _orderedQtyByItem = new();
+    private readonly ObservableCollection<OutboundHuCandidate> _outboundHuCandidates = new();
+    private readonly Dictionary<long, double> _orderedQtyByOrderLine = new();
     private readonly long _docId;
     private Doc? _doc;
     private DocLineDisplay? _selectedDocLine;
+    private OutboundHuCandidate? _selectedOutboundHu;
     private bool _suppressOrderSync;
     private bool _suppressPartialSync;
     private bool _suppressDirtyTracking;
@@ -51,6 +53,7 @@ public partial class OperationDetailsWindow : Window
         DocReasonCombo.ItemsSource = _writeOffReasons;
         DocFromCombo.SelectionChanged += DocFromCombo_SelectionChanged;
         DocToCombo.SelectionChanged += DocToCombo_SelectionChanged;
+        OutboundHuGrid.ItemsSource = _outboundHuCandidates;
 
         LoadWriteOffReasons();
         LoadCatalog();
@@ -153,6 +156,14 @@ public partial class OperationDetailsWindow : Window
         var lines = _services.Documents.GetDocLines(_docId);
         var isOutbound = _doc?.Type == DocType.Outbound;
         var isInventory = _doc?.Type == DocType.Inventory;
+        var isProductionReceipt = _doc?.Type == DocType.ProductionReceipt;
+        var isEditable = IsDocEditable();
+        var receiptRemaining = new Dictionary<long, double>();
+        if (isProductionReceipt && _doc?.OrderId.HasValue == true)
+        {
+            receiptRemaining = _services.Documents.GetOrderReceiptRemaining(_doc.OrderId.Value)
+                .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining);
+        }
         var availableByItem = isOutbound
             ? _services.Orders.GetItemAvailability()
             : new Dictionary<long, double>();
@@ -184,6 +195,18 @@ public partial class OperationDetailsWindow : Window
             var hasShortage = isOutbound && shortageByItem.ContainsKey(line.ItemId);
             var huDisplay = ResolveLineHuDisplay(_doc?.Type ?? DocType.Inbound, line);
             var isMarked = itemsById.TryGetValue(line.ItemId, out var item) && item.IsMarked;
+            var kmAssigned = 0;
+            var kmDisplay = string.Empty;
+            var kmEnabled = false;
+            if (isProductionReceipt)
+            {
+                kmAssigned = isMarked ? _services.Km.GetAssignedCountForReceiptLine(line.Id) : 0;
+                kmDisplay = isMarked ? $"КМ: {kmAssigned}/{FormatQty(line.Qty)}" : "КМ: -";
+                kmEnabled = isEditable
+                            && isMarked
+                            && !string.IsNullOrWhiteSpace(line.ToLocation)
+                            && !string.IsNullOrWhiteSpace(line.ToHu);
+            }
             var inventoryDbQty = (double?)null;
             var inventoryDiffQty = (double?)null;
             var hasInventoryDiff = false;
@@ -198,10 +221,20 @@ public partial class OperationDetailsWindow : Window
                     hasInventoryDiff = Math.Abs(inventoryDiffQty.Value) > 0.000001;
                 }
             }
+            var orderLineDisplay = string.Empty;
+            var orderLineHint = string.Empty;
+            if (line.OrderLineId.HasValue)
+            {
+                var remaining = receiptRemaining.TryGetValue(line.OrderLineId.Value, out var value) ? value : 0;
+                orderLineDisplay = FormatQty(remaining);
+                orderLineHint = $"Осталось принять: {FormatQty(remaining)}";
+            }
+
             _docLines.Add(new DocLineDisplay
             {
                 Id = line.Id,
                 ItemId = line.ItemId,
+                OrderLineId = line.OrderLineId,
                 ItemName = line.ItemName,
                 QtyBase = line.Qty,
                 QtyInput = line.QtyInput,
@@ -221,6 +254,10 @@ public partial class OperationDetailsWindow : Window
                 InventoryDiffQtyDisplay = inventoryDiffQty.HasValue ? FormatQty(inventoryDiffQty.Value) : string.Empty,
                 HasInventoryDiff = hasInventoryDiff,
                 IsMarked = isMarked,
+                OrderLineDisplay = orderLineDisplay,
+                OrderLineHint = orderLineHint,
+                KmDisplay = kmDisplay,
+                KmDistributeEnabled = kmEnabled,
                 HuDisplay = huDisplay,
                 FromLocation = FormatLocationDisplay(line.FromLocation, locationLookup),
                 ToLocation = FormatLocationDisplay(line.ToLocation, locationLookup)
@@ -233,6 +270,7 @@ public partial class OperationDetailsWindow : Window
         UpdateLineButtons();
         UpdateAvailabilityStatus();
         UpdateActionButtons();
+        LoadOutboundHuCandidates();
     }
 
     private static string? FormatLocationDisplay(string? code, IReadOnlyDictionary<string, Location> lookup)
@@ -293,6 +331,13 @@ public partial class OperationDetailsWindow : Window
     {
         _selectedDocLine = DocLinesGrid.SelectedItem as DocLineDisplay;
         UpdateLineButtons();
+        LoadOutboundHuCandidates();
+    }
+
+    private void OutboundHuGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        _selectedOutboundHu = OutboundHuGrid.SelectedItem as OutboundHuCandidate;
+        UpdateOutboundHuButton();
     }
 
     private void DocLinesGrid_KeyDown(object sender, KeyEventArgs e)
@@ -650,6 +695,7 @@ public partial class OperationDetailsWindow : Window
                 Owner = this
             };
             window.ShowDialog();
+            LoadDocLines();
         }
         else if (_doc.Type == DocType.Outbound)
         {
@@ -658,6 +704,69 @@ public partial class OperationDetailsWindow : Window
                 Owner = this
             };
             window.ShowDialog();
+            LoadDocLines();
+        }
+    }
+
+    private void KmDistribute_Click(object sender, RoutedEventArgs e)
+    {
+        if (_doc == null || _doc.Type != DocType.ProductionReceipt)
+        {
+            return;
+        }
+
+        if (sender is not FrameworkElement element || element.DataContext is not DocLineDisplay lineDisplay)
+        {
+            return;
+        }
+
+        var line = _services.DataStore.GetDocLines(_doc.Id).FirstOrDefault(l => l.Id == lineDisplay.Id);
+        if (line == null)
+        {
+            MessageBox.Show("Строка не найдена.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var item = _services.DataStore.FindItemById(line.ItemId);
+        if (item == null || !item.IsMarked)
+        {
+            MessageBox.Show("Товар не маркируемый.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!line.ToLocationId.HasValue)
+        {
+            MessageBox.Show("Выберите локацию приемки.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(line.ToHu))
+        {
+            MessageBox.Show("Для выпуска продукции требуется HU.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            if (_doc.OrderId.HasValue)
+            {
+                var assigned = _services.Km.AssignCodesToReceipt(_doc.Id, line, item, null, _doc.OrderId.Value);
+                MessageBox.Show($"Распределено кодов: {assigned}.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                var window = new KmAssignReceiptWindow(_services, _doc, line, item)
+                {
+                    Owner = this
+                };
+                window.ShowDialog();
+            }
+
+            LoadDocLines();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -680,10 +789,14 @@ public partial class OperationDetailsWindow : Window
         }
 
         var orderedQty = 0.0;
-        if (HasOrderBinding() && !TryGetOrderedQty(_selectedDocLine.ItemId, out orderedQty))
+        if (HasOrderBinding())
         {
-            MessageBox.Show("Не удалось найти количество из заказа.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
+            if (!_selectedDocLine.OrderLineId.HasValue
+                || !TryGetOrderedQty(_selectedDocLine.OrderLineId.Value, out orderedQty))
+            {
+                MessageBox.Show("Не удалось найти количество из заказа.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
         }
 
         var item = _services.DataStore.FindItemById(_selectedDocLine.ItemId);
@@ -702,6 +815,11 @@ public partial class OperationDetailsWindow : Window
             Owner = this
         };
         if (qtyDialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        if (!TryValidateReceiptQty(_selectedDocLine, qtyDialog.QtyBase))
         {
             return;
         }
@@ -729,6 +847,39 @@ public partial class OperationDetailsWindow : Window
         {
             MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private bool TryValidateReceiptQty(DocLineDisplay lineDisplay, double newQty)
+    {
+        if (_doc?.Type != DocType.ProductionReceipt || !lineDisplay.OrderLineId.HasValue)
+        {
+            return true;
+        }
+
+        if (!_doc.OrderId.HasValue)
+        {
+            MessageBox.Show("Для строки заказа требуется указать заказ в документе.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        var remaining = _services.Documents.GetOrderReceiptRemaining(_doc.OrderId.Value)
+            .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining);
+        if (!remaining.TryGetValue(lineDisplay.OrderLineId.Value, out var limit))
+        {
+            MessageBox.Show("Строка заказа не найдена.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        var total = _services.DataStore.GetDocLines(_doc.Id)
+            .Where(line => line.OrderLineId == lineDisplay.OrderLineId)
+            .Sum(line => line.Id == lineDisplay.Id ? newQty : line.Qty);
+        if (total > limit + 0.000001)
+        {
+            MessageBox.Show($"Количество превышает остаток по заказу: доступно {FormatQty(limit)}.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        return true;
     }
 
     private void DocHeaderSave_Click(object sender, RoutedEventArgs e)
@@ -969,6 +1120,13 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
+        if (_doc?.Type == DocType.ProductionReceipt)
+        {
+            TryApplyReceiptOrderSelection(selected);
+            UpdateLineButtons();
+            return;
+        }
+
         var partner = _partners.FirstOrDefault(p => p.Id == selected.PartnerId);
         if (partner == null)
         {
@@ -1140,6 +1298,7 @@ public partial class OperationDetailsWindow : Window
                 break;
             case DocType.ProductionReceipt:
                 showTo = true;
+                showOrder = true;
                 showBatch = true;
                 showComment = true;
                 toLabel = "Локация приёмки";
@@ -1163,7 +1322,7 @@ public partial class OperationDetailsWindow : Window
         DocHuLabel.Text = doc.Type == DocType.Move
             ? "HU (куда)"
             : doc.Type == DocType.ProductionReceipt ? "HU (палета)" : "HU";
-        DocPartialCheck.Visibility = showOrder ? Visibility.Visible : Visibility.Collapsed;
+        DocPartialCheck.Visibility = doc.Type == DocType.Outbound ? Visibility.Visible : Visibility.Collapsed;
         DocHuCombo.IsEnabled = isEditable;
         DocHuFromCombo.IsEnabled = isEditable;
         DocHuCombo.IsEditable = doc.Type == DocType.Move || doc.Type == DocType.ProductionReceipt;
@@ -1198,10 +1357,15 @@ public partial class OperationDetailsWindow : Window
         DocInventoryDbColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
         DocInventoryDiffColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
         DocHuColumn.Visibility = showHu ? Visibility.Visible : Visibility.Collapsed;
+        DocKmColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
+        DocOrderLineColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
         DocToColumn.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Header = fromLabel;
         DocToColumn.Header = toLabel;
+
+        FillFromOrderButton.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
+        FillFromOrderButton.IsEnabled = isEditable && DocOrderCombo.SelectedItem != null;
     }
 
     private static bool IsTsdSource(Doc doc)
@@ -1237,11 +1401,155 @@ public partial class OperationDetailsWindow : Window
         AddItemButton.IsEnabled = isEditable && !hasOrder;
         EditLineButton.IsEnabled = isEditable && _selectedDocLine != null && (!hasOrder || allowPartialEdit);
         DeleteLineButton.IsEnabled = isEditable && _selectedDocLine != null && !hasOrder;
-        DocPartialCheck.IsEnabled = isEditable && hasOrder;
+        DocPartialCheck.IsEnabled = isEditable && _doc?.Type == DocType.Outbound && hasOrder;
         KmCodesButton.IsEnabled = isEditable
                                   && _selectedDocLine != null
                                   && _selectedDocLine.IsMarked
                                   && (_doc?.Type == DocType.ProductionReceipt || _doc?.Type == DocType.Outbound);
+        if (_doc?.Type == DocType.ProductionReceipt)
+        {
+            FillFromOrderButton.IsEnabled = isEditable && DocOrderCombo.SelectedItem != null;
+        }
+        UpdateOutboundHuButton();
+    }
+
+    private void UpdateOutboundHuButton()
+    {
+        OutboundHuApplyButton.IsEnabled = IsDocEditable()
+                                          && _doc?.Type == DocType.Outbound
+                                          && _selectedDocLine != null
+                                          && _selectedOutboundHu != null;
+    }
+
+    private void LoadOutboundHuCandidates()
+    {
+        _outboundHuCandidates.Clear();
+        _selectedOutboundHu = null;
+        UpdateOutboundHuButton();
+
+        if (_doc?.Type != DocType.Outbound)
+        {
+            OutboundHuPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        OutboundHuPanel.Visibility = Visibility.Visible;
+        if (_selectedDocLine == null)
+        {
+            return;
+        }
+
+        var locationsById = _locations.ToDictionary(location => location.Id, location => location);
+        var rows = _services.DataStore.GetHuStockRows()
+            .Where(row => row.ItemId == _selectedDocLine.ItemId && row.Qty > 0)
+            .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.LocationId)
+            .ToList();
+
+        foreach (var row in rows)
+        {
+            if (string.IsNullOrWhiteSpace(row.HuCode))
+            {
+                continue;
+            }
+
+            var locationLabel = locationsById.TryGetValue(row.LocationId, out var location)
+                ? location.DisplayName
+                : row.LocationId.ToString(CultureInfo.InvariantCulture);
+            _outboundHuCandidates.Add(new OutboundHuCandidate
+            {
+                HuCode = row.HuCode,
+                LocationId = row.LocationId,
+                LocationDisplay = locationLabel,
+                Qty = row.Qty
+            });
+        }
+    }
+
+    private void OutboundHuApply_Click(object sender, RoutedEventArgs e)
+    {
+        if (_doc == null || _doc.Type != DocType.Outbound)
+        {
+            return;
+        }
+
+        if (!EnsureDraftDocSelected())
+        {
+            return;
+        }
+
+        if (_selectedDocLine == null || _selectedOutboundHu == null)
+        {
+            MessageBox.Show("Выберите строку и HU.", "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var line = _services.DataStore.GetDocLines(_doc.Id)
+            .FirstOrDefault(l => l.Id == _selectedDocLine.Id);
+        if (line == null)
+        {
+            MessageBox.Show("Строка не найдена.", "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var maxQty = Math.Min(line.Qty, _selectedOutboundHu.Qty);
+        if (maxQty <= 0)
+        {
+            MessageBox.Show("Недостаточно остатка на выбранном HU.", "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var qtyDialog = new QuantityDialog(maxQty)
+        {
+            Owner = this
+        };
+        if (qtyDialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var qty = qtyDialog.Qty;
+        if (qty <= 0 || qty > maxQty + 0.000001)
+        {
+            MessageBox.Show($"Количество должно быть от 1 до {FormatQty(maxQty)}.", "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var ratio = line.QtyInput.HasValue && line.Qty > 0
+            ? line.QtyInput.Value / line.Qty
+            : (double?)null;
+        var allocatedInput = ratio.HasValue ? ratio.Value * qty : (double?)null;
+        var remainingQty = line.Qty - qty;
+        var remainingInput = ratio.HasValue ? ratio.Value * remainingQty : (double?)null;
+
+        try
+        {
+            if (remainingQty <= 0.000001)
+            {
+                _services.Documents.DeleteDocLine(_doc.Id, line.Id);
+            }
+            else
+            {
+                _services.Documents.UpdateDocLineQty(_doc.Id, line.Id, remainingQty, remainingInput, line.UomCode);
+            }
+
+            _services.Documents.AddDocLine(
+                _doc.Id,
+                line.ItemId,
+                qty,
+                _selectedOutboundHu.LocationId,
+                null,
+                allocatedInput,
+                line.UomCode,
+                _selectedOutboundHu.HuCode,
+                null,
+                line.OrderLineId);
+            LoadDocLines();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void UpdateActionButtons()
@@ -1274,7 +1582,7 @@ public partial class OperationDetailsWindow : Window
 
     private bool HasOrderBinding()
     {
-        return _doc?.OrderId.HasValue == true || DocOrderCombo.SelectedItem != null;
+        return _doc?.Type == DocType.Outbound && (_doc?.OrderId.HasValue == true || DocOrderCombo.SelectedItem != null);
     }
 
     private void TryApplyOrderSelection(OrderOption selected)
@@ -1300,6 +1608,108 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
+    private void TryApplyReceiptOrderSelection(OrderOption selected)
+    {
+        if (_doc == null || _doc.Type != DocType.ProductionReceipt)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Documents.UpdateDocOrderBinding(_doc.Id, selected.Id);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        var existingLines = _services.DataStore.GetDocLines(_doc.Id);
+        if (existingLines.Count > 0)
+        {
+            LoadDoc();
+            return;
+        }
+
+        var toLocation = DocToCombo.SelectedItem as Location;
+        var toHu = GetSelectedHuCode(DocHuCombo);
+        if (toLocation == null || string.IsNullOrWhiteSpace(toHu))
+        {
+            LoadDoc();
+            return;
+        }
+
+        FillProductionReceiptFromOrder(selected.Id, replaceLines: false, showEmptyMessage: false);
+    }
+
+    private void DocFillFromOrder_Click(object sender, RoutedEventArgs e)
+    {
+        if (_doc == null || _doc.Type != DocType.ProductionReceipt)
+        {
+            return;
+        }
+
+        if (!EnsureDraftDocSelected())
+        {
+            return;
+        }
+
+        if (!TryResolveOrder(out var orderOption) || orderOption == null)
+        {
+            MessageBox.Show("Выберите заказ.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var selected = orderOption;
+
+        var existingLines = _services.DataStore.GetDocLines(_doc.Id);
+        var replaceLines = false;
+        if (existingLines.Count > 0)
+        {
+            var confirm = MessageBox.Show(
+                "Заменить текущие строки данными из заказа?",
+                "Выпуск продукции",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question,
+                MessageBoxResult.No);
+            if (confirm != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            replaceLines = true;
+        }
+
+        FillProductionReceiptFromOrder(selected.Id, replaceLines, showEmptyMessage: true);
+    }
+
+    private void FillProductionReceiptFromOrder(long orderId, bool replaceLines, bool showEmptyMessage)
+    {
+        if (_doc == null)
+        {
+            return;
+        }
+
+        if (!TryGetLineLocations(out _, out var toLocation, out _, out var toHu))
+        {
+            return;
+        }
+
+        try
+        {
+            var added = _services.Documents.ApplyOrderToProductionReceipt(_doc.Id, orderId, toLocation?.Id, toHu, replaceLines);
+            LoadDoc();
+            if (showEmptyMessage && added == 0)
+            {
+                MessageBox.Show("Нет позиций для приёмки по выбранному заказу.", "Выпуск продукции", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void ClearDocOrderBinding()
     {
         if (_doc == null || _doc.Status != DocStatus.Draft)
@@ -1310,8 +1720,15 @@ public partial class OperationDetailsWindow : Window
         var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
         try
         {
-            _services.Documents.ClearDocOrder(_doc.Id, partnerId);
-            _orderedQtyByItem.Clear();
+            if (_doc.Type == DocType.Outbound)
+            {
+                _services.Documents.ClearDocOrder(_doc.Id, partnerId);
+                _orderedQtyByOrderLine.Clear();
+            }
+            else if (_doc.Type == DocType.ProductionReceipt)
+            {
+                _services.Documents.UpdateDocOrderBinding(_doc.Id, null);
+            }
             LoadDoc();
         }
         catch (Exception ex)
@@ -1359,23 +1776,39 @@ public partial class OperationDetailsWindow : Window
 
             if (orderOption != null)
             {
-                _services.Documents.UpdateDocHeader(_doc.Id, orderOption.PartnerId, orderOption.OrderRef, huCode);
-                if (!_isPartialShipment || _doc.OrderId != orderOption.Id)
+                var headerPartnerId = _doc.Type == DocType.Outbound ? orderOption.PartnerId : partnerId;
+                _services.Documents.UpdateDocHeader(_doc.Id, headerPartnerId, orderOption.OrderRef, huCode);
+                if (_doc.Type == DocType.Outbound)
                 {
-                    var added = _services.Documents.ApplyOrderToDoc(_doc.Id, orderOption.Id);
-                    LoadOrderQuantities(orderOption.Id);
-                    ResetPartialMode();
-                    if (added == 0)
+                    if (!_isPartialShipment || _doc.OrderId != orderOption.Id)
                     {
-                        MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                        var added = _services.Documents.ApplyOrderToDoc(_doc.Id, orderOption.Id);
+                        LoadOrderQuantities(orderOption.Id);
+                        ResetPartialMode();
+                        if (added == 0)
+                        {
+                            MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                        }
                     }
+                }
+                else if (_doc.Type == DocType.ProductionReceipt)
+                {
+                    _services.Documents.UpdateDocOrderBinding(_doc.Id, orderOption.Id);
                 }
             }
             else
             {
-                _services.Documents.ClearDocOrder(_doc.Id, partnerId);
+                if (_doc.Type == DocType.Outbound)
+                {
+                    _services.Documents.ClearDocOrder(_doc.Id, partnerId);
+                    ResetPartialMode();
+                }
+                else if (_doc.Type == DocType.ProductionReceipt)
+                {
+                    _services.Documents.UpdateDocOrderBinding(_doc.Id, null);
+                }
+
                 _services.Documents.UpdateDocHeader(_doc.Id, partnerId, null, huCode);
-                ResetPartialMode();
             }
 
             if (_doc.Type == DocType.WriteOff)
@@ -1468,31 +1901,15 @@ public partial class OperationDetailsWindow : Window
 
     private void LoadOrderQuantities(long orderId)
     {
-        _orderedQtyByItem.Clear();
-        var orderedByItem = new Dictionary<long, double>();
-        foreach (var line in _services.DataStore.GetOrderLines(orderId))
+        _orderedQtyByOrderLine.Clear();
+        foreach (var line in _services.Documents.GetOrderShipmentRemaining(orderId))
         {
-            if (line.QtyOrdered <= 0)
+            if (line.QtyRemaining <= 0)
             {
                 continue;
             }
 
-            orderedByItem[line.ItemId] = orderedByItem.TryGetValue(line.ItemId, out var current)
-                ? current + line.QtyOrdered
-                : line.QtyOrdered;
-        }
-
-        var shippedByItem = _services.DataStore.GetShippedTotalsByOrder(orderId);
-        foreach (var entry in orderedByItem)
-        {
-            var shipped = shippedByItem.TryGetValue(entry.Key, out var shippedQty) ? shippedQty : 0;
-            var remaining = entry.Value - shipped;
-            if (remaining <= 0)
-            {
-                continue;
-            }
-
-            _orderedQtyByItem[entry.Key] = remaining;
+            _orderedQtyByOrderLine[line.OrderLineId] = line.QtyRemaining;
         }
     }
 
@@ -1504,7 +1921,7 @@ public partial class OperationDetailsWindow : Window
         }
         else
         {
-            _orderedQtyByItem.Clear();
+            _orderedQtyByOrderLine.Clear();
             _isPartialShipment = false;
         }
 
@@ -1533,9 +1950,9 @@ public partial class OperationDetailsWindow : Window
         _suppressPartialSync = false;
     }
 
-    private bool TryGetOrderedQty(long itemId, out double orderedQty)
+    private bool TryGetOrderedQty(long orderLineId, out double orderedQty)
     {
-        return _orderedQtyByItem.TryGetValue(itemId, out orderedQty);
+        return _orderedQtyByOrderLine.TryGetValue(orderLineId, out orderedQty);
     }
 
     private (double? AvailableQty, bool ShowAvailableLabel) GetAvailableQtyForDialog(long itemId)
@@ -2186,6 +2603,7 @@ public partial class OperationDetailsWindow : Window
     {
         public long Id { get; init; }
         public long ItemId { get; init; }
+        public long? OrderLineId { get; init; }
         public string ItemName { get; init; } = string.Empty;
         public double QtyBase { get; init; }
         public double? QtyInput { get; init; }
@@ -2203,9 +2621,22 @@ public partial class OperationDetailsWindow : Window
         public string InventoryDiffQtyDisplay { get; init; } = string.Empty;
         public bool HasInventoryDiff { get; init; }
         public bool IsMarked { get; init; }
+        public string OrderLineDisplay { get; init; } = string.Empty;
+        public string OrderLineHint { get; init; } = string.Empty;
+        public string KmDisplay { get; init; } = string.Empty;
+        public bool KmDistributeEnabled { get; init; }
         public string? HuDisplay { get; init; }
         public string? FromLocation { get; init; }
         public string? ToLocation { get; init; }
+    }
+
+    private sealed class OutboundHuCandidate
+    {
+        public string HuCode { get; init; } = string.Empty;
+        public long LocationId { get; init; }
+        public string LocationDisplay { get; init; } = string.Empty;
+        public double Qty { get; init; }
+        public string QtyDisplay => OperationDetailsWindow.FormatQty(Qty);
     }
 
     private sealed record WriteOffReasonOption(string Code, string Label);

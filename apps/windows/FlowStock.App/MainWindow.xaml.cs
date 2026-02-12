@@ -1718,6 +1718,21 @@ public partial class MainWindow : Window
         OpenSelectedKmBatch();
     }
 
+    private void KmEditBatch_Click(object sender, RoutedEventArgs e)
+    {
+        if (KmBatchesGrid.SelectedItem is not KmCodeBatch batch)
+        {
+            MessageBox.Show("Выберите пакет.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var window = new KmBatchEditWindow(_services, batch, LoadKmBatches)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void KmBatchesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         OpenSelectedKmBatch();

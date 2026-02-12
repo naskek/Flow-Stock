@@ -52,7 +52,7 @@ public sealed class OrderService
 
     public IReadOnlyDictionary<long, double> GetShippedTotals(long orderId)
     {
-        return _data.GetShippedTotalsByOrder(orderId);
+        return _data.GetShippedTotalsByOrderLine(orderId);
     }
 
     public long CreateOrder(string orderRef, long partnerId, DateTime? dueDate, OrderStatus status, string? comment, IReadOnlyList<OrderLineView> lines)
@@ -167,7 +167,7 @@ public sealed class OrderService
             throw new InvalidOperationException("Нельзя удалить заказ: есть отгрузки или связанные документы.");
         }
 
-        var shippedTotals = _data.GetShippedTotalsByOrder(orderId);
+        var shippedTotals = _data.GetShippedTotalsByOrderLine(orderId);
         if (shippedTotals.Values.Any(qty => qty > QtyTolerance))
         {
             throw new InvalidOperationException("Нельзя удалить заказ: есть отгрузки.");
@@ -183,12 +183,12 @@ public sealed class OrderService
     private void ApplyLineMetrics(long orderId, IReadOnlyList<OrderLineView> lines)
     {
         var availableByItem = _data.GetLedgerTotalsByItem();
-        var shippedByItem = _data.GetShippedTotalsByOrder(orderId);
+        var shippedByLine = _data.GetShippedTotalsByOrderLine(orderId);
 
         foreach (var line in lines)
         {
             var available = availableByItem.TryGetValue(line.ItemId, out var availableQty) ? availableQty : 0;
-            var shipped = shippedByItem.TryGetValue(line.ItemId, out var shippedQty) ? shippedQty : 0;
+            var shipped = shippedByLine.TryGetValue(line.Id, out var shippedQty) ? shippedQty : 0;
             var remaining = Math.Max(0, line.QtyOrdered - shipped);
             var availableForShip = Math.Max(0, available);
             var canShip = Math.Min(remaining, availableForShip);
@@ -233,11 +233,11 @@ public sealed class OrderService
     {
         var hasOutbound = _data.HasOutboundDocs(order.Id);
         var lines = _data.GetOrderLines(order.Id);
-        var shippedTotals = _data.GetShippedTotalsByOrder(order.Id);
+        var shippedTotals = _data.GetShippedTotalsByOrderLine(order.Id);
 
         var fullyShipped = lines.Count > 0 && lines.All(line =>
         {
-            var shipped = shippedTotals.TryGetValue(line.ItemId, out var qty) ? qty : 0;
+            var shipped = shippedTotals.TryGetValue(line.Id, out var qty) ? qty : 0;
             return shipped + QtyTolerance >= line.QtyOrdered;
         });
 

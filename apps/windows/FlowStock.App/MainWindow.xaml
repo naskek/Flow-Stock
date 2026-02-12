@@ -302,6 +302,7 @@
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                         <Button Content="Импорт файла..." Click="KmImport_Click" />
                         <Button Content="Открыть пакет" Click="KmOpenBatch_Click" Margin="8,0,0,0" />
+                        <Button Content="Редактировать" Click="KmEditBatch_Click" Margin="8,0,0,0" />
                     </StackPanel>
                     <DataGrid x:Name="KmBatchesGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
                               MouseDoubleClick="KmBatchesGrid_MouseDoubleClick">

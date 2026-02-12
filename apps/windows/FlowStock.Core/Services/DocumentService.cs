@@ -86,6 +86,58 @@ public sealed class DocumentService
         {
             docId = store.AddDoc(doc);
             var (fromHu, toHu) = ResolveHeaderHu(doc.Type, doc.ShippingRef);
+            if (doc.Type == DocType.Outbound)
+            {
+                foreach (var line in store.GetOrderShipmentRemaining(orderId.Value))
+                {
+                    if (line.QtyRemaining <= 0)
+                    {
+                        continue;
+                    }
+
+                    store.AddDocLine(new DocLine
+                    {
+                        DocId = docId,
+                        OrderLineId = line.OrderLineId,
+                        ItemId = line.ItemId,
+                        Qty = line.QtyRemaining,
+                        QtyInput = null,
+                        UomCode = null,
+                        FromLocationId = null,
+                        ToLocationId = null,
+                        FromHu = fromHu,
+                        ToHu = toHu
+                    });
+                }
+                return;
+            }
+
+            if (doc.Type == DocType.ProductionReceipt)
+            {
+                foreach (var line in store.GetOrderReceiptRemaining(orderId.Value))
+                {
+                    if (line.QtyRemaining <= 0)
+                    {
+                        continue;
+                    }
+
+                    store.AddDocLine(new DocLine
+                    {
+                        DocId = docId,
+                        OrderLineId = line.OrderLineId,
+                        ItemId = line.ItemId,
+                        Qty = line.QtyRemaining,
+                        QtyInput = null,
+                        UomCode = null,
+                        FromLocationId = null,
+                        ToLocationId = null,
+                        FromHu = fromHu,
+                        ToHu = toHu
+                    });
+                }
+                return;
+            }
+
             foreach (var line in store.GetOrderLines(orderId.Value))
             {
                 if (line.QtyOrdered <= 0)
@@ -119,6 +171,16 @@ public sealed class DocumentService
     public IReadOnlyList<DocLineView> GetDocLines(long docId)
     {
         return _data.GetDocLineViews(docId);
+    }
+
+    public IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId)
+    {
+        return _data.GetOrderReceiptRemaining(orderId);
+    }
+
+    public IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId)
+    {
+        return _data.GetOrderShipmentRemaining(orderId);
     }
 
     public IReadOnlyList<StockRow> GetStock(string? search)
@@ -469,25 +531,9 @@ public sealed class DocumentService
             store.DeleteDocLines(docId);
             var (fromHu, toHu) = ResolveHeaderHu(doc.Type, doc.ShippingRef);
 
-            var orderedByItem = new Dictionary<long, double>();
-            foreach (var line in store.GetOrderLines(orderId))
+            foreach (var line in store.GetOrderShipmentRemaining(orderId))
             {
-                if (line.QtyOrdered <= 0)
-                {
-                    continue;
-                }
-
-                orderedByItem[line.ItemId] = orderedByItem.TryGetValue(line.ItemId, out var current)
-                    ? current + line.QtyOrdered
-                    : line.QtyOrdered;
-            }
-
-            var shippedByItem = store.GetShippedTotalsByOrder(orderId);
-            foreach (var entry in orderedByItem)
-            {
-                var shipped = shippedByItem.TryGetValue(entry.Key, out var shippedQty) ? shippedQty : 0;
-                var remaining = entry.Value - shipped;
-                if (remaining <= 0)
+                if (line.QtyRemaining <= 0)
                 {
                     continue;
                 }
@@ -495,14 +541,74 @@ public sealed class DocumentService
                 store.AddDocLine(new DocLine
                 {
                     DocId = docId,
-                    ItemId = entry.Key,
-                    Qty = remaining,
+                    OrderLineId = line.OrderLineId,
+                    ItemId = line.ItemId,
+                    Qty = line.QtyRemaining,
                     QtyInput = null,
                     UomCode = null,
                     FromLocationId = null,
                     ToLocationId = null,
                     FromHu = fromHu,
                     ToHu = toHu
+                });
+                addedLines++;
+            }
+        });
+
+        return addedLines;
+    }
+
+    public int ApplyOrderToProductionReceipt(long docId, long orderId, long? toLocationId, string? toHu, bool replaceLines)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        if (doc.Type != DocType.ProductionReceipt)
+        {
+            throw new InvalidOperationException("Документ не является выпуском продукции.");
+        }
+
+        if (!toLocationId.HasValue)
+        {
+            throw new InvalidOperationException("Требуется локация приемки.");
+        }
+
+        var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        var cleanedOrderRef = order.OrderRef.Trim();
+        var normalizedToHu = NormalizeHuValue(toHu);
+
+        var addedLines = 0;
+        _data.ExecuteInTransaction(store =>
+        {
+            store.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
+            if (replaceLines)
+            {
+                store.DeleteDocLines(docId);
+            }
+
+            var remaining = store.GetOrderReceiptRemaining(orderId);
+            foreach (var line in remaining)
+            {
+                if (line.QtyRemaining <= 0)
+                {
+                    continue;
+                }
+
+                store.AddDocLine(new DocLine
+                {
+                    DocId = docId,
+                    OrderLineId = line.OrderLineId,
+                    ItemId = line.ItemId,
+                    Qty = line.QtyRemaining,
+                    QtyInput = null,
+                    UomCode = null,
+                    FromLocationId = null,
+                    ToLocationId = toLocationId,
+                    FromHu = null,
+                    ToHu = normalizedToHu
                 });
                 addedLines++;
             }
@@ -526,7 +632,26 @@ public sealed class DocumentService
         });
     }
 
-    public void AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null, string? fromHu = null, string? toHu = null)
+    public void UpdateDocOrderBinding(long docId, long? orderId)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        if (!orderId.HasValue)
+        {
+            _data.UpdateDocOrder(docId, null, null);
+            return;
+        }
+
+        var order = _data.GetOrder(orderId.Value) ?? throw new InvalidOperationException("Заказ не найден.");
+        var cleanedOrderRef = order.OrderRef.Trim();
+        _data.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
+    }
+
+    public void AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null, string? fromHu = null, string? toHu = null, long? orderLineId = null)
     {
         if (qty <= 0)
         {
@@ -549,6 +674,7 @@ public sealed class DocumentService
         _data.AddDocLine(new DocLine
         {
             DocId = docId,
+            OrderLineId = orderLineId,
             ItemId = itemId,
             Qty = qty,
             QtyInput = qtyInput,
@@ -573,10 +699,56 @@ public sealed class DocumentService
             throw new InvalidOperationException("Документ уже закрыт.");
         }
 
-        var line = _data.GetDocLines(docId).FirstOrDefault(l => l.Id == docLineId);
+        var lines = _data.GetDocLines(docId);
+        var line = lines.FirstOrDefault(l => l.Id == docLineId);
         if (line == null)
         {
             throw new InvalidOperationException("Строка не найдена.");
+        }
+
+        if (doc.Type == DocType.ProductionReceipt && line.OrderLineId.HasValue)
+        {
+            if (!doc.OrderId.HasValue)
+            {
+                throw new InvalidOperationException("Для строки заказа требуется указать заказ в документе.");
+            }
+
+            var remaining = _data.GetOrderReceiptRemaining(doc.OrderId.Value)
+                .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining);
+            if (!remaining.TryGetValue(line.OrderLineId.Value, out var limit))
+            {
+                throw new InvalidOperationException("Строка заказа не найдена.");
+            }
+
+            var total = lines
+                .Where(l => l.OrderLineId == line.OrderLineId)
+                .Sum(l => l.Id == docLineId ? qty : l.Qty);
+            if (total > limit + 0.000001)
+            {
+                throw new InvalidOperationException($"Количество превышает остаток по заказу: доступно {FormatQty(limit)}.");
+            }
+        }
+        else if (doc.Type == DocType.Outbound && line.OrderLineId.HasValue)
+        {
+            if (!doc.OrderId.HasValue)
+            {
+                throw new InvalidOperationException("Для строки заказа требуется указать заказ в документе.");
+            }
+
+            var remaining = _data.GetOrderShipmentRemaining(doc.OrderId.Value)
+                .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining);
+            if (!remaining.TryGetValue(line.OrderLineId.Value, out var limit))
+            {
+                throw new InvalidOperationException("Строка заказа не найдена.");
+            }
+
+            var total = lines
+                .Where(l => l.OrderLineId == line.OrderLineId)
+                .Sum(l => l.Id == docLineId ? qty : l.Qty);
+            if (total > limit + 0.000001)
+            {
+                throw new InvalidOperationException($"Количество превышает остаток по заказу: доступно {FormatQty(limit)}.");
+            }
         }
 
         _data.UpdateDocLineQty(docLineId, qty, qtyInput, uomCode);
@@ -627,6 +799,16 @@ public sealed class DocumentService
             check.Errors.Add("Добавьте хотя бы один товар в документ перед проведением.");
             return check;
         }
+        var receiptRemaining = doc.Type == DocType.ProductionReceipt && doc.OrderId.HasValue
+            ? _data.GetOrderReceiptRemaining(doc.OrderId.Value)
+                .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining)
+            : new Dictionary<long, double>();
+        var receiptRequested = new Dictionary<long, double>();
+        var shipmentRemaining = doc.Type == DocType.Outbound && doc.OrderId.HasValue
+            ? _data.GetOrderShipmentRemaining(doc.OrderId.Value)
+                .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining)
+            : new Dictionary<long, double>();
+        var shipmentRequested = new Dictionary<long, double>();
         var itemsById = _data.GetItems(null).ToDictionary(item => item.Id, item => item);
         var locations = _data.GetLocations();
         var locationsById = locations.ToDictionary(location => location.Id, location => location.Code);
@@ -714,6 +896,35 @@ public sealed class DocumentService
                 }
             }
 
+            if (doc.Type == DocType.ProductionReceipt && line.OrderLineId.HasValue)
+            {
+                if (!doc.OrderId.HasValue)
+                {
+                    check.Errors.Add($"{rowLabel}: не указан заказ документа.");
+                }
+                else
+                {
+                    var orderLineId = line.OrderLineId.Value;
+                    receiptRequested[orderLineId] = receiptRequested.TryGetValue(orderLineId, out var current)
+                        ? current + line.Qty
+                        : line.Qty;
+                }
+            }
+            else if (doc.Type == DocType.Outbound && line.OrderLineId.HasValue)
+            {
+                if (!doc.OrderId.HasValue)
+                {
+                    check.Errors.Add($"{rowLabel}: не указан заказ документа.");
+                }
+                else
+                {
+                    var orderLineId = line.OrderLineId.Value;
+                    shipmentRequested[orderLineId] = shipmentRequested.TryGetValue(orderLineId, out var current)
+                        ? current + line.Qty
+                        : line.Qty;
+                }
+            }
+
             if (doc.Type is DocType.WriteOff or DocType.Move or DocType.Outbound)
             {
                 if (line.Qty > 0 && line.FromLocationId.HasValue)
@@ -762,6 +973,39 @@ public sealed class DocumentService
                 {
                     var itemLabel = itemsById.TryGetValue(entry.Key, out var name) ? name.Name : $"ID {entry.Key}";
                     check.Errors.Add($"{itemLabel}: на складе {FormatQty(current)}, требуется {FormatQty(entry.Value)}.");
+                }
+            }
+        }
+
+        if (doc.Type == DocType.ProductionReceipt && receiptRequested.Count > 0)
+        {
+            foreach (var entry in receiptRequested)
+            {
+                if (!receiptRemaining.TryGetValue(entry.Key, out var remaining))
+                {
+                    check.Errors.Add($"Строка заказа {entry.Key}: не найдена.");
+                    continue;
+                }
+
+                if (entry.Value > remaining + 0.000001)
+                {
+                    check.Errors.Add($"Строка заказа {entry.Key}: превышен остаток {FormatQty(remaining)}.");
+                }
+            }
+        }
+        if (doc.Type == DocType.Outbound && shipmentRequested.Count > 0)
+        {
+            foreach (var entry in shipmentRequested)
+            {
+                if (!shipmentRemaining.TryGetValue(entry.Key, out var remaining))
+                {
+                    check.Errors.Add($"Строка заказа {entry.Key}: не найдена.");
+                    continue;
+                }
+
+                if (entry.Value > remaining + 0.000001)
+                {
+                    check.Errors.Add($"Строка заказа {entry.Key}: превышен остаток {FormatQty(remaining)}.");
                 }
             }
         }
