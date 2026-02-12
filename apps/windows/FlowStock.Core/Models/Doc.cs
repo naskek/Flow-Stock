@@ -16,6 +16,7 @@ public sealed class Doc
     public string? ShippingRef { get; init; }
     public string? ReasonCode { get; init; }
     public string? Comment { get; init; }
+    public string? ProductionBatchNo { get; init; }
     public string? PartnerName { get; init; }
     public string? PartnerCode { get; init; }
     public int LineCount { get; init; }

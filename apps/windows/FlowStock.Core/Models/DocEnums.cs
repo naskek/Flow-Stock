@@ -6,6 +6,7 @@ public enum DocType
     WriteOff,
     Move,
     Inventory,
+    ProductionReceipt,
     Outbound
 }
 
@@ -25,6 +26,7 @@ public static class DocTypeMapper
             "WRITE_OFF" => DocType.WriteOff,
             "MOVE" => DocType.Move,
             "INVENTORY" => DocType.Inventory,
+            "PRODUCTION_RECEIPT" => DocType.ProductionReceipt,
             "OUTBOUND" => DocType.Outbound,
             _ => null
         };
@@ -38,6 +40,7 @@ public static class DocTypeMapper
             DocType.WriteOff => "WRITE_OFF",
             DocType.Move => "MOVE",
             DocType.Inventory => "INVENTORY",
+            DocType.ProductionReceipt => "PRODUCTION_RECEIPT",
             DocType.Outbound => "OUTBOUND",
             _ => "UNKNOWN"
         };
@@ -71,6 +74,7 @@ public static class DocTypeMapper
             DocType.WriteOff => "Списание",
             DocType.Move => "Перемещение",
             DocType.Inventory => "Инвентаризация",
+            DocType.ProductionReceipt => "Выпуск продукции",
             DocType.Outbound => "Отгрузка",
             _ => "Неизвестно"
         };

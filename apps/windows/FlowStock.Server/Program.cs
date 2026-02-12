@@ -1017,7 +1017,7 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
     }
 
     var docType = ParseDocType(createRequest.Type);
-    if (docType == null || docType is not (DocType.Inbound or DocType.Outbound or DocType.Move or DocType.Inventory or DocType.WriteOff))
+    if (docType == null || docType is not (DocType.Inbound or DocType.Outbound or DocType.Move or DocType.Inventory or DocType.WriteOff or DocType.ProductionReceipt))
     {
         return Results.BadRequest(new ApiResult(false, "INVALID_TYPE"));
     }
@@ -1216,7 +1216,7 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
                 }
             }
 
-            if (docType == DocType.Move || docType == DocType.Inbound || docType == DocType.Inventory)
+            if (docType == DocType.Move || docType == DocType.Inbound || docType == DocType.Inventory || docType == DocType.ProductionReceipt)
             {
                 if (!toLocationId.HasValue)
                 {
@@ -1319,7 +1319,7 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         }
     }
 
-    if (!draftOnly && (docType == DocType.Move || docType == DocType.Inbound || docType == DocType.Inventory))
+    if (!draftOnly && (docType == DocType.Move || docType == DocType.Inbound || docType == DocType.Inventory || docType == DocType.ProductionReceipt))
     {
         if (!toLocationIdValue.HasValue)
         {
@@ -1562,6 +1562,14 @@ app.MapPost("/api/docs/{docUid}/lines", async (string docUid, HttpRequest reques
     switch (docType.Value)
     {
         case DocType.Inbound:
+            toLocationId = docInfo.ToLocationId;
+            toHu = NormalizeHu(docInfo.ToHu);
+            if (!toLocationId.HasValue)
+            {
+                return Results.BadRequest(new ApiResult(false, "MISSING_LOCATION"));
+            }
+            break;
+        case DocType.ProductionReceipt:
             toLocationId = docInfo.ToLocationId;
             toHu = NormalizeHu(docInfo.ToHu);
             if (!toLocationId.HasValue)
@@ -1890,6 +1898,7 @@ static string? ResolveDocShippingRef(DocType type, string? fromHu, string? toHu)
     {
         DocType.Inbound => NormalizeHu(toHu),
         DocType.Inventory => NormalizeHu(toHu),
+        DocType.ProductionReceipt => NormalizeHu(toHu),
         DocType.Outbound => NormalizeHu(fromHu),
         DocType.WriteOff => NormalizeHu(fromHu),
         DocType.Move => NormalizeHu(toHu),

@@ -8,6 +8,7 @@ public interface IDataStore
     void ExecuteInTransaction(Action<IDataStore> work);
 
     Item? FindItemByBarcode(string barcode);
+    Item? FindItemByGtin(string gtin);
     Item? FindItemById(long id);
     IReadOnlyList<Item> GetItems(string? search);
     long AddItem(Item item);
@@ -34,6 +35,8 @@ public interface IDataStore
 
     IReadOnlyList<Uom> GetUoms();
     long AddUom(Uom uom);
+    void DeleteUom(long uomId);
+    bool IsUomUsed(long uomId);
 
     IReadOnlyList<Tara> GetTaras();
     long AddTara(Tara tara);
@@ -65,6 +68,7 @@ public interface IDataStore
     void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef);
     void UpdateDocReason(long docId, string? reasonCode);
     void UpdateDocComment(long docId, string? comment);
+    void UpdateDocProductionBatch(long docId, string? productionBatchNo);
     void UpdateDocOrder(long docId, long? orderId, string? orderRef);
     void UpdateDocStatus(long docId, DocStatus status, DateTime? closedAt);
 
@@ -95,6 +99,7 @@ public interface IDataStore
     IReadOnlyList<HuStockRow> GetHuStockRows();
 
     HuRecord CreateHuRecord(string? createdBy);
+    HuRecord CreateHuRecord(string code, string? createdBy);
     HuRecord? GetHuByCode(string code);
     IReadOnlyList<HuRecord> GetHus(string? search, int take);
     void CloseHu(string code, string? closedBy, string? note);
@@ -110,5 +115,24 @@ public interface IDataStore
     long AddItemRequest(ItemRequest request);
     IReadOnlyList<ItemRequest> GetItemRequests(bool includeResolved);
     void MarkItemRequestResolved(long requestId);
+
+    long AddKmCodeBatch(KmCodeBatch batch);
+    void UpdateKmCodeBatchStats(long batchId, int totalCodes, int errorCount);
+    KmCodeBatch? GetKmCodeBatch(long batchId);
+    KmCodeBatch? FindKmCodeBatchByHash(string fileHash);
+    IReadOnlyList<KmCodeBatch> GetKmCodeBatches();
+
+    long AddKmCode(KmCode code);
+    KmCode? FindKmCodeByRaw(string codeRaw);
+    IReadOnlyList<KmCode> GetKmCodesByBatch(long batchId, string? search, KmCodeStatus? status, int take);
+    IReadOnlyList<KmCode> GetKmCodesByReceiptLine(long receiptLineId);
+    IReadOnlyList<KmCode> GetKmCodesByShipmentLine(long shipLineId);
+    int CountKmCodesByBatch(long batchId, KmCodeStatus? status);
+    int CountKmCodesWithoutSku(long batchId);
+    int CountKmCodesByReceiptLine(long receiptLineId);
+    int CountKmCodesByShipmentLine(long shipLineId);
+    IReadOnlyList<long> GetAvailableKmCodeIds(long? batchId, long? orderId, long skuId, string? gtin14, int take);
+    int AssignKmCodesToReceipt(IReadOnlyList<long> codeIds, long docId, long lineId, long? huId, long? locationId);
+    void MarkKmCodeShipped(long codeId, long docId, long lineId, long? orderId);
 }
 

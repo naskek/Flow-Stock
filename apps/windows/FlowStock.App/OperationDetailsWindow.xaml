@@ -54,6 +54,18 @@
                     <TextBlock x:Name="DocToLabel" Text="Куда" />
                     <ComboBox x:Name="DocToCombo" Width="220" Margin="0,4,0,0" DisplayMemberPath="DisplayName" />
                 </StackPanel>
+                <StackPanel x:Name="DocBatchPanel" Margin="0,0,12,0">
+                    <TextBlock Text="Партия производства" />
+                    <TextBox x:Name="DocBatchBox" Width="220" Margin="0,4,0,0"
+                             TextChanged="DocBatchBox_TextChanged" />
+                </StackPanel>
+                <StackPanel x:Name="DocCommentPanel" Margin="0,0,12,0">
+                    <TextBlock Text="Комментарий" />
+                    <TextBox x:Name="DocCommentBox" Width="320" Height="60" Margin="0,4,0,0"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             TextChanged="DocCommentBox_TextChanged" />
+                </StackPanel>
                 <StackPanel x:Name="DocMoveInternalPanel" Margin="0,0,12,0">
                     <TextBlock Text="Перемещение" />
                     <CheckBox x:Name="DocMoveInternalCheck"
@@ -84,6 +96,7 @@
             <Button x:Name="AddItemButton" Content="+ Товар" Click="DocAddLine_Click" />
             <Button x:Name="EditLineButton" Content="Изменить количество..." Click="DocEditLine_Click" Margin="8,0,0,0" />
             <Button x:Name="DeleteLineButton" Content="Удалить строку" Click="DocDeleteLine_Click" Margin="8,0,0,0" />
+            <Button x:Name="KmCodesButton" Content="Коды КМ..." Click="KmCodes_Click" Margin="8,0,0,0" />
         </StackPanel>
         <DataGrid x:Name="DocLinesGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True"
                   SelectionChanged="DocLines_SelectionChanged"
@@ -108,6 +121,7 @@
                 <DataGridTextColumn x:Name="DocInventoryDbColumn" Header="В базе" Binding="{Binding InventoryDbQtyDisplay}" Width="140" />
                 <DataGridTextColumn x:Name="DocInventoryDiffColumn" Header="Расхождение" Binding="{Binding InventoryDiffQtyDisplay}" Width="140" />
                 <DataGridTextColumn Header="Доступно" Binding="{Binding AvailableQty, StringFormat={}{0:0.###}}" Width="140" />
+                <DataGridTextColumn x:Name="DocHuColumn" Header="HU" Binding="{Binding HuDisplay}" Width="180" />
                 <DataGridTextColumn x:Name="DocFromColumn" Header="Откуда" Binding="{Binding FromLocation}" Width="220" />
                 <DataGridTextColumn x:Name="DocToColumn" Header="Куда" Binding="{Binding ToLocation}" Width="220" />
             </DataGrid.Columns>

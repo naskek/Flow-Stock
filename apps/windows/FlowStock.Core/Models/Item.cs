@@ -13,4 +13,5 @@ public sealed class Item
     public int? ShelfLifeMonths { get; init; }
     public long? TaraId { get; init; }
     public string? TaraName { get; init; }
+    public bool IsMarked { get; init; }
 }

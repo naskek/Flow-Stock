@@ -19,6 +19,7 @@ public partial class NewDocWindow : Window
         var typeOrder = new[]
         {
             DocType.Inbound,
+            DocType.ProductionReceipt,
             DocType.Outbound,
             DocType.Move,
             DocType.WriteOff,

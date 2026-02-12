@@ -395,7 +395,8 @@ public sealed class ImportService
                     Barcode = barcode,
                     Gtin = gtin,
                     BaseUom = baseUom,
-                    DefaultPackagingId = null
+                    DefaultPackagingId = null,
+                    IsMarked = false
                 });
                 existing = store.FindItemById(itemId);
             }
@@ -408,7 +409,8 @@ public sealed class ImportService
                     Barcode = barcode ?? existing.Barcode,
                     Gtin = gtin ?? existing.Gtin,
                     BaseUom = baseUom,
-                    DefaultPackagingId = existing.DefaultPackagingId
+                    DefaultPackagingId = existing.DefaultPackagingId,
+                    IsMarked = existing.IsMarked
                 });
             }
 
@@ -442,7 +444,8 @@ public sealed class ImportService
                 Barcode = code,
                 Gtin = null,
                 BaseUom = "шт",
-                DefaultPackagingId = null
+                DefaultPackagingId = null,
+                IsMarked = false
             });
             return store.FindItemById(itemId);
         }
@@ -553,6 +556,8 @@ public sealed class ImportService
         switch (importEvent.Type)
         {
             case DocType.Inbound:
+                return to != null ? (null, to, true) : (null, null, false);
+            case DocType.ProductionReceipt:
                 return to != null ? (null, to, true) : (null, null, false);
             case DocType.WriteOff:
                 return from != null ? (from, null, true) : (null, null, false);
@@ -868,6 +873,7 @@ public sealed class ImportService
         {
             DocType.Inbound => (null, normalized),
             DocType.Inventory => (null, normalized),
+            DocType.ProductionReceipt => (null, normalized),
             DocType.Outbound => (normalized, null),
             DocType.WriteOff => (normalized, null),
             _ => (null, null)

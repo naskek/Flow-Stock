@@ -574,7 +574,7 @@ public partial class ItemImportPreviewWindow : Window
 
             try
             {
-                _services.Catalog.CreateItem(name, barcode, gtin, null, brand, volume, shelfLifeMonths, taraId);
+                _services.Catalog.CreateItem(name, barcode, gtin, null, brand, volume, shelfLifeMonths, taraId, false);
                 created++;
             }
             catch (ArgumentException)

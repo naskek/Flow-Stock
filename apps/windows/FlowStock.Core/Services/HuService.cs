@@ -1,3 +1,4 @@
+using System;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 
@@ -16,6 +17,28 @@ public sealed class HuService
     public HuRecord CreateHu(string? createdBy = null)
     {
         return _data.CreateHuRecord(createdBy);
+    }
+
+    public HuRecord CreateHuWithCode(string code, string? createdBy = null)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            throw new ArgumentException("HU не задан.");
+        }
+
+        var normalized = code.Trim().ToUpperInvariant();
+        if (!normalized.StartsWith("HU-", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("Некорректный формат HU.");
+        }
+
+        var existing = _data.GetHuByCode(normalized);
+        if (existing != null)
+        {
+            return existing;
+        }
+
+        return _data.CreateHuRecord(normalized, createdBy);
     }
 
     public IReadOnlyList<string> Generate(int count, string? createdBy = null)

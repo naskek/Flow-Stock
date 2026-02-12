@@ -9,6 +9,7 @@ public partial class UomWindow : Window
     private readonly AppServices _services;
     private readonly Action? _onChanged;
     private readonly ObservableCollection<Uom> _uoms = new();
+    private Uom? _selectedUom;
 
     public UomWindow(AppServices services, Action? onChanged)
     {
@@ -18,6 +19,7 @@ public partial class UomWindow : Window
 
         UomsGrid.ItemsSource = _uoms;
         LoadUoms();
+        UpdateDeleteButton();
     }
 
     private void LoadUoms()
@@ -27,6 +29,8 @@ public partial class UomWindow : Window
         {
             _uoms.Add(uom);
         }
+
+        UpdateDeleteButton();
     }
 
     private void AddUom_Click(object sender, RoutedEventArgs e)
@@ -51,6 +55,59 @@ public partial class UomWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void DeleteUom_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedUom == null)
+        {
+            MessageBox.Show("Выберите единицу измерения.", "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"Удалить единицу измерения \"{_selectedUom.Name}\"?",
+            "Ед. измерения",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Catalog.DeleteUom(_selectedUom.Id);
+            LoadUoms();
+            _onChanged?.Invoke();
+        }
+        catch (ArgumentException ex)
+        {
+            MessageBox.Show(ex.Message, "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(ex.Message, "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Ед. измерения", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void UomsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        _selectedUom = UomsGrid.SelectedItem as Uom;
+        UpdateDeleteButton();
+    }
+
+    private void UpdateDeleteButton()
+    {
+        if (DeleteUomButton != null)
+        {
+            DeleteUomButton.IsEnabled = _selectedUom != null;
         }
     }
 

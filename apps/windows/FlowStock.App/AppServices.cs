@@ -13,6 +13,7 @@ public sealed class AppServices
     public DocumentService Documents { get; }
     public OrderService Orders { get; }
     public ImportService Import { get; }
+    public KmService Km { get; }
     public SettingsService Settings { get; }
     public HuService Hus { get; }
     public BackupService Backups { get; }
@@ -52,6 +53,7 @@ public sealed class AppServices
         Settings = new SettingsService(settingsPath);
         Hus = new HuService(dataStore);
         Import = new ImportService(dataStore);
+        Km = new KmService(dataStore);
         Backups = new BackupService(connectionString, backupsDir, appLogger);
         AdminAuth = new AdminAuthService(adminPath, adminLogger);
         Admin = new AdminService(connectionString, dataStore, Backups, adminLogger);

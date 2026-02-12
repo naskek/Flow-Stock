@@ -12,7 +12,7 @@ public sealed class PostgresDataStore : IDataStore
     private readonly NpgsqlTransaction? _transaction;
     private const string DocSelectBase =
         "SELECT d.id, d.doc_ref, d.type, d.status, d.created_at, d.closed_at, d.partner_id, d.order_id, d.order_ref, d.shipping_ref, d.reason_code, d.comment, p.name, p.code, " +
-        "COALESCE(dl.line_count, 0) AS line_count, ad.device_id, ad.doc_uid " +
+        "COALESCE(dl.line_count, 0) AS line_count, ad.device_id, ad.doc_uid, d.production_batch_no " +
         "FROM docs d " +
         "LEFT JOIN partners p ON p.id = d.partner_id " +
         "LEFT JOIN (SELECT doc_id, COUNT(*) AS line_count FROM doc_lines GROUP BY doc_id) dl ON dl.doc_id = d.id " +
@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS items (
     brand TEXT,
     volume TEXT,
     shelf_life_months INTEGER,
-    tara_id BIGINT
+    tara_id BIGINT,
+    is_marked INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS uoms (
     id BIGSERIAL PRIMARY KEY,
@@ -130,6 +131,7 @@ CREATE TABLE IF NOT EXISTS docs (
     shipping_ref TEXT,
     reason_code TEXT,
     comment TEXT,
+    production_batch_no TEXT,
     FOREIGN KEY (partner_id) REFERENCES partners(id),
     FOREIGN KEY (order_id) REFERENCES orders(id)
 );
@@ -232,6 +234,48 @@ CREATE TABLE IF NOT EXISTS tsd_devices (
 );
 CREATE INDEX IF NOT EXISTS ix_tsd_devices_login ON tsd_devices(login);
 CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
+CREATE TABLE IF NOT EXISTS km_code_batch (
+    id BIGSERIAL PRIMARY KEY,
+    order_id BIGINT,
+    file_name TEXT,
+    file_hash TEXT NOT NULL UNIQUE,
+    imported_at TEXT NOT NULL,
+    imported_by TEXT,
+    total_codes INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (order_id) REFERENCES orders(id)
+);
+CREATE INDEX IF NOT EXISTS ix_km_code_batch_order ON km_code_batch(order_id);
+CREATE TABLE IF NOT EXISTS km_code (
+    id BIGSERIAL PRIMARY KEY,
+    batch_id BIGINT NOT NULL,
+    code_raw TEXT NOT NULL UNIQUE,
+    gtin14 CHAR(14),
+    sku_id BIGINT,
+    product_name TEXT,
+    status SMALLINT NOT NULL,
+    receipt_doc_id BIGINT,
+    receipt_line_id BIGINT,
+    hu_id BIGINT,
+    location_id BIGINT,
+    ship_doc_id BIGINT,
+    ship_line_id BIGINT,
+    order_id BIGINT,
+    FOREIGN KEY (batch_id) REFERENCES km_code_batch(id),
+    FOREIGN KEY (sku_id) REFERENCES items(id),
+    FOREIGN KEY (receipt_doc_id) REFERENCES docs(id),
+    FOREIGN KEY (ship_doc_id) REFERENCES docs(id),
+    FOREIGN KEY (hu_id) REFERENCES hus(id),
+    FOREIGN KEY (location_id) REFERENCES locations(id),
+    FOREIGN KEY (order_id) REFERENCES orders(id)
+);
+CREATE INDEX IF NOT EXISTS idx_km_code_batch_id ON km_code(batch_id);
+CREATE INDEX IF NOT EXISTS idx_km_code_status ON km_code(status);
+CREATE INDEX IF NOT EXISTS idx_km_code_gtin14 ON km_code(gtin14);
+CREATE INDEX IF NOT EXISTS idx_km_code_sku_id ON km_code(sku_id);
+CREATE INDEX IF NOT EXISTS idx_km_code_receipt_doc_id ON km_code(receipt_doc_id);
+CREATE INDEX IF NOT EXISTS idx_km_code_ship_doc_id ON km_code(ship_doc_id);
+CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
 ";
         command.ExecuteNonQuery();
 
@@ -243,6 +287,7 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
         EnsureColumn(connection, "items", "volume", "TEXT");
         EnsureColumn(connection, "items", "shelf_life_months", "INTEGER");
         EnsureColumn(connection, "items", "tara_id", "BIGINT");
+        EnsureColumn(connection, "items", "is_marked", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "partners", "created_at", "TEXT");
         EnsureColumn(connection, "docs", "partner_id", "BIGINT");
         EnsureColumn(connection, "docs", "order_id", "BIGINT");
@@ -250,6 +295,7 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
         EnsureColumn(connection, "docs", "shipping_ref", "TEXT");
         EnsureColumn(connection, "docs", "reason_code", "TEXT");
         EnsureColumn(connection, "docs", "comment", "TEXT");
+        EnsureColumn(connection, "docs", "production_batch_no", "TEXT");
         EnsureColumn(connection, "doc_lines", "qty_input", "REAL");
         EnsureColumn(connection, "doc_lines", "uom_code", "TEXT");
         EnsureColumn(connection, "doc_lines", "from_hu", "TEXT");
@@ -302,8 +348,19 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
             command.Parameters.AddWithValue("@barcode", barcode);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadItem(reader) : null;
+        });
+    }
+
+    public Item? FindItemByGtin(string gtin)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.gtin = @gtin");
+            command.Parameters.AddWithValue("@gtin", gtin);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
         });
@@ -313,7 +370,7 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.id = @id");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.id = @id");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -346,8 +403,8 @@ CREATE INDEX IF NOT EXISTS ix_tsd_devices_device_id ON tsd_devices(device_id);
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO items(name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, tara_id)
-VALUES(@name, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @tara_id)
+INSERT INTO items(name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, tara_id, is_marked)
+VALUES(@name, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @tara_id, @is_marked)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -359,6 +416,7 @@ RETURNING id;
             command.Parameters.AddWithValue("@volume", string.IsNullOrWhiteSpace(item.Volume) ? DBNull.Value : item.Volume.Trim());
             command.Parameters.AddWithValue("@shelf_life_months", item.ShelfLifeMonths.HasValue ? item.ShelfLifeMonths.Value : DBNull.Value);
             command.Parameters.AddWithValue("@tara_id", item.TaraId.HasValue ? item.TaraId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@is_marked", item.IsMarked ? 1 : 0);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -389,7 +447,8 @@ SET name = @name,
     brand = @brand,
     volume = @volume,
     shelf_life_months = @shelf_life_months,
-    tara_id = @tara_id
+    tara_id = @tara_id,
+    is_marked = @is_marked
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -401,6 +460,7 @@ WHERE id = @id;
             command.Parameters.AddWithValue("@volume", string.IsNullOrWhiteSpace(item.Volume) ? DBNull.Value : item.Volume.Trim());
             command.Parameters.AddWithValue("@shelf_life_months", item.ShelfLifeMonths.HasValue ? item.ShelfLifeMonths.Value : DBNull.Value);
             command.Parameters.AddWithValue("@tara_id", item.TaraId.HasValue ? item.TaraId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@is_marked", item.IsMarked ? 1 : 0);
             command.Parameters.AddWithValue("@id", item.Id);
             command.ExecuteNonQuery();
             return 0;
@@ -697,6 +757,33 @@ RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", uom.Name);
             return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void DeleteUom(long uomId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM uoms WHERE id = @id");
+            command.Parameters.AddWithValue("@id", uomId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public bool IsUomUsed(long uomId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+SELECT 1
+FROM items i
+JOIN uoms u ON LOWER(i.base_uom) = LOWER(u.name)
+WHERE u.id = @id
+LIMIT 1;
+");
+            command.Parameters.AddWithValue("@id", uomId);
+            return command.ExecuteScalar() != null;
         });
     }
 
@@ -1017,8 +1104,8 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO docs(doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment)
-VALUES(@doc_ref, @type, @status, @created_at, @closed_at, @partner_id, @order_id, @order_ref, @shipping_ref, @reason_code, @comment)
+INSERT INTO docs(doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment, production_batch_no)
+VALUES(@doc_ref, @type, @status, @created_at, @closed_at, @partner_id, @order_id, @order_ref, @shipping_ref, @reason_code, @comment, @production_batch_no)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@doc_ref", doc.DocRef);
@@ -1032,6 +1119,7 @@ RETURNING id;
             command.Parameters.AddWithValue("@shipping_ref", string.IsNullOrWhiteSpace(doc.ShippingRef) ? DBNull.Value : doc.ShippingRef);
             command.Parameters.AddWithValue("@reason_code", string.IsNullOrWhiteSpace(doc.ReasonCode) ? DBNull.Value : doc.ReasonCode);
             command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(doc.Comment) ? DBNull.Value : doc.Comment);
+            command.Parameters.AddWithValue("@production_batch_no", string.IsNullOrWhiteSpace(doc.ProductionBatchNo) ? DBNull.Value : doc.ProductionBatchNo);
             return (long)(command.ExecuteScalar() ?? 0L);
         });
     }
@@ -1196,6 +1284,22 @@ SET comment = @comment
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(comment) ? DBNull.Value : comment);
+            command.Parameters.AddWithValue("@id", docId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateDocProductionBatch(long docId, string? productionBatchNo)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE docs
+SET production_batch_no = @production_batch_no
+WHERE id = @id;
+");
+            command.Parameters.AddWithValue("@production_batch_no", string.IsNullOrWhiteSpace(productionBatchNo) ? DBNull.Value : productionBatchNo);
             command.Parameters.AddWithValue("@id", docId);
             command.ExecuteNonQuery();
             return 0;
@@ -1767,6 +1871,45 @@ RETURNING id;
         });
     }
 
+    public HuRecord CreateHuRecord(string code, string? createdBy)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            throw new ArgumentException("HU не задан.", nameof(code));
+        }
+
+        return WithConnection(connection =>
+        {
+            var normalized = code.Trim().ToUpperInvariant();
+            var createdAt = DateTime.Now;
+
+            using var insert = CreateCommand(connection, @"
+INSERT INTO hus(hu_code, status, created_at, created_by)
+VALUES(@hu_code, 'ACTIVE', @created_at, @created_by)
+ON CONFLICT (hu_code) DO NOTHING;
+");
+            insert.Parameters.AddWithValue("@hu_code", normalized);
+            insert.Parameters.AddWithValue("@created_at", ToDbDate(createdAt));
+            insert.Parameters.AddWithValue("@created_by", string.IsNullOrWhiteSpace(createdBy) ? DBNull.Value : createdBy.Trim());
+            insert.ExecuteNonQuery();
+
+            using var select = CreateCommand(connection, @"
+SELECT id, hu_code, status, created_at, created_by, closed_at, note
+FROM hus
+WHERE hu_code = @code
+LIMIT 1;
+");
+            select.Parameters.AddWithValue("@code", normalized);
+            using var reader = select.ExecuteReader();
+            if (!reader.Read())
+            {
+                throw new InvalidOperationException("Не удалось создать HU.");
+            }
+
+            return ReadHuRecord(reader);
+        });
+    }
+
     public HuRecord? GetHuByCode(string code)
     {
         if (string.IsNullOrWhiteSpace(code))
@@ -2016,7 +2159,8 @@ RETURNING id;
             Volume = reader.IsDBNull(7) ? null : reader.GetString(7),
             ShelfLifeMonths = reader.IsDBNull(8) ? null : reader.GetInt32(8),
             TaraId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
-            TaraName = reader.IsDBNull(10) ? null : reader.GetString(10)
+            IsMarked = !reader.IsDBNull(10) && reader.GetInt64(10) != 0,
+            TaraName = reader.IsDBNull(11) ? null : reader.GetString(11)
         };
     }
 
@@ -2084,6 +2228,7 @@ RETURNING id;
         string? shippingRef = null;
         string? reasonCode = null;
         string? comment = null;
+        string? productionBatchNo = null;
         string? partnerName = null;
         string? partnerCode = null;
         var lineCount = 0;
@@ -2145,6 +2290,11 @@ RETURNING id;
             apiDocUid = reader.GetString(16);
         }
 
+        if (reader.FieldCount > 17 && !reader.IsDBNull(17))
+        {
+            productionBatchNo = reader.GetString(17);
+        }
+
         return new Doc
         {
             Id = reader.GetInt64(0),
@@ -2159,6 +2309,7 @@ RETURNING id;
             ShippingRef = shippingRef,
             ReasonCode = reasonCode,
             Comment = comment,
+            ProductionBatchNo = productionBatchNo,
             PartnerName = partnerName,
             PartnerCode = partnerCode,
             LineCount = lineCount,
@@ -2368,10 +2519,10 @@ ON CONFLICT (hu_code) DO NOTHING;";
     {
         if (string.IsNullOrWhiteSpace(search))
         {
-            return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id ORDER BY i.name";
+            return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id ORDER BY i.name";
         }
 
-        return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
+        return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
     }
 
     private static string BuildStockQuery(string? search)
@@ -2452,6 +2603,411 @@ RETURNING id;");
             command.ExecuteNonQuery();
             return 0;
         });
+    }
+
+    public long AddKmCodeBatch(KmCodeBatch batch)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO km_code_batch(order_id, file_name, file_hash, imported_at, imported_by, total_codes, error_count)
+VALUES(@order_id, @file_name, @file_hash, @imported_at, @imported_by, @total_codes, @error_count)
+RETURNING id;");
+            command.Parameters.AddWithValue("@order_id", batch.OrderId.HasValue ? batch.OrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@file_name", string.IsNullOrWhiteSpace(batch.FileName) ? DBNull.Value : batch.FileName.Trim());
+            command.Parameters.AddWithValue("@file_hash", batch.FileHash);
+            command.Parameters.AddWithValue("@imported_at", ToDbDate(batch.ImportedAt));
+            command.Parameters.AddWithValue("@imported_by", string.IsNullOrWhiteSpace(batch.ImportedBy) ? DBNull.Value : batch.ImportedBy.Trim());
+            command.Parameters.AddWithValue("@total_codes", batch.TotalCodes);
+            command.Parameters.AddWithValue("@error_count", batch.ErrorCount);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateKmCodeBatchStats(long batchId, int totalCodes, int errorCount)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE km_code_batch SET total_codes = @total_codes, error_count = @error_count WHERE id = @id");
+            command.Parameters.AddWithValue("@total_codes", totalCodes);
+            command.Parameters.AddWithValue("@error_count", errorCount);
+            command.Parameters.AddWithValue("@id", batchId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public KmCodeBatch? GetKmCodeBatch(long batchId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildKmBatchQuery("WHERE b.id = @id"));
+            command.Parameters.AddWithValue("@id", batchId);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadKmCodeBatch(reader) : null;
+        });
+    }
+
+    public KmCodeBatch? FindKmCodeBatchByHash(string fileHash)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildKmBatchQuery("WHERE b.file_hash = @hash"));
+            command.Parameters.AddWithValue("@hash", fileHash);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadKmCodeBatch(reader) : null;
+        });
+    }
+
+    public IReadOnlyList<KmCodeBatch> GetKmCodeBatches()
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildKmBatchQuery(string.Empty) + " ORDER BY b.imported_at DESC, b.id DESC");
+            using var reader = command.ExecuteReader();
+            var list = new List<KmCodeBatch>();
+            while (reader.Read())
+            {
+                list.Add(ReadKmCodeBatch(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public long AddKmCode(KmCode code)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO km_code(batch_id, code_raw, gtin14, sku_id, product_name, status, receipt_doc_id, receipt_line_id, hu_id, location_id, ship_doc_id, ship_line_id, order_id)
+VALUES(@batch_id, @code_raw, @gtin14, @sku_id, @product_name, @status, @receipt_doc_id, @receipt_line_id, @hu_id, @location_id, @ship_doc_id, @ship_line_id, @order_id)
+RETURNING id;");
+            command.Parameters.AddWithValue("@batch_id", code.BatchId);
+            command.Parameters.AddWithValue("@code_raw", code.CodeRaw);
+            command.Parameters.AddWithValue("@gtin14", string.IsNullOrWhiteSpace(code.Gtin14) ? DBNull.Value : code.Gtin14.Trim());
+            command.Parameters.AddWithValue("@sku_id", code.SkuId.HasValue ? code.SkuId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@product_name", string.IsNullOrWhiteSpace(code.ProductName) ? DBNull.Value : code.ProductName.Trim());
+            command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(code.Status));
+            command.Parameters.AddWithValue("@receipt_doc_id", code.ReceiptDocId.HasValue ? code.ReceiptDocId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@receipt_line_id", code.ReceiptLineId.HasValue ? code.ReceiptLineId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@hu_id", code.HuId.HasValue ? code.HuId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@location_id", code.LocationId.HasValue ? code.LocationId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@ship_doc_id", code.ShipDocId.HasValue ? code.ShipDocId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@ship_line_id", code.ShipLineId.HasValue ? code.ShipLineId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@order_id", code.OrderId.HasValue ? code.OrderId.Value : DBNull.Value);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public KmCode? FindKmCodeByRaw(string codeRaw)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildKmCodeQuery("WHERE c.code_raw = @code_raw"));
+            command.Parameters.AddWithValue("@code_raw", codeRaw);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? ReadKmCode(reader) : null;
+        });
+    }
+
+    public IReadOnlyList<KmCode> GetKmCodesByBatch(long batchId, string? search, KmCodeStatus? status, int take)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = BuildKmCodeQuery("WHERE c.batch_id = @batch_id");
+            if (status.HasValue)
+            {
+                sql += " AND c.status = @status";
+            }
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                sql += " AND c.code_raw ILIKE @search";
+            }
+            sql += " ORDER BY c.id LIMIT @take";
+            using var command = CreateCommand(connection, sql);
+            command.Parameters.AddWithValue("@batch_id", batchId);
+            command.Parameters.AddWithValue("@take", take);
+            if (status.HasValue)
+            {
+                command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(status.Value));
+            }
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                command.Parameters.AddWithValue("@search", $"%{search.Trim()}%");
+            }
+            using var reader = command.ExecuteReader();
+            var list = new List<KmCode>();
+            while (reader.Read())
+            {
+                list.Add(ReadKmCode(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public IReadOnlyList<KmCode> GetKmCodesByReceiptLine(long receiptLineId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildKmCodeQuery("WHERE c.receipt_line_id = @line_id ORDER BY c.id"));
+            command.Parameters.AddWithValue("@line_id", receiptLineId);
+            using var reader = command.ExecuteReader();
+            var list = new List<KmCode>();
+            while (reader.Read())
+            {
+                list.Add(ReadKmCode(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public IReadOnlyList<KmCode> GetKmCodesByShipmentLine(long shipLineId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, BuildKmCodeQuery("WHERE c.ship_line_id = @line_id ORDER BY c.id"));
+            command.Parameters.AddWithValue("@line_id", shipLineId);
+            using var reader = command.ExecuteReader();
+            var list = new List<KmCode>();
+            while (reader.Read())
+            {
+                list.Add(ReadKmCode(reader));
+            }
+
+            return list;
+        });
+    }
+
+    public int CountKmCodesByBatch(long batchId, KmCodeStatus? status)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = "SELECT COUNT(*) FROM km_code WHERE batch_id = @batch_id";
+            if (status.HasValue)
+            {
+                sql += " AND status = @status";
+            }
+            using var command = CreateCommand(connection, sql);
+            command.Parameters.AddWithValue("@batch_id", batchId);
+            if (status.HasValue)
+            {
+                command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(status.Value));
+            }
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public int CountKmCodesWithoutSku(long batchId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT COUNT(*) FROM km_code WHERE batch_id = @batch_id AND sku_id IS NULL");
+            command.Parameters.AddWithValue("@batch_id", batchId);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public int CountKmCodesByReceiptLine(long receiptLineId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT COUNT(*) FROM km_code WHERE receipt_line_id = @line_id");
+            command.Parameters.AddWithValue("@line_id", receiptLineId);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public int CountKmCodesByShipmentLine(long shipLineId)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT COUNT(*) FROM km_code WHERE ship_line_id = @line_id");
+            command.Parameters.AddWithValue("@line_id", shipLineId);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public IReadOnlyList<long> GetAvailableKmCodeIds(long? batchId, long? orderId, long skuId, string? gtin14, int take)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = @"
+SELECT c.id
+FROM km_code c
+WHERE c.status = @status
+  AND (c.sku_id = @sku_id OR (c.sku_id IS NULL AND @gtin14 IS NOT NULL AND c.gtin14 = @gtin14))
+  AND (@batch_id IS NULL OR c.batch_id = @batch_id)
+  AND (@order_id IS NULL OR c.order_id = @order_id)
+ORDER BY c.id
+LIMIT @take;";
+            using var command = CreateCommand(connection, sql);
+            command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.Imported));
+            command.Parameters.AddWithValue("@sku_id", skuId);
+            command.Parameters.AddWithValue("@gtin14", string.IsNullOrWhiteSpace(gtin14) ? DBNull.Value : gtin14.Trim());
+            command.Parameters.AddWithValue("@batch_id", batchId.HasValue ? batchId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@order_id", orderId.HasValue ? orderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@take", take);
+            using var reader = command.ExecuteReader();
+            var list = new List<long>();
+            while (reader.Read())
+            {
+                list.Add(reader.GetInt64(0));
+            }
+
+            return list;
+        });
+    }
+
+    public int AssignKmCodesToReceipt(IReadOnlyList<long> codeIds, long docId, long lineId, long? huId, long? locationId)
+    {
+        return WithConnection(connection =>
+        {
+            var updated = 0;
+            foreach (var id in codeIds)
+            {
+                using var command = CreateCommand(connection, @"
+UPDATE km_code
+SET status = @status,
+    receipt_doc_id = @doc_id,
+    receipt_line_id = @line_id,
+    hu_id = @hu_id,
+    location_id = @location_id
+WHERE id = @id AND status = @expected_status;");
+                command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.OnHand));
+                command.Parameters.AddWithValue("@expected_status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.Imported));
+                command.Parameters.AddWithValue("@doc_id", docId);
+                command.Parameters.AddWithValue("@line_id", lineId);
+                command.Parameters.AddWithValue("@hu_id", huId.HasValue ? huId.Value : DBNull.Value);
+                command.Parameters.AddWithValue("@location_id", locationId.HasValue ? locationId.Value : DBNull.Value);
+                command.Parameters.AddWithValue("@id", id);
+                updated += command.ExecuteNonQuery();
+            }
+
+            return updated;
+        });
+    }
+
+    public void MarkKmCodeShipped(long codeId, long docId, long lineId, long? orderId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE km_code
+SET status = @status,
+    ship_doc_id = @doc_id,
+    ship_line_id = @line_id,
+    order_id = @order_id
+WHERE id = @id AND status = @expected_status;");
+            command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.Shipped));
+            command.Parameters.AddWithValue("@expected_status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.OnHand));
+            command.Parameters.AddWithValue("@doc_id", docId);
+            command.Parameters.AddWithValue("@line_id", lineId);
+            command.Parameters.AddWithValue("@order_id", orderId.HasValue ? orderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@id", codeId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    private static string BuildKmBatchQuery(string whereClause)
+    {
+        var sql = @"
+SELECT b.id,
+       b.order_id,
+       o.order_ref,
+       b.file_name,
+       b.file_hash,
+       b.imported_at,
+       b.imported_by,
+       b.total_codes,
+       b.error_count
+FROM km_code_batch b
+LEFT JOIN orders o ON o.id = b.order_id
+";
+        if (!string.IsNullOrWhiteSpace(whereClause))
+        {
+            sql += whereClause + "\n";
+        }
+
+        return sql;
+    }
+
+    private static string BuildKmCodeQuery(string whereClause)
+    {
+        var sql = @"
+SELECT c.id,
+       c.batch_id,
+       c.code_raw,
+       c.gtin14,
+       c.sku_id,
+       i.name,
+       i.barcode,
+       c.product_name,
+       c.status,
+       c.receipt_doc_id,
+       c.receipt_line_id,
+       c.hu_id,
+       h.hu_code,
+       c.location_id,
+       l.code,
+       c.ship_doc_id,
+       c.ship_line_id,
+       c.order_id
+FROM km_code c
+LEFT JOIN items i ON i.id = c.sku_id
+LEFT JOIN hus h ON h.id = c.hu_id
+LEFT JOIN locations l ON l.id = c.location_id
+";
+        if (!string.IsNullOrWhiteSpace(whereClause))
+        {
+            sql += whereClause + "\n";
+        }
+
+        return sql;
+    }
+
+    private static KmCodeBatch ReadKmCodeBatch(NpgsqlDataReader reader)
+    {
+        return new KmCodeBatch
+        {
+            Id = reader.GetInt64(0),
+            OrderId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
+            OrderRef = reader.IsDBNull(2) ? null : reader.GetString(2),
+            FileName = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+            FileHash = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+            ImportedAt = FromDbDate(reader.IsDBNull(5) ? null : reader.GetString(5)) ?? DateTime.MinValue,
+            ImportedBy = reader.IsDBNull(6) ? null : reader.GetString(6),
+            TotalCodes = reader.IsDBNull(7) ? 0 : reader.GetInt32(7),
+            ErrorCount = reader.IsDBNull(8) ? 0 : reader.GetInt32(8)
+        };
+    }
+
+    private static KmCode ReadKmCode(NpgsqlDataReader reader)
+    {
+        return new KmCode
+        {
+            Id = reader.GetInt64(0),
+            BatchId = reader.GetInt64(1),
+            CodeRaw = reader.GetString(2),
+            Gtin14 = reader.IsDBNull(3) ? null : reader.GetString(3),
+            SkuId = reader.IsDBNull(4) ? null : reader.GetInt64(4),
+            SkuName = reader.IsDBNull(5) ? null : reader.GetString(5),
+            SkuBarcode = reader.IsDBNull(6) ? null : reader.GetString(6),
+            ProductName = reader.IsDBNull(7) ? null : reader.GetString(7),
+            Status = KmCodeStatusMapper.FromInt(reader.IsDBNull(8) ? 0 : reader.GetInt16(8)),
+            ReceiptDocId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+            ReceiptLineId = reader.IsDBNull(10) ? null : reader.GetInt64(10),
+            HuId = reader.IsDBNull(11) ? null : reader.GetInt64(11),
+            HuCode = reader.IsDBNull(12) ? null : reader.GetString(12),
+            LocationId = reader.IsDBNull(13) ? null : reader.GetInt64(13),
+            LocationCode = reader.IsDBNull(14) ? null : reader.GetString(14),
+            ShipDocId = reader.IsDBNull(15) ? null : reader.GetInt64(15),
+            ShipLineId = reader.IsDBNull(16) ? null : reader.GetInt64(16),
+            OrderId = reader.IsDBNull(17) ? null : reader.GetInt64(17)
+        };
     }
 
     private static string BuildImportErrorsQuery(string? reason)

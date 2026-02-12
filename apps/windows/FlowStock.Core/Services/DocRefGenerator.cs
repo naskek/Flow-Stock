@@ -33,6 +33,7 @@ public static class DocRefGenerator
             DocType.Move => "MOV",
             DocType.WriteOff => "WO",
             DocType.Inventory => "INV",
+            DocType.ProductionReceipt => "PRD",
             _ => "DOC"
         };
     }

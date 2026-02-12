@@ -28,6 +28,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<StockLocationFilterOption> _stockLocationFilters = new();
     private readonly ObservableCollection<StockHuFilterOption> _stockHuFilters = new();
     private readonly ObservableCollection<PackagingOption> _itemPackagingOptions = new();
+    private readonly ObservableCollection<KmCodeBatch> _kmBatches = new();
     private readonly DispatcherTimer _autoRefreshTimer;
     private bool _autoRefreshInProgress;
     private static bool _excelEncodingRegistered;
@@ -42,6 +43,7 @@ public partial class MainWindow : Window
     {
         new DocTypeFilterOption(null, "Все"),
         new DocTypeFilterOption(DocType.Inbound, "Приемка"),
+        new DocTypeFilterOption(DocType.ProductionReceipt, "Выпуск продукции"),
         new DocTypeFilterOption(DocType.Outbound, "Отгрузка"),
         new DocTypeFilterOption(DocType.Move, "Перемещение"),
         new DocTypeFilterOption(DocType.WriteOff, "Списание"),
@@ -63,6 +65,7 @@ public partial class MainWindow : Window
     private const int TabItemsIndex = 3;
     private const int TabLocationsIndex = 4;
     private const int TabPartnersIndex = 5;
+    private const int TabKmIndex = 6;
 
     public MainWindow(AppServices services)
     {
@@ -81,6 +84,7 @@ public partial class MainWindow : Window
         StockGrid.ItemsSource = _stock;
         StockLocationFilter.ItemsSource = _stockLocationFilters;
         StockHuFilter.ItemsSource = _stockHuFilters;
+        KmBatchesGrid.ItemsSource = _kmBatches;
         DocsTypeFilter.ItemsSource = _docTypeFilters;
         DocsTypeFilter.SelectedIndex = 0;
         DocsStatusFilter.ItemsSource = _docStatusFilters;
@@ -180,6 +184,9 @@ public partial class MainWindow : Window
                     {
                         LoadPartners();
                     }
+                    break;
+                case TabKmIndex:
+                    LoadKmBatches();
                     break;
             }
 
@@ -785,11 +792,12 @@ public partial class MainWindow : Window
         var brand = NormalizeIdentifier(ItemBrandBox.Text);
         var volume = NormalizeIdentifier(ItemVolumeBox.Text);
         var taraId = (ItemTaraCombo.SelectedItem as Tara)?.Id;
+        var isMarked = ItemMarkedCheck.IsChecked == true;
 
         try
         {
             var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.CreateItem(ItemNameBox.Text, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId);
+            _services.Catalog.CreateItem(ItemNameBox.Text, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked);
             LoadItems();
             ClearItemForm();
         }
@@ -843,6 +851,34 @@ public partial class MainWindow : Window
                 $"Ошибки: {summary.Errors}";
             MessageBox.Show(message, "Товары", MessageBoxButton.OK, MessageBoxImage.Information);
         }
+    }
+
+    private void LoadKmBatches()
+    {
+        var selectedId = (KmBatchesGrid.SelectedItem as KmCodeBatch)?.Id;
+        _kmBatches.Clear();
+        foreach (var batch in _services.Km.GetBatches())
+        {
+            _kmBatches.Add(batch);
+        }
+        RestoreKmBatchSelection(selectedId);
+    }
+
+    private void RestoreKmBatchSelection(long? batchId)
+    {
+        if (!batchId.HasValue)
+        {
+            return;
+        }
+
+        var batch = _kmBatches.FirstOrDefault(item => item.Id == batchId.Value);
+        if (batch == null)
+        {
+            return;
+        }
+
+        KmBatchesGrid.SelectedItem = batch;
+        KmBatchesGrid.ScrollIntoView(batch);
     }
 
     private void ItemPackaging_Click(object sender, RoutedEventArgs e)
@@ -968,6 +1004,7 @@ public partial class MainWindow : Window
         ItemShelfLifeBox.Text = _selectedItem.ShelfLifeMonths.HasValue ? _selectedItem.ShelfLifeMonths.Value.ToString(CultureInfo.InvariantCulture) : string.Empty;
         ItemTaraCombo.SelectedItem = _taras.FirstOrDefault(t => t.Id == _selectedItem.TaraId);
         ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _selectedItem.BaseUom, StringComparison.OrdinalIgnoreCase));
+        ItemMarkedCheck.IsChecked = _selectedItem.IsMarked;
         LoadItemPackagingOptions(_selectedItem);
     }
 
@@ -1037,7 +1074,7 @@ public partial class MainWindow : Window
         try
         {
             var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId);
+            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, ItemMarkedCheck.IsChecked == true);
             ReloadItemsAndSelect(_selectedItem.Id);
         }
         catch (ArgumentException ex)
@@ -1125,7 +1162,7 @@ public partial class MainWindow : Window
                 {
                     AddBarcodeVariants(seenCodes, code);
                     var gtin = IsDigitsOnly(code) ? code : null;
-                    _services.Catalog.CreateItem(name, code, gtin, null, null, null, null, null);
+                    _services.Catalog.CreateItem(name, code, gtin, null, null, null, null, null, false);
                     created++;
                     AddBarcodeVariants(existingCodes, code);
                     AddBarcodeVariants(existingCodes, gtin);
@@ -1666,6 +1703,41 @@ public partial class MainWindow : Window
         SelectTab(TabPartnersIndex);
     }
 
+    private void KmImport_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new KmImportWindow(_services, () =>
+        {
+            LoadKmBatches();
+        });
+        window.Owner = this;
+        window.ShowDialog();
+    }
+
+    private void KmOpenBatch_Click(object sender, RoutedEventArgs e)
+    {
+        OpenSelectedKmBatch();
+    }
+
+    private void KmBatchesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        OpenSelectedKmBatch();
+    }
+
+    private void OpenSelectedKmBatch()
+    {
+        if (KmBatchesGrid.SelectedItem is not KmCodeBatch batch)
+        {
+            MessageBox.Show("Выберите пакет.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var window = new KmBatchDetailsWindow(_services, batch)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void OpenDataFolder_Click(object sender, RoutedEventArgs e)
     {
         var dataDir = _services.BaseDir;
@@ -1859,6 +1931,7 @@ public partial class MainWindow : Window
         ItemShelfLifeBox.Text = string.Empty;
         ItemTaraCombo.SelectedItem = null;
         ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, "шт", StringComparison.OrdinalIgnoreCase));
+        ItemMarkedCheck.IsChecked = false;
         ItemSaveButton.IsEnabled = false;
         ItemDeleteButton.IsEnabled = false;
         ItemsGrid.SelectedItem = null;

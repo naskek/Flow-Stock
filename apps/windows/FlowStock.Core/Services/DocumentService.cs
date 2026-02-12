@@ -177,6 +177,7 @@ public sealed class DocumentService
                 switch (doc.Type)
                 {
                     case DocType.Inbound:
+                    case DocType.ProductionReceipt:
                         if (line.ToLocationId.HasValue)
                         {
                             store.AddLedgerEntry(new LedgerEntry
@@ -408,6 +409,30 @@ public sealed class DocumentService
         _data.UpdateDocReason(docId, cleanedReason);
     }
 
+    public void UpdateDocComment(long docId, string? comment)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        var cleaned = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim();
+        _data.UpdateDocComment(docId, cleaned);
+    }
+
+    public void UpdateDocProductionBatch(long docId, string? productionBatchNo)
+    {
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        var cleaned = string.IsNullOrWhiteSpace(productionBatchNo) ? null : productionBatchNo.Trim();
+        _data.UpdateDocProductionBatch(docId, cleaned);
+    }
+
     public void MarkDocForRecount(long docId)
     {
         var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
@@ -602,7 +627,7 @@ public sealed class DocumentService
             check.Errors.Add("Добавьте хотя бы один товар в документ перед проведением.");
             return check;
         }
-        var itemsById = _data.GetItems(null).ToDictionary(item => item.Id, item => item.Name);
+        var itemsById = _data.GetItems(null).ToDictionary(item => item.Id, item => item);
         var locations = _data.GetLocations();
         var locationsById = locations.ToDictionary(location => location.Id, location => location.Code);
 
@@ -612,7 +637,8 @@ public sealed class DocumentService
         for (var index = 0; index < lines.Count; index++)
         {
             var line = lines[index];
-            var itemLabel = itemsById.TryGetValue(line.ItemId, out var name) ? name : $"ID {line.ItemId}";
+            var item = itemsById.TryGetValue(line.ItemId, out var found) ? found : null;
+            var itemLabel = item?.Name ?? $"ID {line.ItemId}";
             var rowLabel = $"Строка {index + 1} ({itemLabel})";
             var (fromHu, toHu) = ResolveLedgerHu(doc, line, docHu);
 
@@ -627,6 +653,16 @@ public sealed class DocumentService
                     if (!line.ToLocationId.HasValue)
                     {
                         check.Errors.Add($"{rowLabel}: требуется место хранения получателя.");
+                    }
+                    break;
+                case DocType.ProductionReceipt:
+                    if (!line.ToLocationId.HasValue)
+                    {
+                        check.Errors.Add($"{rowLabel}: требуется место хранения получателя.");
+                    }
+                    if (string.IsNullOrWhiteSpace(NormalizeHuValue(toHu)))
+                    {
+                        check.Errors.Add($"{rowLabel}: требуется HU.");
                     }
                     break;
                 case DocType.WriteOff:
@@ -658,6 +694,26 @@ public sealed class DocumentService
                     break;
             }
 
+            if (item?.IsMarked == true && (doc.Type == DocType.ProductionReceipt || doc.Type == DocType.Outbound))
+            {
+                var rounded = Math.Round(line.Qty);
+                if (Math.Abs(line.Qty - rounded) > 0.0001)
+                {
+                    check.Errors.Add($"{rowLabel}: количество для маркируемого товара должно быть целым.");
+                }
+                else
+                {
+                    var required = (int)rounded;
+                    var assigned = doc.Type == DocType.ProductionReceipt
+                        ? _data.CountKmCodesByReceiptLine(line.Id)
+                        : _data.CountKmCodesByShipmentLine(line.Id);
+                    if (assigned != required)
+                    {
+                        check.Errors.Add($"{rowLabel}: требуется привязать {required} код(ов) КМ, сейчас {assigned}.");
+                    }
+                }
+            }
+
             if (doc.Type is DocType.WriteOff or DocType.Move or DocType.Outbound)
             {
                 if (line.Qty > 0 && line.FromLocationId.HasValue)
@@ -682,7 +738,7 @@ public sealed class DocumentService
                 var future = current - entry.Value;
                 if (future < 0)
                 {
-                    var itemLabel = itemsById.TryGetValue(entry.Key.ItemId, out var name) ? name : $"ID {entry.Key.ItemId}";
+                    var itemLabel = itemsById.TryGetValue(entry.Key.ItemId, out var name) ? name.Name : $"ID {entry.Key.ItemId}";
                     var locationLabel = locationsById.TryGetValue(entry.Key.LocationId, out var code) ? code : $"ID {entry.Key.LocationId}";
                     var huLabel = string.IsNullOrWhiteSpace(entry.Key.Hu) ? string.Empty : $" (HU {entry.Key.Hu})";
                     check.Errors.Add($"{itemLabel} @ {locationLabel}{huLabel}: на складе {FormatQty(current)}, требуется {FormatQty(entry.Value)}.");
@@ -704,7 +760,7 @@ public sealed class DocumentService
                 var future = current - entry.Value;
                 if (future < 0)
                 {
-                    var itemLabel = itemsById.TryGetValue(entry.Key, out var name) ? name : $"ID {entry.Key}";
+                    var itemLabel = itemsById.TryGetValue(entry.Key, out var name) ? name.Name : $"ID {entry.Key}";
                     check.Errors.Add($"{itemLabel}: на складе {FormatQty(current)}, требуется {FormatQty(entry.Value)}.");
                 }
             }
@@ -869,6 +925,16 @@ public sealed class DocumentService
                     throw new ArgumentException("Для приемки требуется место хранения получателя.");
                 }
                 break;
+            case DocType.ProductionReceipt:
+                if (!toLocationId.HasValue)
+                {
+                    throw new ArgumentException("Для выпуска продукции требуется место хранения получателя.");
+                }
+                if (string.IsNullOrWhiteSpace(NormalizeHuValue(toHu)))
+                {
+                    throw new ArgumentException("Для выпуска продукции требуется HU.");
+                }
+                break;
             case DocType.WriteOff:
                 if (!fromLocationId.HasValue)
                 {
@@ -963,6 +1029,7 @@ public sealed class DocumentService
             {
                 DocType.Inbound => (null, docHu),
                 DocType.Inventory => (null, docHu),
+                DocType.ProductionReceipt => (null, docHu),
                 DocType.Outbound => (docHu, null),
                 DocType.WriteOff => (docHu, null),
                 _ => (lineFrom, lineTo)
@@ -977,6 +1044,7 @@ public sealed class DocumentService
         IEnumerable<string?> values = type switch
         {
             DocType.Inbound or DocType.Inventory => lines.Select(line => line.ToHu),
+            DocType.ProductionReceipt => lines.Select(line => line.ToHu),
             DocType.Outbound or DocType.WriteOff => lines.Select(line => line.FromHu),
             DocType.Move => lines.Select(line => line.ToHu),
             _ => Enumerable.Empty<string?>()
@@ -998,6 +1066,7 @@ public sealed class DocumentService
         {
             DocType.Inbound => (null, normalized),
             DocType.Inventory => (null, normalized),
+            DocType.ProductionReceipt => (null, normalized),
             DocType.Outbound => (normalized, null),
             DocType.WriteOff => (normalized, null),
             DocType.Move => (null, normalized),

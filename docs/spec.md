@@ -14,16 +14,18 @@
 - PC web client: read-only view served by the server.
 
 ## Data model (server DB)
-- items(id, name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, tara_id)
+- items(id, name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, tara_id, is_marked)
 - taras(id, name)
 - item_requests(id, barcode, comment, device_id, login, status, created_at, resolved_at)
 - locations(id, code, name)
 - partners(id, name, inn, ... )
 - orders(id, order_ref, partner_id, due_date, status, comment, created_at)
 - order_lines(id, order_id, item_id, qty_ordered)
-- docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code)
+- docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment, production_batch_no)
 - doc_lines(id, doc_id, item_id, qty, from_location_id, to_location_id, uom, from_hu, to_hu)
 - ledger(id, ts, doc_id, item_id, location_id, qty_delta, hu_code)
+- km_code_batch(id, order_id, file_name, file_hash, imported_at, imported_by, total_codes, error_count)
+- km_code(id, batch_id, code_raw, gtin14, sku_id, product_name, status, receipt_doc_id, receipt_line_id, hu_id, location_id, ship_doc_id, ship_line_id, order_id)
 
 ## Invariants
 - Stock is derived only from ledger.
@@ -53,3 +55,13 @@
 - Partners: list + create.
 - Orders: list + details (see spec_orders.md).
 - Item requests: bell notification + list with resolve action.
+
+## Documents (extra)
+- Выпуск продукции: приемка готовой продукции на склад (плюс в ledger), HU обязателен, партия производства хранится в `production_batch_no`.
+
+## Marking (KM) MVP
+- Импорт CSV/TSV кодов в `km_code_batch` + `km_code` (защита по hash файла и UNIQUE(code_raw)).
+- Привязка пакета к заказу через `order_id`.
+- Коды переходят в статус `OnHand` только через документ "Выпуск продукции".
+- Для маркируемых SKU (items.is_marked = true) требуется привязать ровно Qty кодов к строке документа.
+- Отгрузка переводит коды в статус `Shipped` и связывает с документом отгрузки.

@@ -32,7 +32,7 @@ public sealed class CatalogService
         return _data.GetPartners();
     }
 
-    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId)
+    public long CreateItem(string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -49,7 +49,8 @@ public sealed class CatalogService
             Brand = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim(),
             Volume = string.IsNullOrWhiteSpace(volume) ? null : volume.Trim(),
             ShelfLifeMonths = shelfLifeMonths,
-            TaraId = taraId
+            TaraId = taraId,
+            IsMarked = isMarked
         };
 
         return _data.AddItem(item);
@@ -91,6 +92,16 @@ public sealed class CatalogService
         return _data.AddUom(uom);
     }
 
+    public void DeleteUom(long uomId)
+    {
+        if (_data.IsUomUsed(uomId))
+        {
+            throw new InvalidOperationException("Нельзя удалить единицу измерения, которая используется в товарах.");
+        }
+
+        _data.DeleteUom(uomId);
+    }
+
     public long CreatePartner(string name, string? code)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -118,7 +129,7 @@ public sealed class CatalogService
         _data.UpdateItemBarcode(itemId, barcode.Trim());
     }
 
-    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId)
+    public void UpdateItem(long itemId, string name, string? barcode, string? gtin, string? baseUom, string? brand, string? volume, int? shelfLifeMonths, long? taraId, bool isMarked)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -143,7 +154,8 @@ public sealed class CatalogService
             Brand = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim(),
             Volume = string.IsNullOrWhiteSpace(volume) ? null : volume.Trim(),
             ShelfLifeMonths = shelfLifeMonths,
-            TaraId = taraId
+            TaraId = taraId,
+            IsMarked = isMarked
         };
 
         _data.UpdateItem(item);
