@@ -10,13 +10,16 @@
 ## Components
 - FlowStock.Server: ASP.NET Core Minimal API, DB access, diagnostics, serves TSD/PC web clients.
 - FlowStock.App: WPF desktop operator UI with direct PostgreSQL connection (FLOWSTOCK_PG_* env or settings.json postgres).
+  - If PostgreSQL is unavailable at app startup, WPF still opens and reports DB errors in UI/logs (non-fatal startup).
 - TSD PWA: online data capture via API (no direct DB access).
-- PC web client: read-only view served by the server.
+- PC web client: stock is read-only; order create/status changes are submitted as requests and applied only after WPF confirmation.
+  - Request submission is allowed only for active PC accounts (`tsd_devices.platform=PC`).
 
 ## Data model (server DB)
 - items(id, name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, tara_id, is_marked)
 - taras(id, name)
 - item_requests(id, barcode, comment, device_id, login, status, created_at, resolved_at)
+- order_requests(id, request_type, payload_json, status, created_at, created_by_login, created_by_device_id, resolved_at, resolved_by, resolution_note, applied_order_id)
 - locations(id, code, name)
 - partners(id, name, inn, ... )
 - orders(id, order_ref, partner_id, due_date, status, comment, created_at)
@@ -49,12 +52,16 @@
 ## UI screens (MVP)
 - Status: stock list + search.
 - Documents: list + details + close action.
-- Items: list + create (name, barcode/SKU, gtin, brand, volume, shelf life months, tara, uom) + Excel import with preview and column mapping.
+- Items: list with ID + modal create/edit (name, barcode/SKU, gtin, brand, volume, shelf life months, tara, uom, is_marked) + Excel import with preview and column mapping.
 - Tara: dictionary editor in “Справочники”.
-- Locations: list + create (code, name).
-- Partners: list + create.
+- Locations: list with ID + modal create/edit (code, name).
+- Partners: list with ID + modal create/edit.
 - Orders: list + details (see spec_orders.md).
 - Item requests: bell notification + list with resolve action.
+- Order web requests: WPF list with approve/reject action; approved requests create orders or change order status.
+- Admin: no direct table reset/edit from WPF; only backup and temporary admin unlock for row deletion in tabs.
+- Row deletion in tabs (orders/items/locations/partners/KM batches/codes) is blocked by default and allowed only after admin unlock.
+- Admin includes a dedicated "clear operations" action for test cleanup (docs/doc_lines/ledger/orders/order_lines/import events/errors). Dictionaries stay intact.
 
 ## Documents (extra)
 - Выпуск продукции: приемка готовой продукции на склад (плюс в ledger), HU обязателен, партия производства хранится в `production_batch_no`, документ может быть связан с заказом (order_id/order_ref).
@@ -66,6 +73,7 @@
 
 ## Marking (KM) MVP
 - Импорт CSV/TSV кодов в `km_code_batch` + `km_code` (защита по hash файла и UNIQUE(code_raw)).
+- During KM import, code duplicate checks are enforced per file and against DB (case-insensitive), with normalization of wrapped quotes.
 - Привязка пакета к заказу через `order_id`.
 - Коды в пуле имеют статус `InPool`, переходят в статус `OnHand` только через документ "Выпуск продукции".
 - Для маркируемых SKU (items.is_marked = true) требуется привязать ровно Qty кодов к строке документа (receipt_line_id, hu_id, location_id).

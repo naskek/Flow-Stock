@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Linq;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 using Npgsql;
@@ -97,6 +98,20 @@ CREATE TABLE IF NOT EXISTS item_requests (
     resolved_at TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_item_requests_status ON item_requests(status);
+CREATE TABLE IF NOT EXISTS order_requests (
+    id BIGSERIAL PRIMARY KEY,
+    request_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    created_at TEXT NOT NULL,
+    created_by_login TEXT,
+    created_by_device_id TEXT,
+    resolved_at TEXT,
+    resolved_by TEXT,
+    resolution_note TEXT,
+    applied_order_id BIGINT
+);
+CREATE INDEX IF NOT EXISTS ix_order_requests_status ON order_requests(status);
 CREATE TABLE IF NOT EXISTS orders (
     id BIGSERIAL PRIMARY KEY,
     order_ref TEXT NOT NULL,
@@ -322,6 +337,7 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
         EnsureIndex(connection, "ix_item_packaging_item", "item_packaging(item_id)");
         EnsureIndex(connection, "ix_taras_name", "taras(name)");
         EnsureIndex(connection, "ix_item_requests_status", "item_requests(status)");
+        EnsureIndex(connection, "ix_order_requests_status", "order_requests(status)");
         EnsureIndex(connection, "ix_doc_lines_order_line", "doc_lines(order_line_id)");
         EnsureIndex(connection, "ix_ledger_item_loc_hu", "ledger(item_id, location_id, hu)");
         EnsureIndex(connection, "ix_ledger_item_loc_hu_code", "ledger(item_id, location_id, hu_code)");
@@ -2860,6 +2876,17 @@ RETURNING id;");
         });
     }
 
+    public bool ExistsKmCodeByRawIgnoreCase(string codeRaw)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "SELECT 1 FROM km_code WHERE LOWER(code_raw) = LOWER(@code_raw) LIMIT 1");
+            command.Parameters.AddWithValue("@code_raw", codeRaw);
+            var result = command.ExecuteScalar();
+            return result != null && result != DBNull.Value;
+        });
+    }
+
     public IReadOnlyList<KmCode> GetKmCodesByBatch(long batchId, string? search, KmCodeStatus? status, int take)
     {
         return WithConnection(connection =>
@@ -3068,6 +3095,174 @@ WHERE id = @id AND status = @expected_status;");
             command.Parameters.AddWithValue("@order_id", orderId.HasValue ? orderId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@id", codeId);
             command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public long AddOrderRequest(OrderRequest request)
+    {
+        return WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+INSERT INTO order_requests(request_type, payload_json, status, created_at, created_by_login, created_by_device_id, resolved_at, resolved_by, resolution_note, applied_order_id)
+VALUES(@request_type, @payload_json, @status, @created_at, @created_by_login, @created_by_device_id, @resolved_at, @resolved_by, @resolution_note, @applied_order_id)
+RETURNING id;");
+            command.Parameters.AddWithValue("@request_type", request.RequestType);
+            command.Parameters.AddWithValue("@payload_json", request.PayloadJson);
+            command.Parameters.AddWithValue("@status", string.IsNullOrWhiteSpace(request.Status) ? OrderRequestStatus.Pending : request.Status.Trim());
+            command.Parameters.AddWithValue("@created_at", ToDbDate(request.CreatedAt));
+            command.Parameters.AddWithValue("@created_by_login", string.IsNullOrWhiteSpace(request.CreatedByLogin) ? DBNull.Value : request.CreatedByLogin.Trim());
+            command.Parameters.AddWithValue("@created_by_device_id", string.IsNullOrWhiteSpace(request.CreatedByDeviceId) ? DBNull.Value : request.CreatedByDeviceId.Trim());
+            command.Parameters.AddWithValue("@resolved_at", request.ResolvedAt.HasValue ? ToDbDate(request.ResolvedAt.Value) : DBNull.Value);
+            command.Parameters.AddWithValue("@resolved_by", string.IsNullOrWhiteSpace(request.ResolvedBy) ? DBNull.Value : request.ResolvedBy.Trim());
+            command.Parameters.AddWithValue("@resolution_note", string.IsNullOrWhiteSpace(request.ResolutionNote) ? DBNull.Value : request.ResolutionNote.Trim());
+            command.Parameters.AddWithValue("@applied_order_id", request.AppliedOrderId.HasValue ? request.AppliedOrderId.Value : DBNull.Value);
+            return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public IReadOnlyList<OrderRequest> GetOrderRequests(bool includeResolved)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = "SELECT id, request_type, payload_json, status, created_at, created_by_login, created_by_device_id, resolved_at, resolved_by, resolution_note, applied_order_id FROM order_requests";
+            if (!includeResolved)
+            {
+                sql += " WHERE status = 'PENDING'";
+            }
+
+            sql += " ORDER BY created_at DESC, id DESC";
+            using var command = CreateCommand(connection, sql);
+            using var reader = command.ExecuteReader();
+            var list = new List<OrderRequest>();
+            while (reader.Read())
+            {
+                list.Add(new OrderRequest
+                {
+                    Id = reader.GetInt64(0),
+                    RequestType = reader.GetString(1),
+                    PayloadJson = reader.GetString(2),
+                    Status = reader.IsDBNull(3) ? OrderRequestStatus.Pending : reader.GetString(3),
+                    CreatedAt = FromDbDate(reader.IsDBNull(4) ? null : reader.GetString(4)) ?? DateTime.MinValue,
+                    CreatedByLogin = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    CreatedByDeviceId = reader.IsDBNull(6) ? null : reader.GetString(6),
+                    ResolvedAt = reader.IsDBNull(7) ? null : FromDbDate(reader.GetString(7)),
+                    ResolvedBy = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    ResolutionNote = reader.IsDBNull(9) ? null : reader.GetString(9),
+                    AppliedOrderId = reader.IsDBNull(10) ? null : reader.GetInt64(10)
+                });
+            }
+
+            return list;
+        });
+    }
+
+    public void ResolveOrderRequest(long requestId, string status, string resolvedBy, string? note, long? appliedOrderId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, @"
+UPDATE order_requests
+SET status = @status,
+    resolved_at = @resolved_at,
+    resolved_by = @resolved_by,
+    resolution_note = @resolution_note,
+    applied_order_id = @applied_order_id
+WHERE id = @id;");
+            command.Parameters.AddWithValue("@status", status);
+            command.Parameters.AddWithValue("@resolved_at", ToDbDate(DateTime.Now));
+            command.Parameters.AddWithValue("@resolved_by", string.IsNullOrWhiteSpace(resolvedBy) ? "WPF" : resolvedBy.Trim());
+            command.Parameters.AddWithValue("@resolution_note", string.IsNullOrWhiteSpace(note) ? DBNull.Value : note.Trim());
+            command.Parameters.AddWithValue("@applied_order_id", appliedOrderId.HasValue ? appliedOrderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@id", requestId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public int DeleteKmCodesFromBatch(long batchId, IReadOnlyList<long> codeIds)
+    {
+        if (codeIds.Count == 0)
+        {
+            return 0;
+        }
+
+        return WithConnection(connection =>
+        {
+            using var transaction = connection.BeginTransaction();
+            using var command = CreateCommand(connection, @"
+DELETE FROM km_code
+WHERE batch_id = @batch_id
+  AND id = ANY(@ids)
+  AND status = @status
+  AND receipt_doc_id IS NULL
+  AND ship_doc_id IS NULL;");
+            command.Transaction = transaction;
+            command.Parameters.AddWithValue("@batch_id", batchId);
+            command.Parameters.AddWithValue("@ids", codeIds.ToArray());
+            command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.InPool));
+            var deleted = command.ExecuteNonQuery();
+
+            using var refreshStats = CreateCommand(connection, @"
+UPDATE km_code_batch
+SET total_codes = (
+    SELECT COUNT(*)::integer
+    FROM km_code
+    WHERE batch_id = @batch_id
+)
+WHERE id = @batch_id;");
+            refreshStats.Transaction = transaction;
+            refreshStats.Parameters.AddWithValue("@batch_id", batchId);
+            refreshStats.ExecuteNonQuery();
+
+            transaction.Commit();
+            return deleted;
+        });
+    }
+
+    public void DeleteKmBatch(long batchId)
+    {
+        WithConnection(connection =>
+        {
+            using var transaction = connection.BeginTransaction();
+
+            using var countAll = CreateCommand(connection, "SELECT COUNT(*) FROM km_code WHERE batch_id = @batch_id");
+            countAll.Transaction = transaction;
+            countAll.Parameters.AddWithValue("@batch_id", batchId);
+            var total = Convert.ToInt32(countAll.ExecuteScalar() ?? 0L);
+
+            using var countDeletable = CreateCommand(connection, @"
+SELECT COUNT(*)
+FROM km_code
+WHERE batch_id = @batch_id
+  AND status = @status
+  AND receipt_doc_id IS NULL
+  AND ship_doc_id IS NULL;");
+            countDeletable.Transaction = transaction;
+            countDeletable.Parameters.AddWithValue("@batch_id", batchId);
+            countDeletable.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.InPool));
+            var deletable = Convert.ToInt32(countDeletable.ExecuteScalar() ?? 0L);
+
+            if (deletable != total)
+            {
+                throw new InvalidOperationException("Пакет содержит коды вне статуса \"В пуле\" или уже участвующие в документах. Удаление запрещено.");
+            }
+
+            using var deleteCodes = CreateCommand(connection, "DELETE FROM km_code WHERE batch_id = @batch_id");
+            deleteCodes.Transaction = transaction;
+            deleteCodes.Parameters.AddWithValue("@batch_id", batchId);
+            deleteCodes.ExecuteNonQuery();
+
+            using var deleteBatch = CreateCommand(connection, "DELETE FROM km_code_batch WHERE id = @batch_id");
+            deleteBatch.Transaction = transaction;
+            deleteBatch.Parameters.AddWithValue("@batch_id", batchId);
+            var affected = deleteBatch.ExecuteNonQuery();
+            if (affected == 0)
+            {
+                throw new InvalidOperationException("Пакет КМ не найден.");
+            }
+
+            transaction.Commit();
             return 0;
         });
     }

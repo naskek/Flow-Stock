@@ -15,9 +15,12 @@
             <ComboBox x:Name="StatusFilter" Width="160" Margin="6,0,12,0" DisplayMemberPath="Name" />
             <Button Content="Применить" Click="Apply_Click" />
             <Button Content="Сброс" Click="Reset_Click" Margin="8,0,0,0" />
+            <Button x:Name="DeleteCodesButton" Content="Удалить выбранные" Click="DeleteSelectedCodes_Click" Margin="8,0,0,0" />
             <TextBlock x:Name="UnmatchedText" Margin="16,0,0,0" VerticalAlignment="Center" Foreground="DarkSlateGray" />
         </StackPanel>
-        <DataGrid x:Name="CodesGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True">
+        <DataGrid x:Name="CodesGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                  SelectionMode="Extended" SelectionUnit="FullRow"
+                  SelectionChanged="CodesGrid_SelectionChanged">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="140" />
                 <DataGridTextColumn Header="GTIN14" Binding="{Binding Gtin14}" Width="140" />

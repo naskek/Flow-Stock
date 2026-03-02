@@ -81,6 +81,17 @@ public sealed class AdminService
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = @"
+UPDATE km_code
+SET status = 0,
+    receipt_doc_id = NULL,
+    receipt_line_id = NULL,
+    hu_id = NULL,
+    location_id = NULL,
+    ship_doc_id = NULL,
+    ship_line_id = NULL,
+    order_id = NULL;
+UPDATE km_code_batch
+SET order_id = NULL;
 DELETE FROM ledger;
 DELETE FROM doc_lines;
 DELETE FROM docs;

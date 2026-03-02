@@ -560,6 +560,212 @@ ORDER BY i.name;";
     return Results.Ok(lines);
 });
 
+app.MapPost("/api/orders/requests/create", async (HttpRequest request, IDataStore store) =>
+{
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    OrderCreateRequestCreateRequest? createRequest;
+    try
+    {
+        createRequest = JsonSerializer.Deserialize<OrderCreateRequestCreateRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (createRequest == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    var orderRef = createRequest.OrderRef?.Trim();
+    if (string.IsNullOrWhiteSpace(orderRef))
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_ORDER_REF"));
+    }
+
+    if (!createRequest.PartnerId.HasValue || createRequest.PartnerId.Value <= 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_PARTNER_ID"));
+    }
+
+    var partner = store.GetPartner(createRequest.PartnerId.Value);
+    if (partner == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "PARTNER_NOT_FOUND"));
+    }
+
+    DateTime? dueDate = null;
+    if (!string.IsNullOrWhiteSpace(createRequest.DueDate))
+    {
+        if (!DateTime.TryParseExact(
+                createRequest.DueDate.Trim(),
+                "yyyy-MM-dd",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsedDueDate))
+        {
+            return Results.BadRequest(new ApiResult(false, "INVALID_DUE_DATE"));
+        }
+
+        dueDate = parsedDueDate.Date;
+    }
+
+    var lines = createRequest.Lines ?? new List<OrderRequestLineCreateRequest>();
+    var normalizedLines = new List<object>();
+    foreach (var line in lines)
+    {
+        if (!line.ItemId.HasValue || line.ItemId.Value <= 0)
+        {
+            continue;
+        }
+
+        if (line.QtyOrdered <= 0)
+        {
+            continue;
+        }
+
+        var item = store.FindItemById(line.ItemId.Value);
+        if (item == null)
+        {
+            return Results.BadRequest(new ApiResult(false, "ITEM_NOT_FOUND"));
+        }
+
+        normalizedLines.Add(new
+        {
+            item_id = line.ItemId.Value,
+            qty_ordered = line.QtyOrdered
+        });
+    }
+
+    if (normalizedLines.Count == 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_LINES"));
+    }
+
+    var createdByLogin = string.IsNullOrWhiteSpace(createRequest.Login) ? null : createRequest.Login.Trim();
+    var createdByDeviceId = string.IsNullOrWhiteSpace(createRequest.DeviceId) ? null : createRequest.DeviceId.Trim();
+    if (string.IsNullOrWhiteSpace(createdByLogin) || string.IsNullOrWhiteSpace(createdByDeviceId))
+    {
+        return Results.Json(new ApiResult(false, "MISSING_ACCOUNT"), statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    if (!IsActivePcAccount(postgresConnectionString, createdByLogin, createdByDeviceId))
+    {
+        return Results.Json(new ApiResult(false, "INVALID_ACCOUNT"), statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    var payloadJson = JsonSerializer.Serialize(new
+    {
+        order_ref = orderRef,
+        partner_id = createRequest.PartnerId.Value,
+        due_date = dueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        comment = string.IsNullOrWhiteSpace(createRequest.Comment) ? null : createRequest.Comment.Trim(),
+        lines = normalizedLines
+    });
+
+    var requestId = store.AddOrderRequest(new OrderRequest
+    {
+        RequestType = OrderRequestType.CreateOrder,
+        PayloadJson = payloadJson,
+        Status = OrderRequestStatus.Pending,
+        CreatedAt = DateTime.Now,
+        CreatedByLogin = createdByLogin,
+        CreatedByDeviceId = createdByDeviceId
+    });
+
+    return Results.Ok(new
+    {
+        ok = true,
+        request_id = requestId,
+        status = OrderRequestStatus.Pending
+    });
+});
+
+app.MapPost("/api/orders/requests/status", async (HttpRequest request, IDataStore store) =>
+{
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    OrderStatusChangeRequestCreateRequest? statusRequest;
+    try
+    {
+        statusRequest = JsonSerializer.Deserialize<OrderStatusChangeRequestCreateRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (statusRequest == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (!statusRequest.OrderId.HasValue || statusRequest.OrderId.Value <= 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_ORDER_ID"));
+    }
+
+    var order = store.GetOrder(statusRequest.OrderId.Value);
+    if (order == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "ORDER_NOT_FOUND"));
+    }
+
+    if (!TryParseManualOrderStatus(statusRequest.Status, out var nextStatus))
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_STATUS"));
+    }
+
+    var createdByLogin = string.IsNullOrWhiteSpace(statusRequest.Login) ? null : statusRequest.Login.Trim();
+    var createdByDeviceId = string.IsNullOrWhiteSpace(statusRequest.DeviceId) ? null : statusRequest.DeviceId.Trim();
+    if (string.IsNullOrWhiteSpace(createdByLogin) || string.IsNullOrWhiteSpace(createdByDeviceId))
+    {
+        return Results.Json(new ApiResult(false, "MISSING_ACCOUNT"), statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    if (!IsActivePcAccount(postgresConnectionString, createdByLogin, createdByDeviceId))
+    {
+        return Results.Json(new ApiResult(false, "INVALID_ACCOUNT"), statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    var payloadJson = JsonSerializer.Serialize(new
+    {
+        order_id = statusRequest.OrderId.Value,
+        status = OrderStatusMapper.StatusToString(nextStatus)
+    });
+
+    var requestId = store.AddOrderRequest(new OrderRequest
+    {
+        RequestType = OrderRequestType.SetOrderStatus,
+        PayloadJson = payloadJson,
+        Status = OrderRequestStatus.Pending,
+        CreatedAt = DateTime.Now,
+        CreatedByLogin = createdByLogin,
+        CreatedByDeviceId = createdByDeviceId
+    });
+
+    return Results.Ok(new
+    {
+        ok = true,
+        request_id = requestId,
+        status = OrderRequestStatus.Pending
+    });
+});
+
 app.MapGet("/api/stock", () =>
 {
     using var connection = OpenConnection(postgresConnectionString);
@@ -2214,6 +2420,30 @@ static async Task<string> ReadBody(HttpRequest request)
     return await reader.ReadToEndAsync();
 }
 
+static bool TryParseManualOrderStatus(string? value, out OrderStatus status)
+{
+    status = OrderStatus.Accepted;
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return false;
+    }
+
+    var normalized = value.Trim().ToUpperInvariant();
+    switch (normalized)
+    {
+        case "ACCEPTED":
+        case "ПРИНЯТ":
+            status = OrderStatus.Accepted;
+            return true;
+        case "IN_PROGRESS":
+        case "В ПРОЦЕССЕ":
+            status = OrderStatus.InProgress;
+            return true;
+        default:
+            return false;
+    }
+}
+
 static DocType? ParseDocType(string? value)
 {
     return DocTypeMapper.FromOpString(value);
@@ -2316,6 +2546,23 @@ static bool TryVerifyPassword(string password, string saltBase64, string hashBas
     using var derive = new Rfc2898DeriveBytes(password, salt, iterations, HashAlgorithmName.SHA256);
     var actual = derive.GetBytes(expectedHash.Length);
     return CryptographicOperations.FixedTimeEquals(actual, expectedHash);
+}
+
+static bool IsActivePcAccount(string connectionString, string login, string deviceId)
+{
+    using var connection = OpenConnection(connectionString);
+    using var command = connection.CreateCommand();
+    command.CommandText = @"
+SELECT 1
+FROM tsd_devices
+WHERE login = @login
+  AND device_id = @device_id
+  AND is_active = TRUE
+  AND UPPER(COALESCE(platform, 'TSD')) = 'PC'
+LIMIT 1;";
+    AddParam(command, "@login", login);
+    AddParam(command, "@device_id", deviceId);
+    return command.ExecuteScalar() != null;
 }
 
 sealed class LocationResolution

@@ -89,9 +89,16 @@ public sealed class AppServices
         var userSettings = new SettingsService(settingsPath).Load();
         var connectionString = BuildPostgresConnectionString(userSettings);
         IDataStore dataStore = new PostgresDataStore(connectionString);
-        dataStore.Initialize();
         var target = FormatPostgresTarget(connectionString);
-        appLogger.Info($"Database provider: postgres {target}");
+        try
+        {
+            dataStore.Initialize();
+            appLogger.Info($"Database provider: postgres {target}");
+        }
+        catch (Exception ex)
+        {
+            appLogger.Error($"Database init failed for postgres {target}. App continues and can be configured from UI.", ex);
+        }
 
         return new AppServices(
             dataStore,

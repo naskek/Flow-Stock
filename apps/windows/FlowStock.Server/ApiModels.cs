@@ -134,6 +134,54 @@ public sealed class ItemRequestCreateRequest
     public string? Login { get; set; }
 }
 
+public sealed class OrderRequestLineCreateRequest
+{
+    [JsonPropertyName("item_id")]
+    public long? ItemId { get; set; }
+
+    [JsonPropertyName("qty_ordered")]
+    public double QtyOrdered { get; set; }
+}
+
+public sealed class OrderCreateRequestCreateRequest
+{
+    [JsonPropertyName("order_ref")]
+    public string? OrderRef { get; set; }
+
+    [JsonPropertyName("partner_id")]
+    public long? PartnerId { get; set; }
+
+    [JsonPropertyName("due_date")]
+    public string? DueDate { get; set; }
+
+    [JsonPropertyName("comment")]
+    public string? Comment { get; set; }
+
+    [JsonPropertyName("lines")]
+    public List<OrderRequestLineCreateRequest>? Lines { get; set; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; set; }
+
+    [JsonPropertyName("login")]
+    public string? Login { get; set; }
+}
+
+public sealed class OrderStatusChangeRequestCreateRequest
+{
+    [JsonPropertyName("order_id")]
+    public long? OrderId { get; set; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; set; }
+
+    [JsonPropertyName("login")]
+    public string? Login { get; set; }
+}
+
 public sealed class ApiResult
 {
     public ApiResult(bool ok, string? error = null)

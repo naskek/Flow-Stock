@@ -180,6 +180,27 @@ public sealed class OrderService
         });
     }
 
+    public void ChangeOrderStatus(long orderId, OrderStatus status)
+    {
+        var existing = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (existing.Status == OrderStatus.Shipped)
+        {
+            throw new InvalidOperationException("Отгруженный заказ нельзя менять.");
+        }
+
+        if (status == OrderStatus.Shipped)
+        {
+            throw new InvalidOperationException("Статус \"Отгружен\" ставится автоматически.");
+        }
+
+        if (status != OrderStatus.Accepted && status != OrderStatus.InProgress)
+        {
+            throw new InvalidOperationException("Допустимы только статусы \"Принят\" и \"В процессе\".");
+        }
+
+        _data.UpdateOrderStatus(orderId, status);
+    }
+
     private void ApplyLineMetrics(long orderId, IReadOnlyList<OrderLineView> lines)
     {
         var availableByItem = _data.GetLedgerTotalsByItem();

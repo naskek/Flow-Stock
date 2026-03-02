@@ -27,18 +27,11 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<StockDisplayRow> _stock = new();
     private readonly ObservableCollection<StockLocationFilterOption> _stockLocationFilters = new();
     private readonly ObservableCollection<StockHuFilterOption> _stockHuFilters = new();
-    private readonly ObservableCollection<PackagingOption> _itemPackagingOptions = new();
     private readonly ObservableCollection<KmCodeBatch> _kmBatches = new();
     private readonly DispatcherTimer _autoRefreshTimer;
     private bool _autoRefreshInProgress;
     private static bool _excelEncodingRegistered;
     private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromSeconds(20);
-    private readonly List<PartnerStatusOption> _partnerStatusOptions = new()
-    {
-        new PartnerStatusOption(PartnerStatus.Supplier, "Поставщик"),
-        new PartnerStatusOption(PartnerStatus.Client, "Клиент"),
-        new PartnerStatusOption(PartnerStatus.Both, "Клиент и поставщик")
-    };
     private readonly List<DocTypeFilterOption> _docTypeFilters = new()
     {
         new DocTypeFilterOption(null, "Все"),
@@ -58,7 +51,7 @@ public partial class MainWindow : Window
     private Item? _selectedItem;
     private Location? _selectedLocation;
     private Partner? _selectedPartner;
-    private bool _suppressPackagingSelection;
+    private bool _adminDeleteModeEnabled;
     private const int TabStatusIndex = 0;
     private const int TabDocsIndex = 1;
     private const int TabOrdersIndex = 2;
@@ -74,11 +67,7 @@ public partial class MainWindow : Window
 
         ItemsGrid.ItemsSource = _items;
         LocationsGrid.ItemsSource = _locations;
-        ItemUomCombo.ItemsSource = _uoms;
-        ItemTaraCombo.ItemsSource = _taras;
-        ItemDisplayUomCombo.ItemsSource = _itemPackagingOptions;
         PartnersGrid.ItemsSource = _partners;
-        PartnerStatusCombo.ItemsSource = _partnerStatusOptions;
         DocsGrid.ItemsSource = _docs;
         OrdersGrid.ItemsSource = _orders;
         StockGrid.ItemsSource = _stock;
@@ -89,9 +78,9 @@ public partial class MainWindow : Window
         DocsTypeFilter.SelectedIndex = 0;
         DocsStatusFilter.ItemsSource = _docStatusFilters;
         DocsStatusFilter.SelectedIndex = 0;
-        SetPartnerStatusSelection(PartnerStatus.Both);
+        ApplyDeleteMode();
 
-        LoadAll();
+        TryLoadAllOnStartup();
         ClearItemForm();
         ClearLocationForm();
         ClearPartnerForm();
@@ -100,6 +89,101 @@ public partial class MainWindow : Window
         _autoRefreshTimer.Tick += AutoRefreshTimer_Tick;
         Loaded += MainWindow_Loaded;
         Closed += MainWindow_Closed;
+    }
+
+    private void ApplyDeleteMode()
+    {
+        Title = _adminDeleteModeEnabled
+            ? "FlowStock [режим удаления: админ]"
+            : "FlowStock";
+        UpdateDeleteButtonsAvailability();
+    }
+
+    private void UpdateDeleteButtonsAvailability()
+    {
+        if (ItemDeleteButton != null)
+        {
+            var hasSelection = _selectedItem != null
+                               || (ItemsGrid?.SelectedItems?.Count ?? 0) > 0;
+            ItemDeleteButton.IsEnabled = _adminDeleteModeEnabled && hasSelection;
+        }
+
+        if (ItemEditButton != null)
+        {
+            ItemEditButton.IsEnabled = _selectedItem != null;
+        }
+
+        if (ItemPackagingButton != null)
+        {
+            ItemPackagingButton.IsEnabled = _selectedItem != null;
+        }
+
+        if (LocationDeleteButton != null)
+        {
+            LocationDeleteButton.IsEnabled = _adminDeleteModeEnabled && _selectedLocation != null;
+        }
+
+        if (LocationEditButton != null)
+        {
+            LocationEditButton.IsEnabled = _selectedLocation != null;
+        }
+
+        if (PartnerDeleteButton != null)
+        {
+            PartnerDeleteButton.IsEnabled = _adminDeleteModeEnabled && _selectedPartner != null;
+        }
+
+        if (PartnerEditButton != null)
+        {
+            PartnerEditButton.IsEnabled = _selectedPartner != null;
+        }
+
+        if (OrdersDeleteButton != null)
+        {
+            OrdersDeleteButton.IsEnabled = _adminDeleteModeEnabled && OrdersGrid.SelectedItem is Order;
+        }
+
+        if (KmDeleteBatchButton != null)
+        {
+            KmDeleteBatchButton.IsEnabled = _adminDeleteModeEnabled && KmBatchesGrid.SelectedItem is KmCodeBatch;
+        }
+    }
+
+    private bool EnsureDeleteModeEnabled(string caption)
+    {
+        if (_adminDeleteModeEnabled)
+        {
+            return true;
+        }
+
+        MessageBox.Show(
+            "Удаление записей заблокировано. Включите режим удаления через Сервис -> Администрирование.",
+            caption,
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+        return false;
+    }
+
+    private void TryLoadAllOnStartup()
+    {
+        try
+        {
+            LoadAll();
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("Initial data load failed", ex);
+            MessageBox.Show(
+                "Не удалось подключиться к БД при запуске. Приложение открыто, но часть данных недоступна." +
+                Environment.NewLine +
+                Environment.NewLine +
+                "Проверьте настройки в меню: Сервис -> Подключение к БД." +
+                Environment.NewLine +
+                $"Техническая ошибка: {ex.Message}",
+                "FlowStock",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     private void LoadAll()
@@ -168,22 +252,13 @@ public partial class MainWindow : Window
                     LoadOrders();
                     break;
                 case TabItemsIndex:
-                    if (!IsItemFormEditing())
-                    {
-                        LoadItems(ItemsSearchBox?.Text);
-                    }
+                    LoadItems(ItemsSearchBox?.Text);
                     break;
                 case TabLocationsIndex:
-                    if (!IsLocationFormEditing())
-                    {
-                        LoadLocations();
-                    }
+                    LoadLocations();
                     break;
                 case TabPartnersIndex:
-                    if (!IsPartnerFormEditing())
-                    {
-                        LoadPartners();
-                    }
+                    LoadPartners();
                     break;
                 case TabKmIndex:
                     LoadKmBatches();
@@ -208,7 +283,8 @@ public partial class MainWindow : Window
         {
             if (MainTabs.SelectedIndex == TabItemsIndex
                 && ItemsGrid.IsKeyboardFocusWithin
-                && ItemsGrid.SelectedItems.Count > 0)
+                && ItemsGrid.SelectedItems.Count > 0
+                && _adminDeleteModeEnabled)
             {
                 e.Handled = true;
                 DeleteItem_Click(ItemsGrid, new RoutedEventArgs());
@@ -268,43 +344,6 @@ public partial class MainWindow : Window
         {
             _taras.Add(tara);
         }
-    }
-
-    private void LoadItemPackagingOptions(Item? item)
-    {
-        _itemPackagingOptions.Clear();
-        ItemDisplayUomCombo.IsEnabled = item != null;
-        ItemPackagingButton.IsEnabled = item != null;
-
-        if (item == null)
-        {
-            ItemDisplayUomCombo.SelectedItem = null;
-            return;
-        }
-
-        _itemPackagingOptions.Add(new PackagingOption(null, $"В базе ({item.BaseUom})"));
-        foreach (var packaging in _services.Packagings.GetPackagings(item.Id))
-        {
-            _itemPackagingOptions.Add(new PackagingOption(packaging.Id, $"{packaging.Name} ({packaging.Code})"));
-        }
-
-        _suppressPackagingSelection = true;
-        ItemDisplayUomCombo.SelectedItem = _itemPackagingOptions.FirstOrDefault(option => option.PackagingId == item.DefaultPackagingId)
-                                           ?? _itemPackagingOptions.FirstOrDefault();
-        _suppressPackagingSelection = false;
-    }
-
-    private void ReloadItemsAndSelect(long itemId)
-    {
-        LoadItems();
-        var item = _items.FirstOrDefault(i => i.Id == itemId);
-        if (item == null)
-        {
-            return;
-        }
-
-        ItemsGrid.SelectedItem = item;
-        ItemsGrid.ScrollIntoView(item);
     }
 
     private void LoadLocations()
@@ -453,6 +492,7 @@ public partial class MainWindow : Window
             _orders.Add(order);
         }
         RestoreOrderSelection(selectedId);
+        UpdateDeleteButtonsAvailability();
     }
 
     private void LoadStock(string? search)
@@ -635,6 +675,11 @@ public partial class MainWindow : Window
 
     private void OrdersDelete_Click(object sender, RoutedEventArgs e)
     {
+        if (!EnsureDeleteModeEnabled("Заказы"))
+        {
+            return;
+        }
+
         if (OrdersGrid.SelectedItem is not Order order)
         {
             MessageBox.Show("Выберите заказ.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -661,6 +706,11 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private void OrdersGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        UpdateDeleteButtonsAvailability();
     }
 
     private void OrdersGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -760,64 +810,41 @@ public partial class MainWindow : Window
 
     private void AddItem_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(ItemNameBox.Text))
+        var window = new ItemEditWindow(_services)
         {
-            MessageBox.Show("Введите наименование товара.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
+            Owner = this
+        };
 
-        var barcode = NormalizeIdentifier(ItemBarcodeBox.Text);
-        var gtin = NormalizeIdentifier(ItemGtinBox.Text);
-        if (string.IsNullOrWhiteSpace(barcode) && !string.IsNullOrWhiteSpace(gtin))
-        {
-            barcode = gtin;
-        }
-
-        if (string.IsNullOrWhiteSpace(barcode))
-        {
-            MessageBox.Show("Введите SKU / штрихкод или GTIN.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (!TryValidateItemIdentifiers(barcode, gtin, null))
+        if (window.ShowDialog() != true)
         {
             return;
         }
 
-        if (!TryParseShelfLifeMonths(ItemShelfLifeBox.Text, out var shelfLifeMonths))
+        LoadItems();
+        RestoreItemSelection(window.SavedItemId);
+    }
+
+    private void EditItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedItem == null)
+        {
+            MessageBox.Show("Выберите товар.", "Товары", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var current = _services.Catalog.GetItems(null).FirstOrDefault(item => item.Id == _selectedItem.Id) ?? _selectedItem;
+        var window = new ItemEditWindow(_services, current)
+        {
+            Owner = this
+        };
+
+        if (window.ShowDialog() != true)
         {
             return;
         }
 
-        var brand = NormalizeIdentifier(ItemBrandBox.Text);
-        var volume = NormalizeIdentifier(ItemVolumeBox.Text);
-        var taraId = (ItemTaraCombo.SelectedItem as Tara)?.Id;
-        var isMarked = ItemMarkedCheck.IsChecked == true;
-
-        try
-        {
-            var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.CreateItem(ItemNameBox.Text, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked);
-            LoadItems();
-            ClearItemForm();
-        }
-        catch (ArgumentException ex)
-        {
-            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (PostgresException ex) when (IsPostgresConstraint(ex))
-        {
-            if (TryShowItemBarcodeDuplicate(barcode, null))
-            {
-                return;
-            }
-
-            MessageBox.Show("Не удалось сохранить товар. Нарушено ограничение базы данных.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        LoadItems();
+        RestoreItemSelection(window.SavedItemId ?? _selectedItem.Id);
     }
 
     private void ImportItems_Click(object sender, RoutedEventArgs e)
@@ -862,6 +889,7 @@ public partial class MainWindow : Window
             _kmBatches.Add(batch);
         }
         RestoreKmBatchSelection(selectedId);
+        UpdateDeleteButtonsAvailability();
     }
 
     private void RestoreKmBatchSelection(long? batchId)
@@ -894,118 +922,93 @@ public partial class MainWindow : Window
             Owner = this
         };
         window.ShowDialog();
-        ReloadItemsAndSelect(_selectedItem.Id);
-    }
-
-    private void ItemDisplayUomCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
-    {
-        if (_suppressPackagingSelection || _selectedItem == null)
-        {
-            return;
-        }
-
-        if (ItemDisplayUomCombo.SelectedItem is not PackagingOption option)
-        {
-            return;
-        }
-
-        try
-        {
-            _services.Packagings.SetDefaultPackaging(_selectedItem.Id, option.PackagingId);
-            ReloadItemsAndSelect(_selectedItem.Id);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
-            LoadItemPackagingOptions(_selectedItem);
-        }
+        var itemId = _selectedItem.Id;
+        LoadItems();
+        RestoreItemSelection(itemId);
     }
 
     private void AddLocation_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(LocationCodeBox.Text) || string.IsNullOrWhiteSpace(LocationNameBox.Text))
+        var window = new LocationEditWindow(_services)
         {
-            MessageBox.Show("Введите код и наименование места хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Owner = this
+        };
+
+        if (window.ShowDialog() != true)
+        {
             return;
         }
 
-        try
+        LoadLocations();
+        RestoreLocationSelection(window.SavedLocationId);
+    }
+
+    private void EditLocation_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedLocation == null)
         {
-            _services.Catalog.CreateLocation(LocationCodeBox.Text, LocationNameBox.Text);
-            LoadLocations();
-            ClearLocationForm();
+            MessageBox.Show("Выберите место хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
         }
-        catch (ArgumentException ex)
+
+        var current = _services.Catalog.GetLocations().FirstOrDefault(location => location.Id == _selectedLocation.Id) ?? _selectedLocation;
+        var window = new LocationEditWindow(_services, current)
         {
-            MessageBox.Show(ex.Message, "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
+            Owner = this
+        };
+
+        if (window.ShowDialog() != true)
         {
-            MessageBox.Show(ex.Message, "Места хранения", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
         }
+
+        LoadLocations();
+        RestoreLocationSelection(window.SavedLocationId ?? _selectedLocation.Id);
     }
 
     private void AddPartner_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(PartnerNameBox.Text))
+        var window = new PartnerEditWindow(_services)
         {
-            MessageBox.Show("Введите наименование контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Owner = this
+        };
+
+        if (window.ShowDialog() != true)
+        {
             return;
         }
 
-        var partnerCode = NormalizeIdentifier(PartnerCodeBox.Text);
-        if (!TryValidatePartnerInn(partnerCode, null))
+        LoadPartners();
+        RestorePartnerSelection(window.SavedPartnerId);
+    }
+
+    private void EditPartner_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedPartner == null)
+        {
+            MessageBox.Show("Выберите контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var current = _services.Catalog.GetPartners().FirstOrDefault(p => p.Id == _selectedPartner.Id) ?? _selectedPartner;
+        var window = new PartnerEditWindow(_services, current)
+        {
+            Owner = this
+        };
+
+        if (window.ShowDialog() != true)
         {
             return;
         }
 
-        try
-        {
-            var partnerId = _services.Catalog.CreatePartner(PartnerNameBox.Text, partnerCode);
-            _services.PartnerStatuses.SetStatus(partnerId, GetSelectedPartnerStatus());
-            LoadPartners();
-            ClearPartnerForm();
-        }
-        catch (ArgumentException ex)
-        {
-            MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (PostgresException ex) when (IsPostgresConstraint(ex))
-        {
-            if (TryShowPartnerDuplicate(partnerCode, null))
-            {
-                return;
-            }
-
-            MessageBox.Show("Не удалось сохранить контрагента. Нарушено ограничение базы данных.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        LoadPartners();
+        RestorePartnerSelection(window.SavedPartnerId ?? _selectedPartner.Id);
     }
 
     private void ItemsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         _selectedItem = ItemsGrid.SelectedItem as Item;
-        ItemSaveButton.IsEnabled = _selectedItem != null;
-        ItemDeleteButton.IsEnabled = _selectedItem != null;
-        if (_selectedItem == null)
-        {
-            LoadItemPackagingOptions(null);
-            return;
-        }
-
-        ItemNameBox.Text = _selectedItem.Name;
-        ItemBarcodeBox.Text = _selectedItem.Barcode ?? string.Empty;
-        ItemGtinBox.Text = _selectedItem.Gtin ?? string.Empty;
-        ItemBrandBox.Text = _selectedItem.Brand ?? string.Empty;
-        ItemVolumeBox.Text = _selectedItem.Volume ?? string.Empty;
-        ItemShelfLifeBox.Text = _selectedItem.ShelfLifeMonths.HasValue ? _selectedItem.ShelfLifeMonths.Value.ToString(CultureInfo.InvariantCulture) : string.Empty;
-        ItemTaraCombo.SelectedItem = _taras.FirstOrDefault(t => t.Id == _selectedItem.TaraId);
-        ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _selectedItem.BaseUom, StringComparison.OrdinalIgnoreCase));
-        ItemMarkedCheck.IsChecked = _selectedItem.IsMarked;
-        LoadItemPackagingOptions(_selectedItem);
+        UpdateDeleteButtonsAvailability();
     }
 
     private void RestoreItemSelection(long? itemId)
@@ -1027,73 +1030,13 @@ public partial class MainWindow : Window
 
     private void ItemsGrid_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key != Key.Delete)
+        if (e.Key != Key.Delete || !_adminDeleteModeEnabled)
         {
             return;
         }
 
         e.Handled = true;
         DeleteItem_Click(sender, new RoutedEventArgs());
-    }
-
-    private void UpdateItem_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selectedItem == null)
-        {
-            MessageBox.Show("Выберите товар.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var barcode = NormalizeIdentifier(ItemBarcodeBox.Text);
-        var gtin = NormalizeIdentifier(ItemGtinBox.Text);
-        if (string.IsNullOrWhiteSpace(barcode) && !string.IsNullOrWhiteSpace(gtin))
-        {
-            barcode = gtin;
-        }
-
-        if (string.IsNullOrWhiteSpace(barcode))
-        {
-            MessageBox.Show("Введите SKU / штрихкод или GTIN.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (!TryValidateItemIdentifiers(barcode, gtin, _selectedItem.Id))
-        {
-            return;
-        }
-
-        if (!TryParseShelfLifeMonths(ItemShelfLifeBox.Text, out var shelfLifeMonths))
-        {
-            return;
-        }
-
-        var brand = NormalizeIdentifier(ItemBrandBox.Text);
-        var volume = NormalizeIdentifier(ItemVolumeBox.Text);
-        var taraId = (ItemTaraCombo.SelectedItem as Tara)?.Id;
-
-        try
-        {
-            var baseUom = (ItemUomCombo.SelectedItem as Uom)?.Name;
-            _services.Catalog.UpdateItem(_selectedItem.Id, ItemNameBox.Text, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, ItemMarkedCheck.IsChecked == true);
-            ReloadItemsAndSelect(_selectedItem.Id);
-        }
-        catch (ArgumentException ex)
-        {
-            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (PostgresException ex) when (IsPostgresConstraint(ex))
-        {
-            if (TryShowItemBarcodeDuplicate(barcode, _selectedItem.Id))
-            {
-                return;
-            }
-
-            MessageBox.Show("Не удалось сохранить товар. Нарушено ограничение базы данных.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Товары", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
     }
 
     private ImportItemsSummary ImportItemsFromExcel(string filePath)
@@ -1318,6 +1261,11 @@ public partial class MainWindow : Window
 
     private void DeleteItem_Click(object sender, RoutedEventArgs e)
     {
+        if (!EnsureDeleteModeEnabled("Товары"))
+        {
+            return;
+        }
+
         var itemsToDelete = GetSelectedItemsForDelete();
         if (itemsToDelete.Count == 0)
         {
@@ -1377,15 +1325,7 @@ public partial class MainWindow : Window
     private void LocationsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         _selectedLocation = LocationsGrid.SelectedItem as Location;
-        LocationSaveButton.IsEnabled = _selectedLocation != null;
-        LocationDeleteButton.IsEnabled = _selectedLocation != null;
-        if (_selectedLocation == null)
-        {
-            return;
-        }
-
-        LocationCodeBox.Text = _selectedLocation.Code;
-        LocationNameBox.Text = _selectedLocation.Name;
+        UpdateDeleteButtonsAvailability();
     }
 
     private void RestoreLocationSelection(long? locationId)
@@ -1405,32 +1345,13 @@ public partial class MainWindow : Window
         LocationsGrid.ScrollIntoView(location);
     }
 
-    private void UpdateLocation_Click(object sender, RoutedEventArgs e)
+    private void DeleteLocation_Click(object sender, RoutedEventArgs e)
     {
-        if (_selectedLocation == null)
+        if (!EnsureDeleteModeEnabled("Места хранения"))
         {
-            MessageBox.Show("Выберите место хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        try
-        {
-            _services.Catalog.UpdateLocation(_selectedLocation.Id, LocationCodeBox.Text, LocationNameBox.Text);
-            LoadLocations();
-            ClearLocationForm();
-        }
-        catch (ArgumentException ex)
-        {
-            MessageBox.Show(ex.Message, "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Места хранения", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void DeleteLocation_Click(object sender, RoutedEventArgs e)
-    {
         if (_selectedLocation == null)
         {
             MessageBox.Show("Выберите место хранения.", "Места хранения", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1459,16 +1380,7 @@ public partial class MainWindow : Window
     {
         var row = PartnersGrid.SelectedItem as PartnerRow;
         _selectedPartner = row?.Partner;
-        PartnerSaveButton.IsEnabled = _selectedPartner != null;
-        PartnerDeleteButton.IsEnabled = _selectedPartner != null;
-        if (_selectedPartner == null)
-        {
-            return;
-        }
-
-        PartnerNameBox.Text = _selectedPartner.Name;
-        PartnerCodeBox.Text = _selectedPartner.Code ?? string.Empty;
-        SetPartnerStatusSelection(_services.PartnerStatuses.GetStatus(_selectedPartner.Id));
+        UpdateDeleteButtonsAvailability();
     }
 
     private void RestorePartnerSelection(long? partnerId)
@@ -1522,74 +1434,13 @@ public partial class MainWindow : Window
         OrdersGrid.ScrollIntoView(order);
     }
 
-    private bool IsItemFormEditing()
-    {
-        return ItemNameBox.IsKeyboardFocusWithin
-               || ItemBarcodeBox.IsKeyboardFocusWithin
-               || ItemGtinBox.IsKeyboardFocusWithin
-               || ItemBrandBox.IsKeyboardFocusWithin
-               || ItemVolumeBox.IsKeyboardFocusWithin
-               || ItemShelfLifeBox.IsKeyboardFocusWithin
-               || ItemTaraCombo.IsKeyboardFocusWithin
-               || ItemUomCombo.IsKeyboardFocusWithin
-               || ItemDisplayUomCombo.IsKeyboardFocusWithin;
-    }
-
-    private bool IsLocationFormEditing()
-    {
-        return LocationCodeBox.IsKeyboardFocusWithin
-               || LocationNameBox.IsKeyboardFocusWithin;
-    }
-
-    private bool IsPartnerFormEditing()
-    {
-        return PartnerNameBox.IsKeyboardFocusWithin
-               || PartnerCodeBox.IsKeyboardFocusWithin
-               || PartnerStatusCombo.IsKeyboardFocusWithin;
-    }
-
-    private void UpdatePartner_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selectedPartner == null)
-        {
-            MessageBox.Show("Выберите контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var partnerCode = NormalizeIdentifier(PartnerCodeBox.Text);
-        if (!TryValidatePartnerInn(partnerCode, _selectedPartner.Id))
-        {
-            return;
-        }
-
-        try
-        {
-            _services.Catalog.UpdatePartner(_selectedPartner.Id, PartnerNameBox.Text, partnerCode);
-            _services.PartnerStatuses.SetStatus(_selectedPartner.Id, GetSelectedPartnerStatus());
-            LoadPartners();
-            ClearPartnerForm();
-        }
-        catch (ArgumentException ex)
-        {
-            MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (PostgresException ex) when (IsPostgresConstraint(ex))
-        {
-            if (TryShowPartnerDuplicate(partnerCode, _selectedPartner.Id))
-            {
-                return;
-            }
-
-            MessageBox.Show("Не удалось сохранить контрагента. Нарушено ограничение базы данных.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
     private void DeletePartner_Click(object sender, RoutedEventArgs e)
     {
+        if (!EnsureDeleteModeEnabled("Контрагенты"))
+        {
+            return;
+        }
+
         if (_selectedPartner == null)
         {
             MessageBox.Show("Выберите контрагента.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1733,6 +1584,50 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
+    private void KmDeleteBatch_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureDeleteModeEnabled("Маркировка"))
+        {
+            return;
+        }
+
+        if (KmBatchesGrid.SelectedItem is not KmCodeBatch batch)
+        {
+            MessageBox.Show("Выберите пакет.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"Удалить пакет \"{batch.FileName}\" и доступные коды в статусе \"В пуле\"?",
+            "Маркировка",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _services.Km.DeleteBatch(batch.Id);
+            LoadKmBatches();
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(ex.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void KmBatchesGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        UpdateDeleteButtonsAvailability();
+    }
+
     private void KmBatchesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         OpenSelectedKmBatch();
@@ -1746,11 +1641,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        var window = new KmBatchDetailsWindow(_services, batch)
+        var window = new KmBatchDetailsWindow(_services, batch, _adminDeleteModeEnabled, LoadKmBatches)
         {
             Owner = this
         };
         window.ShowDialog();
+        LoadKmBatches();
     }
 
     private void OpenDataFolder_Click(object sender, RoutedEventArgs e)
@@ -1820,6 +1716,20 @@ public partial class MainWindow : Window
         UpdateItemRequestsBadge();
     }
 
+    private void OpenOrderRequests_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new OrderRequestsWindow(_services, () =>
+        {
+            LoadOrders();
+            LoadStock(StatusSearchBox.Text);
+        })
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+        LoadOrders();
+    }
+
     private void OpenTsdDevices_Click(object sender, RoutedEventArgs e)
     {
         var window = new TsdDeviceWindow(_services)
@@ -1848,19 +1758,22 @@ public partial class MainWindow : Window
             return;
         }
 
-        var window = new AdminWindow(_services, () =>
-        {
-            LoadDocs();
-            LoadOrders();
-            LoadStock(StatusSearchBox.Text);
-            LoadItems();
-            LoadLocations();
-            LoadPartners();
-            LoadUoms();
-            ClearItemForm();
-            ClearLocationForm();
-            ClearPartnerForm();
-        });
+        var window = new AdminWindow(
+            _services,
+            _adminDeleteModeEnabled,
+            isEnabled =>
+            {
+                _adminDeleteModeEnabled = isEnabled;
+                ApplyDeleteMode();
+            },
+            () =>
+            {
+                LoadDocs();
+                LoadOrders();
+                LoadStock(StatusSearchBox.Text);
+                LoadKmBatches();
+                UpdateItemRequestsBadge();
+            });
         window.Owner = this;
         window.ShowDialog();
     }
@@ -1938,51 +1851,22 @@ public partial class MainWindow : Window
     private void ClearItemForm()
     {
         _selectedItem = null;
-        ItemNameBox.Text = string.Empty;
-        ItemBarcodeBox.Text = string.Empty;
-        ItemGtinBox.Text = string.Empty;
-        ItemBrandBox.Text = string.Empty;
-        ItemVolumeBox.Text = string.Empty;
-        ItemShelfLifeBox.Text = string.Empty;
-        ItemTaraCombo.SelectedItem = null;
-        ItemUomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, "шт", StringComparison.OrdinalIgnoreCase));
-        ItemMarkedCheck.IsChecked = false;
-        ItemSaveButton.IsEnabled = false;
-        ItemDeleteButton.IsEnabled = false;
         ItemsGrid.SelectedItem = null;
-        LoadItemPackagingOptions(null);
+        UpdateDeleteButtonsAvailability();
     }
 
     private void ClearLocationForm()
     {
         _selectedLocation = null;
-        LocationCodeBox.Text = string.Empty;
-        LocationNameBox.Text = string.Empty;
-        LocationSaveButton.IsEnabled = false;
-        LocationDeleteButton.IsEnabled = false;
         LocationsGrid.SelectedItem = null;
+        UpdateDeleteButtonsAvailability();
     }
 
     private void ClearPartnerForm()
     {
         _selectedPartner = null;
-        PartnerNameBox.Text = string.Empty;
-        PartnerCodeBox.Text = string.Empty;
-        SetPartnerStatusSelection(PartnerStatus.Both);
-        PartnerSaveButton.IsEnabled = false;
-        PartnerDeleteButton.IsEnabled = false;
         PartnersGrid.SelectedItem = null;
-    }
-
-    private PartnerStatus GetSelectedPartnerStatus()
-    {
-        return (PartnerStatusCombo.SelectedItem as PartnerStatusOption)?.Status ?? PartnerStatus.Both;
-    }
-
-    private void SetPartnerStatusSelection(PartnerStatus status)
-    {
-        PartnerStatusCombo.SelectedItem = _partnerStatusOptions.FirstOrDefault(option => option.Status == status)
-                                          ?? _partnerStatusOptions.LastOrDefault();
+        UpdateDeleteButtonsAvailability();
     }
 
     private static string GetPartnerStatusLabel(PartnerStatus status)
@@ -1996,142 +1880,6 @@ public partial class MainWindow : Window
         };
     }
 
-    private void PartnerCodeBox_PreviewTextInput(object sender, TextCompositionEventArgs e)
-    {
-        e.Handled = !IsDigitsOnly(e.Text);
-    }
-
-    private void PartnerCodeBox_OnPaste(object sender, DataObjectPastingEventArgs e)
-    {
-        if (!e.DataObject.GetDataPresent(System.Windows.DataFormats.Text))
-        {
-            e.CancelCommand();
-            return;
-        }
-
-        var text = e.DataObject.GetData(System.Windows.DataFormats.Text) as string;
-        if (!IsDigitsOnly(text))
-        {
-            e.CancelCommand();
-        }
-    }
-
-    private bool TryValidatePartnerInn(string? inn, long? currentPartnerId)
-    {
-        if (!string.IsNullOrWhiteSpace(inn) && !IsDigitsOnly(inn))
-        {
-            MessageBox.Show("ИНН должен содержать только цифры.", "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
-
-        return !TryShowPartnerDuplicate(inn, currentPartnerId);
-    }
-
-    private bool TryShowPartnerDuplicate(string? inn, long? currentPartnerId)
-    {
-        var duplicate = FindPartnerByInn(inn, currentPartnerId);
-        if (duplicate == null)
-        {
-            return false;
-        }
-
-        MessageBox.Show($"Контрагент с таким ИНН уже существует: {duplicate.Name}. Продолжить нельзя.",
-            "Контрагенты", MessageBoxButton.OK, MessageBoxImage.Warning);
-        return true;
-    }
-
-    private Partner? FindPartnerByInn(string? inn, long? currentPartnerId)
-    {
-        if (string.IsNullOrWhiteSpace(inn))
-        {
-            return null;
-        }
-
-        var partner = _services.DataStore.FindPartnerByCode(inn);
-        if (partner == null)
-        {
-            return null;
-        }
-
-        if (currentPartnerId.HasValue && partner.Id == currentPartnerId.Value)
-        {
-            return null;
-        }
-
-        return partner;
-    }
-
-    private bool TryParseShelfLifeMonths(string? value, out int? months)
-    {
-        months = null;
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return true;
-        }
-
-        if (!int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) || parsed <= 0)
-        {
-            MessageBox.Show("Срок годности должен быть целым числом месяцев.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
-
-        months = parsed;
-        return true;
-    }
-
-    private bool TryValidateItemIdentifiers(string? barcode, string? gtin, long? currentItemId)
-    {
-        var items = _services.Catalog.GetItems(null);
-
-        if (!string.IsNullOrWhiteSpace(barcode))
-        {
-            var duplicate = items.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Barcode)
-                                                         && string.Equals(item.Barcode, barcode, StringComparison.OrdinalIgnoreCase)
-                                                         && (!currentItemId.HasValue || item.Id != currentItemId.Value));
-            if (duplicate != null)
-            {
-                MessageBox.Show($"Товар с таким SKU / штрихкодом уже существует: {duplicate.Name}. Продолжить нельзя.",
-                    "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return false;
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(gtin))
-        {
-            var duplicate = items.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Gtin)
-                                                         && string.Equals(item.Gtin, gtin, StringComparison.OrdinalIgnoreCase)
-                                                         && (!currentItemId.HasValue || item.Id != currentItemId.Value));
-            if (duplicate != null)
-            {
-                MessageBox.Show($"Товар с таким GTIN уже существует: {duplicate.Name}. Продолжить нельзя.",
-                    "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private bool TryShowItemBarcodeDuplicate(string? barcode, long? currentItemId)
-    {
-        if (string.IsNullOrWhiteSpace(barcode))
-        {
-            return false;
-        }
-
-        var duplicate = _services.Catalog.GetItems(null)
-            .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Barcode)
-                                    && string.Equals(item.Barcode, barcode, StringComparison.OrdinalIgnoreCase)
-                                    && (!currentItemId.HasValue || item.Id != currentItemId.Value));
-        if (duplicate == null)
-        {
-            return false;
-        }
-
-        MessageBox.Show($"Товар с таким SKU / штрихкодом уже существует: {duplicate.Name}. Продолжить нельзя.",
-            "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
-        return true;
-    }
 
     private static string? NormalizeIdentifier(string? value)
     {
@@ -2170,8 +1918,6 @@ public partial class MainWindow : Window
 
     private sealed record DocStatusFilterOption(DocStatus? Status, string Name);
 
-    private sealed record PartnerStatusOption(PartnerStatus Status, string Name);
-
     private sealed record PartnerRow(Partner Partner, string StatusDisplay)
     {
         public long Id => Partner.Id;
@@ -2193,8 +1939,6 @@ public partial class MainWindow : Window
     private sealed record StockLocationFilterOption(string? Code, string Name);
 
     private sealed record StockHuFilterOption(string? Code, string Name);
-
-    private sealed record PackagingOption(long? PackagingId, string Name);
 
     private sealed record ImportItemsSummary(int Created, int Duplicates, int EmptyRows, int InvalidRows, int Errors);
 }

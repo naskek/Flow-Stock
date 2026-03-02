@@ -601,8 +601,13 @@
       '      <label class="form-label" for="ordersSearchInput">Поиск</label>' +
       '      <input class="form-input" id="ordersSearchInput" type="text" autocomplete="off" placeholder="Номер заказа или контрагент" />' +
       "    </div>" +
+      '    <div class="pc-toolbar-actions">' +
+      '      <button id="ordersNewBtn" class="btn" type="button">Новый заказ</button>' +
+      '      <button id="ordersRefreshBtn" class="btn btn-outline" type="button">Обновить</button>' +
+      "    </div>" +
       '    <div id="ordersStatus" class="pc-status"></div>' +
       "  </div>" +
+      '  <div class="pc-note">Создание и смена статуса отправляются как заявки. Применение происходит после подтверждения в WPF.</div>' +
       '  <div id="ordersTableWrap"></div>' +
       "</section>"
     );
@@ -662,7 +667,318 @@
     return fetchJson(url);
   }
 
-  function openOrderModal(order) {
+  function loadOrderReferenceData() {
+    return Promise.all([fetchJson("/api/partners"), fetchJson("/api/items")]).then(function (payloads) {
+      var partners = Array.isArray(payloads[0]) ? payloads[0] : [];
+      var items = Array.isArray(payloads[1]) ? payloads[1] : [];
+      return {
+        partners: partners,
+        items: items,
+      };
+    });
+  }
+
+  function toOrderStatusCode(display) {
+    var normalized = String(display || "").trim().toLowerCase();
+    if (normalized === "принят" || normalized === "accepted") {
+      return "ACCEPTED";
+    }
+    if (normalized === "в процессе" || normalized === "in_progress") {
+      return "IN_PROGRESS";
+    }
+    if (normalized === "черновик" || normalized === "draft") {
+      return "DRAFT";
+    }
+    if (normalized === "отгружен" || normalized === "shipped") {
+      return "SHIPPED";
+    }
+    return "";
+  }
+
+  function openNewOrderModal(onSubmitted) {
+    var modal = document.createElement("div");
+    modal.className = "pc-modal";
+    modal.innerHTML =
+      '<div class="pc-modal-card">' +
+      '  <div class="pc-modal-header">' +
+      '    <div class="pc-modal-title">Новый заказ</div>' +
+      '    <button class="btn btn-outline" type="button" id="newOrderCloseBtn">Закрыть</button>' +
+      "  </div>" +
+      '  <div class="pc-order-form">' +
+      '    <div class="form-field">' +
+      '      <label class="form-label" for="newOrderRefInput">Номер заказа</label>' +
+      '      <input class="form-input" id="newOrderRefInput" type="text" autocomplete="off" />' +
+      "    </div>" +
+      '    <div class="form-field">' +
+      '      <label class="form-label" for="newOrderPartnerSelect">Контрагент</label>' +
+      '      <select class="form-input" id="newOrderPartnerSelect"></select>' +
+      "    </div>" +
+      '    <div class="form-field">' +
+      '      <label class="form-label" for="newOrderDueDateInput">Плановая дата</label>' +
+      '      <input class="form-input" id="newOrderDueDateInput" type="date" />' +
+      "    </div>" +
+      '    <div class="form-field">' +
+      '      <label class="form-label" for="newOrderCommentInput">Комментарий</label>' +
+      '      <input class="form-input" id="newOrderCommentInput" type="text" autocomplete="off" />' +
+      "    </div>" +
+      "  </div>" +
+      '  <div class="pc-order-lines-header">' +
+      '    <div class="pc-modal-title">Строки заказа</div>' +
+      '    <button class="btn btn-ghost" type="button" id="newOrderAddLineBtn">Добавить строку</button>' +
+      "  </div>" +
+      '  <div id="newOrderLinesWrap" class="pc-order-lines"></div>' +
+      '  <div class="pc-modal-footer">' +
+      '    <button class="btn primary-btn" type="button" id="newOrderSubmitBtn">Отправить заявку</button>' +
+      '    <div id="newOrderStatus" class="status"></div>' +
+      "  </div>" +
+      "</div>";
+    document.body.appendChild(modal);
+
+    var refs = {
+      closeBtn: modal.querySelector("#newOrderCloseBtn"),
+      orderRefInput: modal.querySelector("#newOrderRefInput"),
+      partnerSelect: modal.querySelector("#newOrderPartnerSelect"),
+      dueDateInput: modal.querySelector("#newOrderDueDateInput"),
+      commentInput: modal.querySelector("#newOrderCommentInput"),
+      linesWrap: modal.querySelector("#newOrderLinesWrap"),
+      addLineBtn: modal.querySelector("#newOrderAddLineBtn"),
+      submitBtn: modal.querySelector("#newOrderSubmitBtn"),
+      statusEl: modal.querySelector("#newOrderStatus"),
+    };
+    var items = [];
+    var partners = [];
+    var linesState = [];
+
+    function setStatus(text) {
+      if (refs.statusEl) {
+        refs.statusEl.textContent = text || "";
+      }
+    }
+
+    function close() {
+      if (modal && modal.parentNode) {
+        modal.parentNode.removeChild(modal);
+      }
+    }
+
+    function buildPartnerOptions() {
+      if (!refs.partnerSelect) {
+        return;
+      }
+      var options =
+        '<option value="">Выберите контрагента</option>' +
+        partners
+          .map(function (partner) {
+            var label = partner.code ? partner.code + " — " + (partner.name || "") : partner.name || "";
+            return (
+              '<option value="' +
+              escapeHtml(String(partner.id)) +
+              '">' +
+              escapeHtml(label) +
+              "</option>"
+            );
+          })
+          .join("");
+      refs.partnerSelect.innerHTML = options;
+    }
+
+    function buildItemOptions(selectedId) {
+      return (
+        '<option value="">Выберите товар</option>' +
+        items
+          .map(function (item) {
+            var label = item.name || "Без названия";
+            if (item.barcode) {
+              label += " [" + item.barcode + "]";
+            }
+            var selected = Number(selectedId) === Number(item.id) ? ' selected="selected"' : "";
+            return (
+              '<option value="' +
+              escapeHtml(String(item.id)) +
+              '"' +
+              selected +
+              ">" +
+              escapeHtml(label) +
+              "</option>"
+            );
+          })
+          .join("")
+      );
+    }
+
+    function renderLines() {
+      if (!refs.linesWrap) {
+        return;
+      }
+      if (!linesState.length) {
+        linesState.push({ item_id: 0, qty_ordered: 1 });
+      }
+
+      refs.linesWrap.innerHTML = linesState
+        .map(function (line, index) {
+          return (
+            '<div class="pc-order-line-row">' +
+            '<select class="form-input line-item" data-index="' +
+            index +
+            '">' +
+            buildItemOptions(line.item_id) +
+            "</select>" +
+            '<input class="form-input line-qty" data-index="' +
+            index +
+            '" type="number" min="0.001" step="0.001" value="' +
+            escapeHtml(String(line.qty_ordered || "")) +
+            '" />' +
+            '<button class="btn btn-ghost line-remove-btn" type="button" data-index="' +
+            index +
+            '">Удалить</button>' +
+            "</div>"
+          );
+        })
+        .join("");
+
+      var itemSelects = refs.linesWrap.querySelectorAll(".line-item");
+      itemSelects.forEach(function (selectEl) {
+        selectEl.addEventListener("change", function () {
+          var index = Number(selectEl.getAttribute("data-index"));
+          if (!linesState[index]) {
+            return;
+          }
+          linesState[index].item_id = Number(selectEl.value) || 0;
+        });
+      });
+
+      var qtyInputs = refs.linesWrap.querySelectorAll(".line-qty");
+      qtyInputs.forEach(function (inputEl) {
+        inputEl.addEventListener("input", function () {
+          var index = Number(inputEl.getAttribute("data-index"));
+          if (!linesState[index]) {
+            return;
+          }
+          linesState[index].qty_ordered = Number(inputEl.value) || 0;
+        });
+      });
+
+      var removeButtons = refs.linesWrap.querySelectorAll(".line-remove-btn");
+      removeButtons.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var index = Number(btn.getAttribute("data-index"));
+          linesState.splice(index, 1);
+          renderLines();
+        });
+      });
+    }
+
+    function submit() {
+      var orderRef = refs.orderRefInput && refs.orderRefInput.value ? refs.orderRefInput.value.trim() : "";
+      var partnerId = refs.partnerSelect ? Number(refs.partnerSelect.value) : 0;
+      var dueDate = refs.dueDateInput ? String(refs.dueDateInput.value || "").trim() : "";
+      var comment = refs.commentInput ? String(refs.commentInput.value || "").trim() : "";
+      var account = loadAccount();
+      var lines = linesState
+        .filter(function (line) {
+          return Number(line.item_id) > 0 && Number(line.qty_ordered) > 0;
+        })
+        .map(function (line) {
+          return {
+            item_id: Number(line.item_id),
+            qty_ordered: Number(line.qty_ordered),
+          };
+        });
+
+      if (!orderRef) {
+        setStatus("Укажите номер заказа.");
+        return;
+      }
+      if (!partnerId) {
+        setStatus("Выберите контрагента.");
+        return;
+      }
+      if (!lines.length) {
+        setStatus("Добавьте хотя бы одну строку заказа.");
+        return;
+      }
+      if (!account || account.platform !== "PC") {
+        setStatus("Сессия неактивна. Войдите повторно.");
+        return;
+      }
+
+      if (refs.submitBtn) {
+        refs.submitBtn.disabled = true;
+      }
+      setStatus("Отправка заявки...");
+
+      fetchJson("/api/orders/requests/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          order_ref: orderRef,
+          partner_id: partnerId,
+          due_date: dueDate || null,
+          comment: comment || null,
+          lines: lines,
+          login: account.login || null,
+          device_id: account.device_id || null,
+        }),
+      })
+        .then(function (result) {
+          var requestId = result && result.request_id ? String(result.request_id) : "-";
+          setStatus("Заявка #" + requestId + " отправлена. Ожидается подтверждение в WPF.");
+          if (typeof onSubmitted === "function") {
+            onSubmitted();
+          }
+          window.setTimeout(close, 500);
+        })
+        .catch(function (error) {
+          var message = error && error.message ? error.message : "REQUEST_FAILED";
+          setStatus("Ошибка отправки: " + message);
+        })
+        .finally(function () {
+          if (refs.submitBtn) {
+            refs.submitBtn.disabled = false;
+          }
+        });
+    }
+
+    modal.addEventListener("click", function (event) {
+      if (event.target === modal) {
+        close();
+      }
+    });
+    if (refs.closeBtn) {
+      refs.closeBtn.addEventListener("click", close);
+    }
+    if (refs.addLineBtn) {
+      refs.addLineBtn.addEventListener("click", function () {
+        linesState.push({ item_id: 0, qty_ordered: 1 });
+        renderLines();
+      });
+    }
+    if (refs.submitBtn) {
+      refs.submitBtn.addEventListener("click", submit);
+    }
+
+    setStatus("Загрузка справочников...");
+    loadOrderReferenceData()
+      .then(function (refsData) {
+        partners = refsData.partners;
+        items = refsData.items.sort(function (a, b) {
+          var left = String(a.name || "").toLowerCase();
+          var right = String(b.name || "").toLowerCase();
+          return left < right ? -1 : left > right ? 1 : 0;
+        });
+        buildPartnerOptions();
+        linesState = [{ item_id: 0, qty_ordered: 1 }];
+        renderLines();
+        setStatus("");
+      })
+      .catch(function () {
+        setStatus("Ошибка загрузки справочников.");
+      });
+  }
+
+  function openOrderModal(order, onSubmitted) {
+    var currentStatusCode = toOrderStatusCode(order.status);
+    var canChangeStatus = currentStatusCode === "ACCEPTED" || currentStatusCode === "IN_PROGRESS";
     var modal = document.createElement("div");
     modal.className = "pc-modal";
     modal.innerHTML =
@@ -681,6 +997,23 @@
       " · Факт: " +
       escapeHtml(formatDate(order.shipped_at)) +
       "</div>" +
+      '  <div class="pc-order-status-box">' +
+      (canChangeStatus
+        ? '    <div class="pc-order-status-row">' +
+          '      <label class="form-label" for="orderStatusSelect">Новый статус</label>' +
+          '      <select class="form-input" id="orderStatusSelect">' +
+          '        <option value="ACCEPTED"' +
+          (currentStatusCode === "ACCEPTED" ? ' selected="selected"' : "") +
+          ">Принят</option>" +
+          '        <option value="IN_PROGRESS"' +
+          (currentStatusCode === "IN_PROGRESS" ? ' selected="selected"' : "") +
+          ">В процессе</option>" +
+          "      </select>" +
+          '      <button class="btn" type="button" id="orderStatusRequestBtn">Отправить заявку</button>' +
+          "    </div>"
+        : '    <div class="pc-status">Статус этого заказа нельзя менять из веб-интерфейса.</div>') +
+      '    <div id="orderRequestStatus" class="status"></div>' +
+      "  </div>" +
       '  <div id="orderLinesWrap" class="pc-status" style="margin-top:12px;">Загрузка строк...</div>' +
       "</div>";
     document.body.appendChild(modal);
@@ -697,6 +1030,63 @@
     var closeBtn = modal.querySelector("#modalCloseBtn");
     if (closeBtn) {
       closeBtn.addEventListener("click", close);
+    }
+
+    var statusSelect = modal.querySelector("#orderStatusSelect");
+    var statusBtn = modal.querySelector("#orderStatusRequestBtn");
+    var requestStatusEl = modal.querySelector("#orderRequestStatus");
+
+    function setRequestStatus(text) {
+      if (requestStatusEl) {
+        requestStatusEl.textContent = text || "";
+      }
+    }
+
+    if (statusBtn) {
+      statusBtn.addEventListener("click", function () {
+        var nextStatus = statusSelect ? String(statusSelect.value || "").trim() : "";
+        var account = loadAccount();
+
+        if (!nextStatus) {
+          setRequestStatus("Выберите статус.");
+          return;
+        }
+        if (nextStatus === currentStatusCode) {
+          setRequestStatus("Выбран текущий статус.");
+          return;
+        }
+        if (!account || account.platform !== "PC") {
+          setRequestStatus("Сессия неактивна. Войдите повторно.");
+          return;
+        }
+
+        statusBtn.disabled = true;
+        setRequestStatus("Отправка заявки...");
+        fetchJson("/api/orders/requests/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            order_id: Number(order.id),
+            status: nextStatus,
+            login: account.login || null,
+            device_id: account.device_id || null,
+          }),
+        })
+          .then(function (result) {
+            var requestId = result && result.request_id ? String(result.request_id) : "-";
+            setRequestStatus("Заявка #" + requestId + " отправлена. Ожидается подтверждение в WPF.");
+            if (typeof onSubmitted === "function") {
+              onSubmitted();
+            }
+          })
+          .catch(function (error) {
+            var message = error && error.message ? error.message : "REQUEST_FAILED";
+            setRequestStatus("Ошибка отправки: " + message);
+          })
+          .finally(function () {
+            statusBtn.disabled = false;
+          });
+      });
     }
 
     fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines")
@@ -758,6 +1148,8 @@
     var searchInput = document.getElementById("ordersSearchInput");
     var statusEl = document.getElementById("ordersStatus");
     var tableWrap = document.getElementById("ordersTableWrap");
+    var newBtn = document.getElementById("ordersNewBtn");
+    var refreshBtn = document.getElementById("ordersRefreshBtn");
     var debounce = null;
 
     function setStatus(text) {
@@ -779,7 +1171,7 @@
             return String(entry.id) === String(id);
           });
           if (target) {
-            openOrderModal(target);
+            openOrderModal(target, runSearch);
           }
         });
       });
@@ -808,6 +1200,14 @@
 
     if (searchInput) {
       searchInput.addEventListener("input", scheduleSearch);
+    }
+    if (newBtn) {
+      newBtn.addEventListener("click", function () {
+        openNewOrderModal(runSearch);
+      });
+    }
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", runSearch);
     }
 
     runSearch();

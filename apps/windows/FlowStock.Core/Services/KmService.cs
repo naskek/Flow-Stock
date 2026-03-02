@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Linq;
 using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 
@@ -36,6 +37,37 @@ public sealed class KmService
     public int GetAssignedCountForShipmentLine(long shipLineId)
     {
         return _data.CountKmCodesByShipmentLine(shipLineId);
+    }
+
+    public int DeleteInPoolCodes(long batchId, IReadOnlyList<long> codeIds)
+    {
+        if (batchId <= 0)
+        {
+            throw new ArgumentException("Пакет КМ не задан.", nameof(batchId));
+        }
+
+        if (codeIds.Count == 0)
+        {
+            return 0;
+        }
+
+        var uniqueIds = codeIds.Where(id => id > 0).Distinct().ToArray();
+        if (uniqueIds.Length == 0)
+        {
+            return 0;
+        }
+
+        return _data.DeleteKmCodesFromBatch(batchId, uniqueIds);
+    }
+
+    public void DeleteBatch(long batchId)
+    {
+        if (batchId <= 0)
+        {
+            throw new ArgumentException("Пакет КМ не задан.", nameof(batchId));
+        }
+
+        _data.DeleteKmBatch(batchId);
     }
 
     public IReadOnlyList<KmCode> GetShipmentCodes(long shipLineId)
@@ -94,7 +126,7 @@ public sealed class KmService
                 ErrorCount = 0
             });
 
-            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var rawLine in File.ReadLines(filePath))
             {
                 if (string.IsNullOrWhiteSpace(rawLine))
@@ -103,7 +135,7 @@ public sealed class KmService
                 }
 
                 var parts = rawLine.Split(delimiter);
-                var codeRaw = parts.Length > 0 ? parts[0].Trim() : string.Empty;
+                var codeRaw = parts.Length > 0 ? NormalizeCodeRaw(parts[0]) : string.Empty;
                 var gtinRaw = parts.Length > 1 ? parts[1].Trim() : null;
                 var nameRaw = parts.Length > 2 ? parts[2].Trim() : null;
 
@@ -135,7 +167,7 @@ public sealed class KmService
 
                 try
                 {
-                    if (store.FindKmCodeByRaw(codeRaw) != null)
+                    if (store.ExistsKmCodeByRawIgnoreCase(codeRaw))
                     {
                         duplicates++;
                         continue;
@@ -155,6 +187,12 @@ public sealed class KmService
                 }
                 catch
                 {
+                    if (store.ExistsKmCodeByRawIgnoreCase(codeRaw))
+                    {
+                        duplicates++;
+                        continue;
+                    }
+
                     errors++;
                 }
             }
@@ -291,6 +329,24 @@ public sealed class KmService
         {
             invalid = true;
             return null;
+        }
+
+        return trimmed;
+    }
+
+    private static string NormalizeCodeRaw(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length >= 2
+            && trimmed[0] == '"'
+            && trimmed[^1] == '"')
+        {
+            trimmed = trimmed.Substring(1, trimmed.Length - 2).Trim();
         }
 
         return trimmed;

@@ -1,99 +1,25 @@
-using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.Linq;
+using System;
 using System.Windows;
-using Npgsql;
 
 namespace FlowStock.App;
 
 public partial class AdminWindow : Window
 {
-    private static readonly string[] TableOrder =
-    {
-        "docs",
-        "doc_lines",
-        "ledger",
-        "orders",
-        "order_lines",
-        "items",
-        "locations",
-        "partners",
-        "imported_events",
-        "import_errors"
-    };
-    private static readonly string[] DeleteOrder =
-    {
-        "doc_lines",
-        "ledger",
-        "docs",
-        "order_lines",
-        "orders",
-        "imported_events",
-        "import_errors",
-        "items",
-        "locations",
-        "partners"
-    };
-    private static readonly Dictionary<string, string[]> TableDependencies = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["docs"] = new[] { "doc_lines", "ledger" },
-        ["orders"] = new[] { "order_lines", "docs" }
-    };
-    private static readonly Dictionary<string, string[]> LookupDependencies = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["items"] = new[] { "doc_lines", "order_lines", "ledger" },
-        ["locations"] = new[] { "doc_lines", "ledger" },
-        ["partners"] = new[] { "orders", "docs" }
-    };
-    private static readonly HashSet<string> AllowedTables = new(TableOrder, StringComparer.OrdinalIgnoreCase);
-    private static readonly string[] MovementResetTables =
-    {
-        "docs",
-        "doc_lines",
-        "ledger",
-        "orders",
-        "order_lines",
-        "imported_events",
-        "import_errors"
-    };
-
     private readonly AppServices _services;
-    private readonly Action? _onReset;
-    private readonly ObservableCollection<TableCountRow> _counts = new();
+    private readonly Action<bool>? _onDeleteModeChanged;
+    private readonly Action? _onOperationsCleared;
+    private bool _deleteModeEnabled;
 
-    public AdminWindow(AppServices services, Action? onReset)
+    public AdminWindow(AppServices services, bool deleteModeEnabled, Action<bool>? onDeleteModeChanged, Action? onOperationsCleared = null)
     {
         _services = services;
-        _onReset = onReset;
+        _onDeleteModeChanged = onDeleteModeChanged;
+        _onOperationsCleared = onOperationsCleared;
+        _deleteModeEnabled = deleteModeEnabled;
+
         InitializeComponent();
-
-        CountsGrid.ItemsSource = _counts;
         DatabasePathBox.Text = _services.DatabasePath;
-        ResetMovementsRadio.IsChecked = true;
-
-        LoadCounts();
-        UpdateResetButton();
-    }
-
-    private void LoadCounts()
-    {
-        _counts.Clear();
-        var counts = _services.Admin.GetTableCounts();
-        foreach (var table in TableOrder)
-        {
-            counts.TryGetValue(table, out var value);
-            _counts.Add(new TableCountRow(table, value));
-        }
-    }
-
-    private void RefreshCounts_Click(object sender, RoutedEventArgs e)
-    {
-        LoadCounts();
-    }
-
-    private void CountsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
-    {
-        UpdateResetButton();
+        UpdateDeleteModeUi();
     }
 
     private void CreateBackup_Click(object sender, RoutedEventArgs e)
@@ -113,241 +39,82 @@ public partial class AdminWindow : Window
         }
     }
 
-    private void ConfirmChanged(object sender, RoutedEventArgs e)
+    private void ToggleDeleteMode_Click(object sender, RoutedEventArgs e)
     {
-        UpdateResetButton();
-    }
+        var newState = !_deleteModeEnabled;
+        var actionText = newState ? "включить" : "выключить";
+        var confirm = MessageBox.Show(
+            $"Подтвердите: {actionText} режим удаления записей во вкладках.",
+            "Администрирование",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            MessageBoxResult.No);
 
-    private void ConfirmTextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
-    {
-        UpdateResetButton();
-    }
-
-    private void ResetModeChanged(object sender, RoutedEventArgs e)
-    {
-        UpdateSelectionMode();
-        UpdateResetButton();
-    }
-
-    private void UpdateResetButton()
-    {
-        var confirmed = ConfirmCheck.IsChecked == true
-                        && string.Equals(ConfirmTextBox.Text?.Trim(), "УДАЛИТЬ", StringComparison.Ordinal);
-        var selective = SelectiveResetRadio.IsChecked == true;
-        var modeSelected = ResetMovementsRadio.IsChecked == true || FullResetRadio.IsChecked == true || selective;
-        var hasSelection = !selective || CountsGrid.SelectedItems.Count > 0;
-        ExecuteResetButton.IsEnabled = confirmed && modeSelected && hasSelection;
-    }
-
-    private void UpdateSelectionMode()
-    {
-        var selective = SelectiveResetRadio.IsChecked == true;
-        if (!selective)
+        if (confirm != MessageBoxResult.Yes)
         {
-            if (CountsGrid.SelectionMode != System.Windows.Controls.DataGridSelectionMode.Single)
-            {
-                CountsGrid.SelectedItems.Clear();
-            }
-            else
-            {
-                CountsGrid.SelectedItem = null;
-            }
+            return;
         }
-        CountsGrid.SelectionMode = selective
-            ? System.Windows.Controls.DataGridSelectionMode.Extended
-            : System.Windows.Controls.DataGridSelectionMode.Single;
+
+        _deleteModeEnabled = newState;
+        _onDeleteModeChanged?.Invoke(_deleteModeEnabled);
+        _services.AdminLogger.Info($"admin_delete_mode enabled={_deleteModeEnabled}");
+        UpdateDeleteModeUi();
     }
 
-    private void ExecuteReset_Click(object sender, RoutedEventArgs e)
+    private void ClearOperations_Click(object sender, RoutedEventArgs e)
     {
-        if (!ExecuteResetButton.IsEnabled)
+        var confirm = MessageBox.Show(
+            "Очистить все операции и заказы? Это действие удалит тестовые движения.",
+            "Администрирование",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
         {
             return;
         }
 
         var backupDecision = MessageBox.Show(
-            "Сделать резервную копию перед удалением?",
+            "Сделать резервную копию перед очисткой?",
             "Администрирование",
             MessageBoxButton.YesNoCancel,
-            MessageBoxImage.Warning,
+            MessageBoxImage.Question,
             MessageBoxResult.Yes);
-
         if (backupDecision == MessageBoxResult.Cancel)
         {
             return;
         }
 
-        var reason = FullResetRadio.IsChecked == true
-            ? "admin_before_full_reset"
-            : SelectiveResetRadio.IsChecked == true
-                ? "admin_before_selective_reset"
-                : "admin_before_reset";
-        if (backupDecision == MessageBoxResult.Yes && !TryCreateBackup(reason))
+        if (backupDecision == MessageBoxResult.Yes && !TryCreateBackup("admin_before_reset_movements"))
         {
             return;
         }
 
         try
         {
-            if (ResetMovementsRadio.IsChecked == true)
-            {
-                var counts = _services.Admin.GetTableCounts();
-                _services.Admin.ResetMovements();
-                var summary = BuildDeleteSummary(counts, MovementResetTables);
-                MessageBox.Show($"Сброс движений выполнен.\n{summary}", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            else if (SelectiveResetRadio.IsChecked == true)
-            {
-                var selected = GetSelectedTables();
-                if (!TryBuildSelectiveDeletePlan(selected, out var plan, out var error))
-                {
-                    MessageBox.Show(error, "Администрирование", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-
-                var confirmText = $"Будут удалены данные из таблиц: {string.Join(", ", plan)}. Продолжить?";
-                var confirm = MessageBox.Show(
-                    confirmText,
-                    "Администрирование",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Warning,
-                    MessageBoxResult.No);
-                if (confirm != MessageBoxResult.Yes)
-                {
-                    return;
-                }
-
-                var counts = _services.Admin.GetTableCounts();
-                _services.Admin.DeleteTables(plan);
-                var summary = BuildDeleteSummary(counts, plan);
-                MessageBox.Show($"Удаление выполнено.\n{summary}", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            else
-            {
-                var counts = _services.Admin.GetTableCounts();
-                var archive = _services.Admin.FullReset();
-                var summary = BuildDeleteSummary(counts, TableOrder);
-                var archiveText = string.IsNullOrWhiteSpace(archive) ? "Архив: не создан." : $"Архив: {archive}";
-                MessageBox.Show(
-                    $"Полный сброс выполнен.\n{archiveText}\n{summary}\nРекомендуется перезапустить приложение.",
-                    "Администрирование",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-            }
-
-            _onReset?.Invoke();
-            LoadCounts();
-        }
-        catch (PostgresException ex)
-        {
-            _services.AdminLogger.Error("admin_reset failed", ex);
-            MessageBox.Show($"Не удалось выполнить удаление: {ex.Message}", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Error);
+            _services.Admin.ResetMovements();
+            _services.AdminLogger.Info("admin_reset_movements from ui");
+            _onOperationsCleared?.Invoke();
+            MessageBox.Show("Операции очищены.", "Администрирование", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
-            _services.AdminLogger.Error("admin_reset failed", ex);
+            _services.AdminLogger.Error("admin_reset_movements failed", ex);
             MessageBox.Show(ex.Message, "Администрирование", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private static string BuildDeleteSummary(Dictionary<string, long> counts, IEnumerable<string> tables)
+    private void UpdateDeleteModeUi()
     {
-        var parts = tables
-            .Select(table => counts.TryGetValue(table, out var count) ? $"{table}={count}" : $"{table}=0");
-        var summary = $"Удалено: {string.Join(", ", parts)}.";
-        return summary;
-    }
-
-    private List<string> GetSelectedTables()
-    {
-        return CountsGrid.SelectedItems
-            .OfType<TableCountRow>()
-            .Select(row => row.Table)
-            .ToList();
-    }
-
-    private bool TryBuildSelectiveDeletePlan(IReadOnlyCollection<string> selected, out List<string> plan, out string error)
-    {
-        plan = new List<string>();
-        error = string.Empty;
-
-        if (selected.Count == 0)
+        if (_deleteModeEnabled)
         {
-            error = "Выберите таблицы для удаления.";
-            return false;
+            DeleteModeStatusText.Text = "Статус: включен (доступно удаление строк во вкладках)";
+            ToggleDeleteModeButton.Content = "Выключить режим удаления";
+            return;
         }
 
-        foreach (var table in selected)
-        {
-            if (!AllowedTables.Contains(table))
-            {
-                error = $"Недопустимая таблица: {table}.";
-                return false;
-            }
-        }
-
-        var expanded = new HashSet<string>(selected, StringComparer.OrdinalIgnoreCase);
-        var queue = new Queue<string>(selected);
-        while (queue.Count > 0)
-        {
-            var table = queue.Dequeue();
-            if (!TableDependencies.TryGetValue(table, out var deps))
-            {
-                continue;
-            }
-
-            foreach (var dep in deps)
-            {
-                if (expanded.Add(dep))
-                {
-                    queue.Enqueue(dep);
-                }
-            }
-        }
-
-        if (!TryValidateLookupDeletion(expanded, out error))
-        {
-            return false;
-        }
-
-        foreach (var table in DeleteOrder)
-        {
-            if (expanded.Contains(table))
-            {
-                plan.Add(table);
-            }
-        }
-
-        return true;
-    }
-
-    private bool TryValidateLookupDeletion(HashSet<string> expanded, out string error)
-    {
-        error = string.Empty;
-        var counts = _services.Admin.GetTableCounts();
-
-        foreach (var entry in LookupDependencies)
-        {
-            if (!expanded.Contains(entry.Key))
-            {
-                continue;
-            }
-
-            var blocking = entry.Value
-                .Where(table => !expanded.Contains(table)
-                                && counts.TryGetValue(table, out var count)
-                                && count > 0)
-                .ToList();
-            if (blocking.Count == 0)
-            {
-                continue;
-            }
-
-            error = $"Нельзя удалить {entry.Key}, т.к. есть связанные записи в {string.Join(", ", blocking)}.";
-            return false;
-        }
-
-        return true;
+        DeleteModeStatusText.Text = "Статус: выключен (удаление строк заблокировано)";
+        ToggleDeleteModeButton.Content = "Включить режим удаления";
     }
 
     private bool TryCreateBackup(string reason)
@@ -367,7 +134,4 @@ public partial class AdminWindow : Window
             return false;
         }
     }
-
-    private sealed record TableCountRow(string Table, long Count);
 }
-
