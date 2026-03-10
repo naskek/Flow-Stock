@@ -8,13 +8,13 @@ using FlowStock.Core.Models;
 
 namespace FlowStock.App;
 
-public partial class OrderRequestsWindow : Window
+public partial class IncomingRequestsWindow : Window
 {
     private readonly AppServices _services;
-    private readonly ObservableCollection<OrderRequestRow> _rows = new();
+    private readonly ObservableCollection<IncomingRequestRow> _rows = new();
     private readonly Action? _onChanged;
 
-    public OrderRequestsWindow(AppServices services, Action? onChanged)
+    public IncomingRequestsWindow(AppServices services, Action? onChanged)
     {
         _services = services;
         _onChanged = onChanged;
@@ -29,19 +29,50 @@ public partial class OrderRequestsWindow : Window
     {
         _rows.Clear();
         var includeResolved = ShowResolvedCheck?.IsChecked == true;
-        foreach (var request in _services.DataStore.GetOrderRequests(includeResolved))
+
+        var merged = new List<IncomingRequestRow>();
+        foreach (var itemRequest in _services.DataStore.GetItemRequests(includeResolved))
         {
-            _rows.Add(new OrderRequestRow
+            merged.Add(new IncomingRequestRow
             {
-                Request = request,
-                TypeDisplay = GetTypeDisplay(request.RequestType),
-                Summary = BuildSummary(request),
-                RequestedBy = BuildRequestedBy(request),
-                StatusDisplay = GetStatusDisplay(request.Status),
-                CreatedAt = request.CreatedAt,
-                ResolvedAt = request.ResolvedAt,
-                ResolutionNote = request.ResolutionNote
+                ItemRequest = itemRequest,
+                SourceDisplay = "Товары",
+                TypeDisplay = "Запрос товара",
+                Summary = BuildItemSummary(itemRequest),
+                RequestedBy = BuildRequestedBy(itemRequest.Login, itemRequest.DeviceId),
+                StatusDisplay = GetItemStatusDisplay(itemRequest.Status),
+                CreatedAt = itemRequest.CreatedAt,
+                ResolvedAt = itemRequest.ResolvedAt,
+                ResolutionNote = itemRequest.Status.Equals("RESOLVED", StringComparison.OrdinalIgnoreCase)
+                    ? "Отмечено обработанным."
+                    : null,
+                CanApprove = !itemRequest.Status.Equals("RESOLVED", StringComparison.OrdinalIgnoreCase),
+                CanReject = false
             });
+        }
+
+        foreach (var orderRequest in _services.DataStore.GetOrderRequests(includeResolved))
+        {
+            var isPending = string.Equals(orderRequest.Status, OrderRequestStatus.Pending, StringComparison.OrdinalIgnoreCase);
+            merged.Add(new IncomingRequestRow
+            {
+                OrderRequest = orderRequest,
+                SourceDisplay = "Заказы (веб)",
+                TypeDisplay = GetOrderTypeDisplay(orderRequest.RequestType),
+                Summary = BuildOrderSummary(orderRequest),
+                RequestedBy = BuildRequestedBy(orderRequest.CreatedByLogin, orderRequest.CreatedByDeviceId),
+                StatusDisplay = GetOrderStatusDisplay(orderRequest.Status),
+                CreatedAt = orderRequest.CreatedAt,
+                ResolvedAt = orderRequest.ResolvedAt,
+                ResolutionNote = orderRequest.ResolutionNote,
+                CanApprove = isPending,
+                CanReject = isPending
+            });
+        }
+
+        foreach (var row in merged.OrderByDescending(row => row.CreatedAt))
+        {
+            _rows.Add(row);
         }
 
         UpdateButtons();
@@ -54,31 +85,40 @@ public partial class OrderRequestsWindow : Window
 
     private void UpdateButtons()
     {
-        var hasPendingSelection = GetSelectedPending().Count > 0;
-        ApproveButton.IsEnabled = hasPendingSelection;
-        RejectButton.IsEnabled = hasPendingSelection;
+        var selected = RequestsGrid.SelectedItems.Cast<IncomingRequestRow>().ToList();
+        ApproveButton.IsEnabled = selected.Any(row => row.CanApprove);
+        RejectButton.IsEnabled = selected.Any(row => row.CanReject);
+        DetailsButton.IsEnabled = selected.Count == 1 && selected[0].OrderRequest != null;
     }
 
-    private List<OrderRequestRow> GetSelectedPending()
+    private List<IncomingRequestRow> GetSelectedForApprove()
     {
         return RequestsGrid.SelectedItems
-            .Cast<OrderRequestRow>()
-            .Where(row => string.Equals(row.Request.Status, OrderRequestStatus.Pending, StringComparison.OrdinalIgnoreCase))
+            .Cast<IncomingRequestRow>()
+            .Where(row => row.CanApprove)
+            .ToList();
+    }
+
+    private List<IncomingRequestRow> GetSelectedForReject()
+    {
+        return RequestsGrid.SelectedItems
+            .Cast<IncomingRequestRow>()
+            .Where(row => row.CanReject && row.OrderRequest != null)
             .ToList();
     }
 
     private void Approve_Click(object sender, RoutedEventArgs e)
     {
-        var selected = GetSelectedPending();
+        var selected = GetSelectedForApprove();
         if (selected.Count == 0)
         {
-            MessageBox.Show("Выберите необработанные заявки.", "Заявки", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите необработанные запросы.", "Входящие запросы", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         var confirm = MessageBox.Show(
-            $"Подтвердить выбранные заявки ({selected.Count})?",
-            "Заявки",
+            $"Подтвердить/обработать выбранные запросы ({selected.Count})?",
+            "Входящие запросы",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question,
             MessageBoxResult.No);
@@ -88,25 +128,37 @@ public partial class OrderRequestsWindow : Window
         }
 
         var resolvedBy = Environment.UserName;
+        var processedItems = 0;
+        var approvedOrders = 0;
         var errors = new List<string>();
-        var approved = 0;
 
         foreach (var row in selected)
         {
             try
             {
-                var outcome = ApplyRequest(row.Request);
-                _services.DataStore.ResolveOrderRequest(
-                    row.Request.Id,
-                    OrderRequestStatus.Approved,
-                    resolvedBy,
-                    outcome.Note,
-                    outcome.AppliedOrderId);
-                approved++;
+                if (row.ItemRequest != null)
+                {
+                    _services.DataStore.MarkItemRequestResolved(row.ItemRequest.Id);
+                    processedItems++;
+                    continue;
+                }
+
+                if (row.OrderRequest != null)
+                {
+                    var outcome = ApplyOrderRequest(row.OrderRequest);
+                    _services.DataStore.ResolveOrderRequest(
+                        row.OrderRequest.Id,
+                        OrderRequestStatus.Approved,
+                        resolvedBy,
+                        outcome.Note,
+                        outcome.AppliedOrderId);
+                    approvedOrders++;
+                }
             }
             catch (Exception ex)
             {
-                errors.Add($"#{row.Request.Id}: {ex.Message}");
+                var requestId = row.ItemRequest?.Id ?? row.OrderRequest?.Id ?? 0;
+                errors.Add($"#{requestId}: {ex.Message}");
             }
         }
 
@@ -115,27 +167,30 @@ public partial class OrderRequestsWindow : Window
 
         if (errors.Count > 0)
         {
-            var text = "Часть заявок не удалось применить:\n" + string.Join("\n", errors);
-            MessageBox.Show(text, "Заявки", MessageBoxButton.OK, MessageBoxImage.Warning);
+            var text = "Часть запросов не удалось обработать:\n" + string.Join("\n", errors);
+            MessageBox.Show(text, "Входящие запросы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
         }
-        else if (approved > 0)
-        {
-            MessageBox.Show($"Подтверждено: {approved}.", "Заявки", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
+
+        MessageBox.Show(
+            $"Обработано запросов по товарам: {processedItems}\nПодтверждено заявок по заказам: {approvedOrders}",
+            "Входящие запросы",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private void Reject_Click(object sender, RoutedEventArgs e)
     {
-        var selected = GetSelectedPending();
+        var selected = GetSelectedForReject();
         if (selected.Count == 0)
         {
-            MessageBox.Show("Выберите необработанные заявки.", "Заявки", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Выберите заявки по заказам в статусе ожидания.", "Входящие запросы", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         var confirm = MessageBox.Show(
-            $"Отклонить выбранные заявки ({selected.Count})?",
-            "Заявки",
+            $"Отклонить выбранные заявки по заказам ({selected.Count})?",
+            "Входящие запросы",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
             MessageBoxResult.No);
@@ -148,7 +203,7 @@ public partial class OrderRequestsWindow : Window
         foreach (var row in selected)
         {
             _services.DataStore.ResolveOrderRequest(
-                row.Request.Id,
+                row.OrderRequest!.Id,
                 OrderRequestStatus.Rejected,
                 resolvedBy,
                 "Отклонено оператором WPF.",
@@ -164,6 +219,34 @@ public partial class OrderRequestsWindow : Window
         LoadRequests();
     }
 
+    private void Details_Click(object sender, RoutedEventArgs e)
+    {
+        if (RequestsGrid.SelectedItem is not IncomingRequestRow row || row.OrderRequest == null)
+        {
+            MessageBox.Show("Выберите одну заявку по заказу.", "Входящие запросы", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        OpenOrderRequestDetails(row.OrderRequest);
+    }
+
+    private void RequestsGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (RequestsGrid.SelectedItem is IncomingRequestRow row && row.OrderRequest != null)
+        {
+            OpenOrderRequestDetails(row.OrderRequest);
+        }
+    }
+
+    private void OpenOrderRequestDetails(OrderRequest request)
+    {
+        var window = new OrderRequestDetailsWindow(_services, request)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void ShowResolvedCheck_Changed(object sender, RoutedEventArgs e)
     {
         LoadRequests();
@@ -174,7 +257,7 @@ public partial class OrderRequestsWindow : Window
         Close();
     }
 
-    private RequestApplyResult ApplyRequest(OrderRequest request)
+    private RequestApplyResult ApplyOrderRequest(OrderRequest request)
     {
         if (string.Equals(request.RequestType, OrderRequestType.CreateOrder, StringComparison.OrdinalIgnoreCase))
         {
@@ -253,7 +336,13 @@ public partial class OrderRequestsWindow : Window
         throw new InvalidOperationException("Некорректная дата отгрузки в заявке.");
     }
 
-    private static string BuildSummary(OrderRequest request)
+    private static string BuildItemSummary(ItemRequest request)
+    {
+        var comment = string.IsNullOrWhiteSpace(request.Comment) ? "-" : request.Comment.Trim();
+        return $"ШК: {request.Barcode} · Комментарий: {comment}";
+    }
+
+    private static string BuildOrderSummary(OrderRequest request)
     {
         try
         {
@@ -287,30 +376,37 @@ public partial class OrderRequestsWindow : Window
         return request.PayloadJson;
     }
 
-    private static string BuildRequestedBy(OrderRequest request)
+    private static string BuildRequestedBy(string? login, string? deviceId)
     {
-        var login = request.CreatedByLogin?.Trim();
-        var device = request.CreatedByDeviceId?.Trim();
+        var normalizedLogin = login?.Trim();
+        var normalizedDeviceId = deviceId?.Trim();
 
-        if (!string.IsNullOrWhiteSpace(login) && !string.IsNullOrWhiteSpace(device))
+        if (!string.IsNullOrWhiteSpace(normalizedLogin) && !string.IsNullOrWhiteSpace(normalizedDeviceId))
         {
-            return $"{login} ({device})";
+            return $"{normalizedLogin} ({normalizedDeviceId})";
         }
 
-        if (!string.IsNullOrWhiteSpace(login))
+        if (!string.IsNullOrWhiteSpace(normalizedLogin))
         {
-            return login;
+            return normalizedLogin;
         }
 
-        if (!string.IsNullOrWhiteSpace(device))
+        if (!string.IsNullOrWhiteSpace(normalizedDeviceId))
         {
-            return device;
+            return normalizedDeviceId;
         }
 
         return "-";
     }
 
-    private static string GetTypeDisplay(string requestType)
+    private static string GetItemStatusDisplay(string status)
+    {
+        return status.Equals("RESOLVED", StringComparison.OrdinalIgnoreCase)
+            ? "Обработан"
+            : "Новый";
+    }
+
+    private static string GetOrderTypeDisplay(string requestType)
     {
         if (string.Equals(requestType, OrderRequestType.CreateOrder, StringComparison.OrdinalIgnoreCase))
         {
@@ -319,13 +415,13 @@ public partial class OrderRequestsWindow : Window
 
         if (string.Equals(requestType, OrderRequestType.SetOrderStatus, StringComparison.OrdinalIgnoreCase))
         {
-            return "Смена статуса";
+            return "Смена статуса заказа";
         }
 
         return requestType;
     }
 
-    private static string GetStatusDisplay(string status)
+    private static string GetOrderStatusDisplay(string status)
     {
         if (string.Equals(status, OrderRequestStatus.Pending, StringComparison.OrdinalIgnoreCase))
         {
@@ -388,9 +484,11 @@ public partial class OrderRequestsWindow : Window
         public string? Status { get; init; }
     }
 
-    private sealed record OrderRequestRow
+    private sealed record IncomingRequestRow
     {
-        public required OrderRequest Request { get; init; }
+        public ItemRequest? ItemRequest { get; init; }
+        public OrderRequest? OrderRequest { get; init; }
+        public required string SourceDisplay { get; init; }
         public required string TypeDisplay { get; init; }
         public required string Summary { get; init; }
         public required string RequestedBy { get; init; }
@@ -398,5 +496,7 @@ public partial class OrderRequestsWindow : Window
         public DateTime CreatedAt { get; init; }
         public DateTime? ResolvedAt { get; init; }
         public string? ResolutionNote { get; init; }
+        public bool CanApprove { get; init; }
+        public bool CanReject { get; init; }
     }
 }

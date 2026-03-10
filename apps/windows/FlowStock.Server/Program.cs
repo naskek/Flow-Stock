@@ -286,6 +286,7 @@ app.MapGet("/api/items/by-barcode/{barcode}", (string barcode, IDataStore store)
         barcode = item.Barcode,
         gtin = item.Gtin,
         base_uom_code = item.BaseUom,
+        max_qty_per_hu = item.MaxQtyPerHu,
         brand = item.Brand,
         volume = item.Volume
     });
@@ -299,7 +300,7 @@ app.MapGet("/api/items", (HttpRequest request) =>
     using var connection = OpenConnection(postgresConnectionString);
     using var command = connection.CreateCommand();
    command.CommandText = @"
-SELECT id, name, barcode, gtin, base_uom, uom, brand, volume
+SELECT id, name, barcode, gtin, base_uom, uom, max_qty_per_hu, brand, volume
 FROM items
 WHERE @search::text IS NULL
    OR name ILIKE @search::text
@@ -325,8 +326,9 @@ ORDER BY name;"
             barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
             gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
             base_uom_code = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom,
-            brand = reader.IsDBNull(6) ? null : reader.GetString(6),
-            volume = reader.IsDBNull(7) ? null : reader.GetString(7)
+            max_qty_per_hu = reader.IsDBNull(6) ? (double?)null : Convert.ToDouble(reader.GetValue(6), CultureInfo.InvariantCulture),
+            brand = reader.IsDBNull(7) ? null : reader.GetString(7),
+            volume = reader.IsDBNull(8) ? null : reader.GetString(8)
         });
     }
 
@@ -485,9 +487,16 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
 {
     var query = request.Query["q"].ToString();
     var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+    var includeInternal = string.Equals(request.Query["include_internal"], "1", StringComparison.OrdinalIgnoreCase)
+                          || string.Equals(request.Query["include_internal"], "true", StringComparison.OrdinalIgnoreCase);
 
     var orderService = new OrderService(store);
     var orders = orderService.GetOrders();
+    if (!includeInternal)
+    {
+        orders = orders.Where(order => order.Type == OrderType.Customer).ToList();
+    }
+
     if (!string.IsNullOrWhiteSpace(normalized))
     {
         orders = orders
@@ -504,6 +513,14 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
     return Results.Ok(list);
 });
 
+app.MapGet("/api/orders/next-ref", (IDataStore store) =>
+{
+    return Results.Ok(new
+    {
+        order_ref = GenerateNextOrderRef(store)
+    });
+});
+
 app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store) =>
 {
     var orderService = new OrderService(store);
@@ -518,44 +535,28 @@ app.MapGet("/api/orders/{orderId:long}", (long orderId, IDataStore store) =>
 
 app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) =>
 {
-    if (store.GetOrder(orderId) == null)
+    var orderService = new OrderService(store);
+    var order = orderService.GetOrder(orderId);
+    if (order == null)
     {
         return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
     }
 
-    var shippedByLine = store.GetShippedTotalsByOrderLine(orderId);
-    using var connection = OpenConnection(postgresConnectionString);
-    using var command = connection.CreateCommand();
-    command.CommandText = @"
-SELECT ol.id, ol.order_id, ol.item_id, ol.qty_ordered, i.name, i.barcode
-FROM order_lines ol
-INNER JOIN items i ON i.id = ol.item_id
-WHERE ol.order_id = @order_id
-ORDER BY i.name;";
-    AddParam(command, "@order_id", orderId);
-
-    using var reader = command.ExecuteReader();
-    var lines = new List<object>();
-    while (reader.Read())
-    {
-        var lineId = reader.GetInt64(0);
-        var itemId = reader.GetInt64(2);
-        var ordered = reader.GetDouble(3);
-        var shipped = shippedByLine.TryGetValue(lineId, out var shippedQty) ? shippedQty : 0;
-        var left = Math.Max(0, ordered - shipped);
-
-        lines.Add(new
+    var itemLookup = store.GetItems(null).ToDictionary(item => item.Id, item => item);
+    var lines = orderService.GetOrderLineViews(orderId)
+        .Select(line => new
         {
-            id = lineId,
-            order_id = reader.GetInt64(1),
-            item_id = itemId,
-            item_name = reader.GetString(4),
-            barcode = reader.IsDBNull(5) ? null : reader.GetString(5),
-            qty_ordered = ordered,
-            qty_shipped = shipped,
-            qty_left = left
-        });
-    }
+            id = line.Id,
+            order_id = line.OrderId,
+            item_id = line.ItemId,
+            item_name = line.ItemName,
+            barcode = itemLookup.TryGetValue(line.ItemId, out var item) ? item.Barcode : null,
+            qty_ordered = line.QtyOrdered,
+            qty_shipped = line.QtyShipped,
+            qty_produced = line.QtyProduced,
+            qty_left = line.QtyRemaining
+        })
+        .ToList();
 
     return Results.Ok(lines);
 });
@@ -1314,6 +1315,23 @@ app.MapPost("/api/docs", async (HttpRequest request, IDataStore store, DocumentS
         {
             return Results.BadRequest(new ApiResult(false, "UNKNOWN_ORDER"));
         }
+    }
+    else if (!string.IsNullOrWhiteSpace(requestedOrderRef))
+    {
+        requestedOrder = store.GetOrders()
+            .FirstOrDefault(order => string.Equals(order.OrderRef, requestedOrderRef, StringComparison.OrdinalIgnoreCase));
+        if (requestedOrder != null)
+        {
+            requestedOrderId = requestedOrder.Id;
+            requestedOrderRef = requestedOrder.OrderRef;
+        }
+    }
+
+    if (requestedOrder != null
+        && docType == DocType.Outbound
+        && requestedOrder.Type != OrderType.Customer)
+    {
+        return Results.BadRequest(new ApiResult(false, "INTERNAL_ORDER_NOT_ALLOWED_FOR_OUTBOUND"));
     }
 
     var existingEvent = apiStore.GetEvent(createRequest.EventId);
@@ -2360,14 +2378,54 @@ static object MapOrder(Order order)
     {
         id = order.Id,
         order_ref = order.OrderRef,
+        order_type = OrderStatusMapper.TypeToString(order.Type),
         partner_id = order.PartnerId,
         partner_name = order.PartnerName,
         partner_code = order.PartnerCode,
         due_date = order.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-        status = OrderStatusMapper.StatusToDisplayName(order.Status),
+        status = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
         created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
         shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture)
     };
+}
+
+static string GenerateNextOrderRef(IDataStore store)
+{
+    long max = 0;
+    foreach (var order in store.GetOrders())
+    {
+        var orderRef = order.OrderRef?.Trim();
+        if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
+        {
+            continue;
+        }
+
+        if (long.TryParse(orderRef, NumberStyles.None, CultureInfo.InvariantCulture, out var value)
+            && value > max)
+        {
+            max = value;
+        }
+    }
+
+    return (max + 1).ToString("D3", CultureInfo.InvariantCulture);
+}
+
+static bool IsDigitsOnly(string value)
+{
+    if (string.IsNullOrEmpty(value))
+    {
+        return false;
+    }
+
+    foreach (var ch in value)
+    {
+        if (!char.IsDigit(ch))
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 static object MapDoc(Doc doc)

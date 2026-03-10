@@ -57,6 +57,10 @@ public sealed class DocumentService
         }
 
         var order = orderId.HasValue ? _data.GetOrder(orderId.Value) : null;
+        if (order != null && type == DocType.Outbound && order.Type != OrderType.Customer)
+        {
+            throw new ArgumentException("Внутренний заказ нельзя использовать в клиентской отгрузке.", nameof(orderId));
+        }
         var resolvedOrderRef = order?.OrderRef ?? orderRef;
         var cleanedOrderRef = string.IsNullOrWhiteSpace(resolvedOrderRef) ? null : resolvedOrderRef.Trim();
         var cleanedShippingRef = string.IsNullOrWhiteSpace(shippingRef) ? null : shippingRef.Trim();
@@ -219,7 +223,7 @@ public sealed class DocumentService
                 return;
             }
 
-            var lines = store.GetDocLines(docId);
+            var lines = EnsureOrderLineLinks(store, doc, store.GetDocLines(docId));
             Dictionary<StockKey, double>? inventoryTotals = doc.Type == DocType.Inventory
                 ? new Dictionary<StockKey, double>()
                 : null;
@@ -233,6 +237,12 @@ public sealed class DocumentService
                     docHu = inferred;
                 }
             }
+
+            if (doc.Type == DocType.Outbound)
+            {
+                AutoAssignOutboundKmCodes(store, doc, lines, docHu, docId);
+            }
+
             foreach (var line in lines)
             {
                 var (fromHu, toHu) = ResolveLedgerHu(doc, line, docHu);
@@ -521,6 +531,10 @@ public sealed class DocumentService
         }
 
         var order = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (order.Type != OrderType.Customer)
+        {
+            throw new InvalidOperationException("Внутренний заказ нельзя использовать в отгрузке.");
+        }
         var cleanedOrderRef = order.OrderRef.Trim();
 
         var addedLines = 0;
@@ -647,6 +661,10 @@ public sealed class DocumentService
         }
 
         var order = _data.GetOrder(orderId.Value) ?? throw new InvalidOperationException("Заказ не найден.");
+        if (doc.Type == DocType.Outbound && order.Type != OrderType.Customer)
+        {
+            throw new InvalidOperationException("Внутренний заказ нельзя использовать в отгрузке.");
+        }
         var cleanedOrderRef = order.OrderRef.Trim();
         _data.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
     }
@@ -699,7 +717,7 @@ public sealed class DocumentService
             throw new InvalidOperationException("Документ уже закрыт.");
         }
 
-        var lines = _data.GetDocLines(docId);
+        var lines = EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId));
         var line = lines.FirstOrDefault(l => l.Id == docLineId);
         if (line == null)
         {
@@ -754,6 +772,205 @@ public sealed class DocumentService
         _data.UpdateDocLineQty(docLineId, qty, qtyInput, uomCode);
     }
 
+    public void AssignDocLineHu(long docId, long docLineId, double qty, string? fromHu, string? toHu)
+    {
+        if (qty <= 0)
+        {
+            throw new ArgumentException("Количество должно быть больше 0.", nameof(qty));
+        }
+
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        var lines = EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId));
+        var line = lines.FirstOrDefault(l => l.Id == docLineId);
+        if (line == null)
+        {
+            throw new InvalidOperationException("Строка не найдена.");
+        }
+
+        var normalizedFromHu = NormalizeHuValue(fromHu);
+        var normalizedToHu = NormalizeHuValue(toHu);
+        ValidateLineLocations(doc.Type, line.FromLocationId, line.ToLocationId, normalizedFromHu, normalizedToHu);
+        EnsureHuAssignmentAllowed(doc.Type, line.Id);
+
+        if (qty > line.Qty + 0.000001)
+        {
+            throw new InvalidOperationException($"Количество превышает строку: доступно {FormatQty(line.Qty)}.");
+        }
+
+        var sameHu = string.Equals(NormalizeHuValue(line.FromHu), normalizedFromHu, StringComparison.OrdinalIgnoreCase)
+                     && string.Equals(NormalizeHuValue(line.ToHu), normalizedToHu, StringComparison.OrdinalIgnoreCase);
+
+        if (sameHu)
+        {
+            if (Math.Abs(qty - line.Qty) <= 0.000001)
+            {
+                return;
+            }
+
+            throw new InvalidOperationException("Строка уже привязана к выбранному HU.");
+        }
+
+        if (Math.Abs(qty - line.Qty) <= 0.000001)
+        {
+            _data.UpdateDocLineHu(docLineId, normalizedFromHu, normalizedToHu);
+            return;
+        }
+
+        var ratio = line.QtyInput.HasValue && line.Qty > 0
+            ? line.QtyInput.Value / line.Qty
+            : (double?)null;
+        var allocatedInput = ratio.HasValue ? ratio.Value * qty : (double?)null;
+        var remainingQty = line.Qty - qty;
+        var remainingInput = ratio.HasValue ? ratio.Value * remainingQty : (double?)null;
+
+        _data.ExecuteInTransaction(store =>
+        {
+            store.UpdateDocLineQty(docLineId, remainingQty, remainingInput, line.UomCode);
+            store.AddDocLine(new DocLine
+            {
+                DocId = docId,
+                OrderLineId = line.OrderLineId,
+                ItemId = line.ItemId,
+                Qty = qty,
+                QtyInput = allocatedInput,
+                UomCode = line.UomCode,
+                FromLocationId = line.FromLocationId,
+                ToLocationId = line.ToLocationId,
+                FromHu = normalizedFromHu,
+                ToHu = normalizedToHu
+            });
+        });
+    }
+
+    public void DistributeProductionLineByHuCapacity(long docId, long docLineId, double maxQtyPerHu, IReadOnlyList<string> huCodes)
+    {
+        if (maxQtyPerHu <= 0)
+        {
+            throw new ArgumentException("Лимит на HU должен быть больше 0.", nameof(maxQtyPerHu));
+        }
+
+        if (huCodes == null || huCodes.Count == 0)
+        {
+            throw new ArgumentException("Не переданы HU для распределения.", nameof(huCodes));
+        }
+
+        var normalizedHus = huCodes
+            .Select(NormalizeHuValue)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (normalizedHus.Count == 0)
+        {
+            throw new InvalidOperationException("Не переданы корректные HU для распределения.");
+        }
+
+        var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
+        if (doc.Status != DocStatus.Draft)
+        {
+            throw new InvalidOperationException("Документ уже закрыт.");
+        }
+
+        if (doc.Type != DocType.ProductionReceipt)
+        {
+            throw new InvalidOperationException("Распределение по вместимости доступно только для выпуска продукции.");
+        }
+
+        var lines = EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId));
+        var line = lines.FirstOrDefault(l => l.Id == docLineId);
+        if (line == null)
+        {
+            throw new InvalidOperationException("Строка не найдена.");
+        }
+
+        if (line.Qty <= 0)
+        {
+            throw new InvalidOperationException("Количество в строке должно быть больше 0.");
+        }
+
+        EnsureHuAssignmentAllowed(doc.Type, line.Id);
+
+        var requiredHuCount = (int)Math.Ceiling(line.Qty / maxQtyPerHu);
+        if (requiredHuCount <= 1)
+        {
+            AssignDocLineHu(docId, docLineId, line.Qty, line.FromHu, normalizedHus[0]);
+            return;
+        }
+
+        if (normalizedHus.Count < requiredHuCount)
+        {
+            throw new InvalidOperationException(
+                $"Недостаточно HU для распределения. Нужно: {requiredHuCount}, передано: {normalizedHus.Count}.");
+        }
+
+        var chunks = new List<(double qty, string toHu)>(requiredHuCount);
+        var remainingQty = line.Qty;
+        for (var i = 0; i < requiredHuCount; i++)
+        {
+            var qty = i == requiredHuCount - 1
+                ? remainingQty
+                : Math.Min(maxQtyPerHu, remainingQty);
+            if (qty <= 0.000001)
+            {
+                continue;
+            }
+
+            var targetHu = normalizedHus[i]!;
+            ValidateLineLocations(doc.Type, line.FromLocationId, line.ToLocationId, NormalizeHuValue(line.FromHu), targetHu);
+            chunks.Add((qty, targetHu));
+            remainingQty -= qty;
+        }
+
+        if (chunks.Count == 0)
+        {
+            throw new InvalidOperationException("Не удалось рассчитать распределение по HU.");
+        }
+
+        var inputRatio = line.QtyInput.HasValue && line.Qty > 0
+            ? line.QtyInput.Value / line.Qty
+            : (double?)null;
+
+        _data.ExecuteInTransaction(store =>
+        {
+            store.DeleteDocLine(docLineId);
+
+            var remainingInput = line.QtyInput;
+            for (var i = 0; i < chunks.Count; i++)
+            {
+                var chunk = chunks[i];
+                var chunkInput = (double?)null;
+                if (inputRatio.HasValue)
+                {
+                    chunkInput = i == chunks.Count - 1
+                        ? remainingInput
+                        : inputRatio.Value * chunk.qty;
+                    if (remainingInput.HasValue)
+                    {
+                        remainingInput -= chunkInput;
+                    }
+                }
+
+                store.AddDocLine(new DocLine
+                {
+                    DocId = docId,
+                    OrderLineId = line.OrderLineId,
+                    ItemId = line.ItemId,
+                    Qty = chunk.qty,
+                    QtyInput = chunkInput,
+                    UomCode = line.UomCode,
+                    FromLocationId = line.FromLocationId,
+                    ToLocationId = line.ToLocationId,
+                    FromHu = NormalizeHuValue(line.FromHu),
+                    ToHu = chunk.toHu
+                });
+            }
+        });
+    }
+
     public void DeleteDocLine(long docId, long docLineId)
     {
         var doc = _data.GetDoc(docId) ?? throw new InvalidOperationException("Документ не найден.");
@@ -769,6 +986,81 @@ public sealed class DocumentService
         }
 
         _data.DeleteDocLine(docLineId);
+    }
+
+    private static IReadOnlyList<DocLine> EnsureOrderLineLinks(IDataStore store, Doc doc, IReadOnlyList<DocLine> lines)
+    {
+        if (!doc.OrderId.HasValue || lines.Count == 0)
+        {
+            return lines;
+        }
+
+        if (doc.Type != DocType.ProductionReceipt && doc.Type != DocType.Outbound)
+        {
+            return lines;
+        }
+
+        var orderLines = store.GetOrderLines(doc.OrderId.Value);
+        if (orderLines.Count == 0)
+        {
+            return lines;
+        }
+
+        var orderLineIds = orderLines.Select(line => line.Id).ToHashSet();
+        var orderLinesByItem = orderLines
+            .GroupBy(line => line.ItemId)
+            .ToDictionary(group => group.Key, group => group.OrderBy(line => line.Id).ToList());
+
+        List<DocLine>? remappedLines = null;
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            if (!line.OrderLineId.HasValue || orderLineIds.Contains(line.OrderLineId.Value))
+            {
+                remappedLines?.Add(line);
+                continue;
+            }
+
+            if (!orderLinesByItem.TryGetValue(line.ItemId, out var candidates) || candidates.Count != 1)
+            {
+                remappedLines?.Add(line);
+                continue;
+            }
+
+            var targetOrderLineId = candidates[0].Id;
+            store.UpdateDocLineOrderLineId(line.Id, targetOrderLineId);
+
+            remappedLines ??= new List<DocLine>(lines.Count);
+            if (remappedLines.Count == 0)
+            {
+                for (var copied = 0; copied < i; copied++)
+                {
+                    remappedLines.Add(lines[copied]);
+                }
+            }
+
+            remappedLines.Add(CloneDocLineWithOrderLineId(line, targetOrderLineId));
+        }
+
+        return remappedLines ?? lines;
+    }
+
+    private static DocLine CloneDocLineWithOrderLineId(DocLine line, long? orderLineId)
+    {
+        return new DocLine
+        {
+            Id = line.Id,
+            DocId = line.DocId,
+            OrderLineId = orderLineId,
+            ItemId = line.ItemId,
+            Qty = line.Qty,
+            QtyInput = line.QtyInput,
+            UomCode = line.UomCode,
+            FromLocationId = line.FromLocationId,
+            ToLocationId = line.ToLocationId,
+            FromHu = line.FromHu,
+            ToHu = line.ToHu
+        };
     }
 
     private CloseDocCheck BuildCloseDocCheck(long docId)
@@ -793,7 +1085,7 @@ public sealed class DocumentService
         }
 
         var docHu = NormalizeHuValue(doc.ShippingRef);
-        var lines = _data.GetDocLines(docId);
+        var lines = EnsureOrderLineLinks(_data, doc, _data.GetDocLines(docId));
         if (lines.Count == 0)
         {
             check.Errors.Add("Добавьте хотя бы один товар в документ перед проведением.");
@@ -876,6 +1168,15 @@ public sealed class DocumentService
                     break;
             }
 
+            if (doc.Type == DocType.ProductionReceipt
+                && item?.MaxQtyPerHu is double maxQtyPerHu
+                && maxQtyPerHu > 0
+                && line.Qty > maxQtyPerHu + 0.000001)
+            {
+                check.Errors.Add(
+                    $"{rowLabel}: количество {FormatQty(line.Qty)} превышает лимит {FormatQty(maxQtyPerHu)} на один HU. Разбейте строку на несколько HU.");
+            }
+
             if (item?.IsMarked == true && (doc.Type == DocType.ProductionReceipt || doc.Type == DocType.Outbound))
             {
                 var rounded = Math.Round(line.Qty);
@@ -886,12 +1187,36 @@ public sealed class DocumentService
                 else
                 {
                     var required = (int)rounded;
-                    var assigned = doc.Type == DocType.ProductionReceipt
-                        ? _data.CountKmCodesByReceiptLine(line.Id)
-                        : _data.CountKmCodesByShipmentLine(line.Id);
-                    if (assigned != required)
+                    if (doc.Type == DocType.ProductionReceipt)
                     {
-                        check.Errors.Add($"{rowLabel}: требуется привязать {required} код(ов) КМ, сейчас {assigned}.");
+                        var assigned = _data.CountKmCodesByReceiptLine(line.Id);
+                        if (assigned != required)
+                        {
+                            check.Errors.Add($"{rowLabel}: требуется привязать {required} код(ов) КМ, сейчас {assigned}.");
+                        }
+                    }
+                    else
+                    {
+                        var assigned = _data.CountKmCodesByShipmentLine(line.Id);
+                        if (assigned > required)
+                        {
+                            check.Errors.Add($"{rowLabel}: привязано больше кодов КМ ({assigned}), чем количество в строке ({required}).");
+                            continue;
+                        }
+
+                        var missing = required - assigned;
+                        if (missing > 0)
+                        {
+                            var gtin14 = NormalizeGtinForKm(item.Gtin);
+                            var huId = ResolveHuId(_data, fromHu);
+                            var availableForAuto = GetAvailableKmForOutbound(_data, doc.OrderId, line.ItemId, gtin14, line.FromLocationId, huId, missing).Count;
+                            if (availableForAuto < missing)
+                            {
+                                check.Errors.Add(
+                                    $"{rowLabel}: недостаточно КМ для авто-отгрузки. " +
+                                    $"Нужно {required}, уже привязано {assigned}, доступно {assigned + availableForAuto}.");
+                            }
+                        }
                     }
                 }
             }
@@ -1174,10 +1499,6 @@ public sealed class DocumentService
                 {
                     throw new ArgumentException("Для выпуска продукции требуется место хранения получателя.");
                 }
-                if (string.IsNullOrWhiteSpace(NormalizeHuValue(toHu)))
-                {
-                    throw new ArgumentException("Для выпуска продукции требуется HU.");
-                }
                 break;
             case DocType.WriteOff:
                 if (!fromLocationId.HasValue)
@@ -1316,6 +1637,124 @@ public sealed class DocumentService
             DocType.Move => (null, normalized),
             _ => (null, null)
         };
+    }
+
+    private static void AutoAssignOutboundKmCodes(
+        IDataStore store,
+        Doc doc,
+        IReadOnlyList<DocLine> lines,
+        string? docHu,
+        long docId)
+    {
+        var itemsById = store.GetItems(null).ToDictionary(item => item.Id, item => item);
+        for (var index = 0; index < lines.Count; index++)
+        {
+            var line = lines[index];
+            if (!itemsById.TryGetValue(line.ItemId, out var item) || !item.IsMarked)
+            {
+                continue;
+            }
+
+            var rounded = Math.Round(line.Qty);
+            if (Math.Abs(line.Qty - rounded) > 0.0001)
+            {
+                throw new InvalidOperationException($"Строка {index + 1} ({item.Name}): количество для маркируемого товара должно быть целым.");
+            }
+
+            var required = (int)rounded;
+            var assigned = store.CountKmCodesByShipmentLine(line.Id);
+            var missing = required - assigned;
+            if (missing <= 0)
+            {
+                continue;
+            }
+
+            var (fromHu, _) = ResolveLedgerHu(doc, line, docHu);
+            var huId = ResolveHuId(store, fromHu);
+            var gtin14 = NormalizeGtinForKm(item.Gtin);
+            var ids = GetAvailableKmForOutbound(store, doc.OrderId, line.ItemId, gtin14, line.FromLocationId, huId, missing);
+            if (ids.Count < missing)
+            {
+                throw new InvalidOperationException(
+                    $"Строка {index + 1} ({item.Name}): недостаточно КМ для авто-отгрузки. " +
+                    $"Нужно {required}, уже привязано {assigned}, доступно {assigned + ids.Count}.");
+            }
+
+            foreach (var codeId in ids)
+            {
+                store.MarkKmCodeShipped(codeId, docId, line.Id, doc.OrderId);
+            }
+        }
+    }
+
+    private void EnsureHuAssignmentAllowed(DocType type, long docLineId)
+    {
+        if (type == DocType.ProductionReceipt && _data.CountKmCodesByReceiptLine(docLineId) > 0)
+        {
+            throw new InvalidOperationException("Нельзя менять HU строки после привязки КМ.");
+        }
+
+        if (type == DocType.Outbound && _data.CountKmCodesByShipmentLine(docLineId) > 0)
+        {
+            throw new InvalidOperationException("Нельзя менять HU строки после привязки КМ.");
+        }
+    }
+
+    private static long? ResolveHuId(IDataStore store, string? huCode)
+    {
+        if (string.IsNullOrWhiteSpace(huCode))
+        {
+            return null;
+        }
+
+        var record = store.GetHuByCode(huCode.Trim());
+        return record?.Id;
+    }
+
+    private static IReadOnlyList<long> GetAvailableKmForOutbound(
+        IDataStore store,
+        long? orderId,
+        long itemId,
+        string? gtin14,
+        long? locationId,
+        long? huId,
+        int take)
+    {
+        var onHand = store.GetAvailableKmOnHandCodeIds(orderId, itemId, gtin14, locationId, huId, take);
+        if (onHand.Count >= take)
+        {
+            return onHand;
+        }
+
+        var missing = take - onHand.Count;
+        var inPool = store.GetAvailableKmCodeIds(null, orderId, itemId, gtin14, missing);
+        if (onHand.Count == 0)
+        {
+            return inPool;
+        }
+
+        return onHand.Concat(inPool).ToArray();
+    }
+
+    private static string? NormalizeGtinForKm(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (!trimmed.All(char.IsDigit))
+        {
+            return null;
+        }
+
+        if (trimmed.Length == 14)
+        {
+            return trimmed;
+        }
+
+        return trimmed.Length == 13 ? "0" + trimmed : null;
     }
 
     private readonly record struct StockKey(long ItemId, long LocationId, string? Hu);

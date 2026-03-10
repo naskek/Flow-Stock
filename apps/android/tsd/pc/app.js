@@ -613,6 +613,14 @@
     );
   }
 
+  function getOrderTypeLabel(orderType) {
+    var normalized = String(orderType || "").trim().toUpperCase();
+    if (normalized === "INTERNAL") {
+      return "Внутренний выпуск";
+    }
+    return "Клиентский";
+  }
+
   function renderOrdersTable(rows) {
     if (!rows || !rows.length) {
       return '<div class="empty-state">Заказов нет.</div>';
@@ -625,6 +633,9 @@
           '">' +
           "<td>" +
           escapeHtml(order.order_ref || "-") +
+          "</td>" +
+          "<td>" +
+          escapeHtml(getOrderTypeLabel(order.order_type)) +
           "</td>" +
           "<td>" +
           escapeHtml(order.partner_name || "-") +
@@ -646,6 +657,7 @@
       '<table class="pc-table">' +
       "<thead><tr>" +
       "<th>Номер</th>" +
+      "<th>Тип</th>" +
       "<th>Контрагент</th>" +
       "<th>План</th>" +
       "<th>Факт</th>" +
@@ -660,21 +672,30 @@
 
   function loadOrders(query) {
     var q = String(query || "").trim();
-    var url = "/api/orders";
+    var url = "/api/orders?include_internal=1";
     if (q) {
-      url += "?q=" + encodeURIComponent(q);
+      url += "&q=" + encodeURIComponent(q);
     }
     return fetchJson(url);
   }
 
   function loadOrderReferenceData() {
-    return Promise.all([fetchJson("/api/partners"), fetchJson("/api/items")]).then(function (payloads) {
+    return Promise.all([fetchJson("/api/partners?role=customer"), fetchJson("/api/items")]).then(function (payloads) {
       var partners = Array.isArray(payloads[0]) ? payloads[0] : [];
       var items = Array.isArray(payloads[1]) ? payloads[1] : [];
       return {
         partners: partners,
         items: items,
       };
+    });
+  }
+
+  function loadNextOrderRef() {
+    return fetchJson("/api/orders/next-ref").then(function (payload) {
+      if (!payload || !payload.order_ref) {
+        return "";
+      }
+      return String(payload.order_ref).trim();
     });
   }
 
@@ -782,28 +803,218 @@
       refs.partnerSelect.innerHTML = options;
     }
 
-    function buildItemOptions(selectedId) {
-      return (
-        '<option value="">Выберите товар</option>' +
-        items
-          .map(function (item) {
-            var label = item.name || "Без названия";
-            if (item.barcode) {
-              label += " [" + item.barcode + "]";
-            }
-            var selected = Number(selectedId) === Number(item.id) ? ' selected="selected"' : "";
-            return (
-              '<option value="' +
-              escapeHtml(String(item.id)) +
-              '"' +
-              selected +
-              ">" +
-              escapeHtml(label) +
-              "</option>"
-            );
-          })
-          .join("")
-      );
+    function buildItemLabel(item) {
+      if (!item) {
+        return "Без названия";
+      }
+      var label = item.name || "Без названия";
+      if (item.gtin) {
+        label += " · GTIN: " + item.gtin;
+      }
+      if (item.barcode) {
+        label += " · SKU: " + item.barcode;
+      }
+      return label;
+    }
+
+    function getItemById(itemId) {
+      var targetId = Number(itemId);
+      if (!targetId) {
+        return null;
+      }
+      for (var i = 0; i < items.length; i += 1) {
+        if (Number(items[i].id) === targetId) {
+          return items[i];
+        }
+      }
+      return null;
+    }
+
+    function normalizeText(value) {
+      return String(value || "").trim().toLowerCase();
+    }
+
+    function isDigitsOnly(value) {
+      var normalized = String(value || "");
+      if (!normalized) {
+        return false;
+      }
+      for (var i = 0; i < normalized.length; i += 1) {
+        var code = normalized.charCodeAt(i);
+        if (code < 48 || code > 57) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    function endsWithToken(source, token) {
+      if (!source || !token || token.length > source.length) {
+        return false;
+      }
+      return source.lastIndexOf(token) === source.length - token.length;
+    }
+
+    function getItemMatchRank(item, normalizedQuery) {
+      var name = normalizeText(item.name);
+      var barcode = normalizeText(item.barcode);
+      var gtin = normalizeText(item.gtin);
+      var numericQuery = isDigitsOnly(normalizedQuery);
+
+      if (numericQuery) {
+        if (normalizedQuery.length >= 3) {
+          if (endsWithToken(gtin, normalizedQuery)) {
+            return 0;
+          }
+          if (endsWithToken(barcode, normalizedQuery)) {
+            return 1;
+          }
+        }
+        if (gtin.indexOf(normalizedQuery) !== -1) {
+          return 2;
+        }
+        if (barcode.indexOf(normalizedQuery) !== -1) {
+          return 3;
+        }
+        if (name.indexOf(normalizedQuery) !== -1) {
+          return 4;
+        }
+        return -1;
+      }
+
+      if (name.indexOf(normalizedQuery) === 0) {
+        return 0;
+      }
+      if (name.indexOf(normalizedQuery) !== -1) {
+        return 1;
+      }
+      if (gtin.indexOf(normalizedQuery) === 0 || barcode.indexOf(normalizedQuery) === 0) {
+        return 2;
+      }
+      if (gtin.indexOf(normalizedQuery) !== -1 || barcode.indexOf(normalizedQuery) !== -1) {
+        return 3;
+      }
+      return -1;
+    }
+
+    function filterItems(query) {
+      var normalized = normalizeText(query);
+      if (!normalized) {
+        return items.slice(0, 200);
+      }
+
+      var ranked = [];
+      items.forEach(function (item) {
+        var rank = getItemMatchRank(item, normalized);
+        if (rank < 0) {
+          return;
+        }
+        ranked.push({
+          item: item,
+          rank: rank,
+          name: normalizeText(item.name),
+          gtin: normalizeText(item.gtin),
+          barcode: normalizeText(item.barcode),
+        });
+      });
+
+      ranked.sort(function (left, right) {
+        if (left.rank !== right.rank) {
+          return left.rank - right.rank;
+        }
+        if (left.gtin !== right.gtin) {
+          return left.gtin < right.gtin ? -1 : 1;
+        }
+        if (left.barcode !== right.barcode) {
+          return left.barcode < right.barcode ? -1 : 1;
+        }
+        if (left.name !== right.name) {
+          return left.name < right.name ? -1 : 1;
+        }
+        return (Number(left.item.id) || 0) - (Number(right.item.id) || 0);
+      });
+
+      return ranked.slice(0, 200).map(function (entry) {
+        return entry.item;
+      });
+    }
+
+    function findExactItem(query) {
+      var normalized = normalizeText(query);
+      if (!normalized) {
+        return null;
+      }
+
+      for (var i = 0; i < items.length; i += 1) {
+        var item = items[i];
+        if (normalizeText(item.gtin) === normalized) {
+          return item;
+        }
+        if (normalizeText(item.barcode) === normalized) {
+          return item;
+        }
+        if (normalizeText(item.name) === normalized) {
+          return item;
+        }
+      }
+
+      return null;
+    }
+
+    function buildItemSuggestionList(filteredItems, selectedId) {
+      var source = Array.isArray(filteredItems) ? filteredItems.slice(0, 30) : [];
+      return source
+        .map(function (item) {
+          var selected = Number(selectedId) === Number(item.id) ? " is-selected" : "";
+          return (
+            '<button class="pc-order-suggest-item' +
+            selected +
+            '" type="button" data-item-id="' +
+            escapeHtml(String(item.id)) +
+            '">' +
+            escapeHtml(buildItemLabel(item)) +
+            "</button>"
+          );
+        })
+        .join("");
+    }
+
+    function updateLineControls(index) {
+      if (!refs.linesWrap || !linesState[index]) {
+        return;
+      }
+
+      var line = linesState[index];
+      var queryEl = refs.linesWrap.querySelector('.line-item-query[data-index="' + index + '"]');
+      var suggestEl = refs.linesWrap.querySelector('.line-item-suggest[data-index="' + index + '"]');
+      var hintEl = refs.linesWrap.querySelector('.line-item-hint[data-index="' + index + '"]');
+      if (!queryEl) {
+        return;
+      }
+
+      var normalizedQuery = normalizeText(line.query);
+      var filtered = normalizedQuery ? filterItems(line.query) : [];
+      if (suggestEl) {
+        suggestEl.innerHTML = buildItemSuggestionList(filtered, line.item_id);
+        var shouldOpen =
+          normalizedQuery.length > 0 &&
+          filtered.length > 0 &&
+          document.activeElement === queryEl;
+        suggestEl.classList.toggle("is-open", shouldOpen);
+      }
+
+      var selectedItem = getItemById(line.item_id);
+      if (hintEl) {
+        if (selectedItem) {
+          hintEl.textContent = "Выбрано: " + buildItemLabel(selectedItem);
+        } else if (normalizedQuery && filtered.length === 0) {
+          hintEl.textContent = "Совпадения не найдены.";
+        } else if (normalizedQuery) {
+          hintEl.textContent = "Выберите товар из выпадающего списка.";
+        } else {
+          hintEl.textContent = "";
+        }
+      }
     }
 
     function renderLines() {
@@ -811,18 +1022,29 @@
         return;
       }
       if (!linesState.length) {
-        linesState.push({ item_id: 0, qty_ordered: 1 });
+        linesState.push({ item_id: 0, qty_ordered: 1, query: "" });
       }
 
       refs.linesWrap.innerHTML = linesState
         .map(function (line, index) {
+          var query = String(line.query || "");
           return (
             '<div class="pc-order-line-row">' +
-            '<select class="form-input line-item" data-index="' +
+            '<div class="pc-order-line-item-cell">' +
+            '<div class="pc-order-line-autocomplete">' +
+            '<input class="form-input line-item-query" data-index="' +
             index +
-            '">' +
-            buildItemOptions(line.item_id) +
-            "</select>" +
+            '" type="text" autocomplete="off" placeholder="Введите GTIN/SKU или название" value="' +
+            escapeHtml(query) +
+            '" />' +
+            '<div class="pc-order-suggest line-item-suggest" data-index="' +
+            index +
+            '"></div>' +
+            "</div>" +
+            '<div class="pc-order-line-hint line-item-hint" data-index="' +
+            index +
+            '"></div>' +
+            "</div>" +
             '<input class="form-input line-qty" data-index="' +
             index +
             '" type="number" min="0.001" step="0.001" value="' +
@@ -836,14 +1058,74 @@
         })
         .join("");
 
-      var itemSelects = refs.linesWrap.querySelectorAll(".line-item");
-      itemSelects.forEach(function (selectEl) {
-        selectEl.addEventListener("change", function () {
-          var index = Number(selectEl.getAttribute("data-index"));
+      linesState.forEach(function (_line, index) {
+        updateLineControls(index);
+      });
+
+      var queryInputs = refs.linesWrap.querySelectorAll(".line-item-query");
+      queryInputs.forEach(function (inputEl) {
+        inputEl.addEventListener("input", function () {
+          var index = Number(inputEl.getAttribute("data-index"));
           if (!linesState[index]) {
             return;
           }
-          linesState[index].item_id = Number(selectEl.value) || 0;
+
+          linesState[index].query = String(inputEl.value || "");
+          var exactItem = findExactItem(linesState[index].query);
+          if (exactItem) {
+            linesState[index].item_id = Number(exactItem.id) || 0;
+          } else {
+            linesState[index].item_id = 0;
+          }
+          updateLineControls(index);
+        });
+
+        inputEl.addEventListener("focus", function () {
+          var index = Number(inputEl.getAttribute("data-index"));
+          updateLineControls(index);
+        });
+
+        inputEl.addEventListener("blur", function () {
+          var index = Number(inputEl.getAttribute("data-index"));
+          window.setTimeout(function () {
+            updateLineControls(index);
+          }, 120);
+        });
+      });
+
+      var suggestLists = refs.linesWrap.querySelectorAll(".line-item-suggest");
+      suggestLists.forEach(function (listEl) {
+        listEl.addEventListener("mousedown", function (event) {
+          var target = event.target;
+          while (
+            target &&
+            target !== listEl &&
+            !(target.classList && target.classList.contains("pc-order-suggest-item"))
+          ) {
+            target = target.parentNode;
+          }
+          if (!target || target === listEl) {
+            return;
+          }
+
+          event.preventDefault();
+          var index = Number(listEl.getAttribute("data-index"));
+          if (!linesState[index]) {
+            return;
+          }
+
+          var selectedId = Number(target.getAttribute("data-item-id")) || 0;
+          linesState[index].item_id = selectedId;
+          var selectedItem = getItemById(selectedId);
+          if (selectedItem) {
+            linesState[index].query = selectedItem.gtin || selectedItem.barcode || selectedItem.name || "";
+            var queryEl = refs.linesWrap.querySelector('.line-item-query[data-index="' + index + '"]');
+            if (queryEl) {
+              queryEl.value = linesState[index].query;
+              queryEl.focus();
+            }
+          }
+          updateLineControls(index);
         });
       });
 
@@ -874,16 +1156,26 @@
       var dueDate = refs.dueDateInput ? String(refs.dueDateInput.value || "").trim() : "";
       var comment = refs.commentInput ? String(refs.commentInput.value || "").trim() : "";
       var account = loadAccount();
-      var lines = linesState
-        .filter(function (line) {
-          return Number(line.item_id) > 0 && Number(line.qty_ordered) > 0;
-        })
-        .map(function (line) {
-          return {
-            item_id: Number(line.item_id),
-            qty_ordered: Number(line.qty_ordered),
-          };
+      var lines = [];
+      var unresolvedLines = [];
+
+      linesState.forEach(function (line, index) {
+        var qty = Number(line.qty_ordered) || 0;
+        if (qty <= 0) {
+          return;
+        }
+
+        var itemId = Number(line.item_id) || 0;
+        if (!itemId) {
+          unresolvedLines.push(index + 1);
+          return;
+        }
+
+        lines.push({
+          item_id: itemId,
+          qty_ordered: qty,
         });
+      });
 
       if (!orderRef) {
         setStatus("Укажите номер заказа.");
@@ -895,6 +1187,10 @@
       }
       if (!lines.length) {
         setStatus("Добавьте хотя бы одну строку заказа.");
+        return;
+      }
+      if (unresolvedLines.length) {
+        setStatus("Строки " + unresolvedLines.join(", ") + ": выберите товар (доступен поиск по GTIN/названию).");
         return;
       }
       if (!account || account.platform !== "PC") {
@@ -949,7 +1245,7 @@
     }
     if (refs.addLineBtn) {
       refs.addLineBtn.addEventListener("click", function () {
-        linesState.push({ item_id: 0, qty_ordered: 1 });
+        linesState.push({ item_id: 0, qty_ordered: 1, query: "" });
         renderLines();
       });
     }
@@ -957,21 +1253,36 @@
       refs.submitBtn.addEventListener("click", submit);
     }
 
+    if (refs.orderRefInput) {
+      refs.orderRefInput.disabled = true;
+    }
+
     setStatus("Загрузка справочников...");
-    loadOrderReferenceData()
-      .then(function (refsData) {
+    Promise.all([loadOrderReferenceData(), loadNextOrderRef()])
+      .then(function (payload) {
+        var refsData = payload[0];
+        var nextOrderRef = payload[1];
+
         partners = refsData.partners;
         items = refsData.items.sort(function (a, b) {
           var left = String(a.name || "").toLowerCase();
           var right = String(b.name || "").toLowerCase();
           return left < right ? -1 : left > right ? 1 : 0;
         });
+
         buildPartnerOptions();
-        linesState = [{ item_id: 0, qty_ordered: 1 }];
+        linesState = [{ item_id: 0, qty_ordered: 1, query: "" }];
+        if (refs.orderRefInput) {
+          refs.orderRefInput.value = nextOrderRef || "";
+          refs.orderRefInput.disabled = false;
+        }
         renderLines();
         setStatus("");
       })
       .catch(function () {
+        if (refs.orderRefInput) {
+          refs.orderRefInput.disabled = false;
+        }
         setStatus("Ошибка загрузки справочников.");
       });
   }
@@ -979,6 +1290,7 @@
   function openOrderModal(order, onSubmitted) {
     var currentStatusCode = toOrderStatusCode(order.status);
     var canChangeStatus = currentStatusCode === "ACCEPTED" || currentStatusCode === "IN_PROGRESS";
+    var isInternalOrder = String(order.order_type || "").trim().toUpperCase() === "INTERNAL";
     var modal = document.createElement("div");
     modal.className = "pc-modal";
     modal.innerHTML =
@@ -989,7 +1301,9 @@
       "</div>" +
       '    <button class="btn btn-outline" type="button" id="modalCloseBtn">Закрыть</button>' +
       "  </div>" +
-      '  <div class="pc-status">Контрагент: ' +
+      '  <div class="pc-status">Тип: ' +
+      escapeHtml(getOrderTypeLabel(order.order_type)) +
+      " · Контрагент: " +
       escapeHtml(order.partner_name || "-") +
       "</div>" +
       '  <div class="pc-status">План: ' +
@@ -1099,8 +1413,10 @@
           wrap.innerHTML = "<div>Строк нет.</div>";
           return;
         }
+        var processedHeader = isInternalOrder ? "Выпущено" : "Отгружено";
         var body = lines
           .map(function (line) {
+            var processedQty = isInternalOrder ? line.qty_produced || 0 : line.qty_shipped || 0;
             return (
               "<tr>" +
               "<td>" +
@@ -1113,7 +1429,7 @@
               escapeHtml(String(line.qty_ordered || 0)) +
               "</td>" +
               "<td>" +
-              escapeHtml(String(line.qty_shipped || 0)) +
+              escapeHtml(String(processedQty)) +
               "</td>" +
               "<td>" +
               escapeHtml(String(line.qty_left || 0)) +
@@ -1128,7 +1444,9 @@
           "<th>Товар</th>" +
           "<th>ШК</th>" +
           "<th>Заказано</th>" +
-          "<th>Отгружено</th>" +
+          "<th>" +
+          escapeHtml(processedHeader) +
+          "</th>" +
           "<th>Осталось</th>" +
           "</tr></thead>" +
           "<tbody>" +

@@ -27,7 +27,7 @@ public partial class KmBatchEditWindow : Window
         _orders.Add(OrderOption.Empty);
         foreach (var order in _services.Orders.GetOrders())
         {
-            _orders.Add(new OrderOption(order.Id, order.OrderRef, order.PartnerDisplay));
+            _orders.Add(new OrderOption(order.Id, order.OrderRef, order.Type, order.PartnerDisplay));
         }
 
         OrderCombo.ItemsSource = _orders;
@@ -88,12 +88,14 @@ public partial class KmBatchEditWindow : Window
         return true;
     }
 
-    private sealed record OrderOption(long? Id, string OrderRef, string PartnerDisplay)
+    private sealed record OrderOption(long? Id, string OrderRef, OrderType Type, string PartnerDisplay)
     {
-        public static OrderOption Empty { get; } = new(null, string.Empty, string.Empty);
+        public static OrderOption Empty { get; } = new(null, string.Empty, OrderType.Customer, string.Empty);
 
         public string DisplayName => Id.HasValue
-            ? (string.IsNullOrWhiteSpace(PartnerDisplay) ? OrderRef : $"{OrderRef} - {PartnerDisplay}")
+            ? (Type == OrderType.Internal
+                ? $"{OrderRef} - Внутренний выпуск"
+                : string.IsNullOrWhiteSpace(PartnerDisplay) ? OrderRef : $"{OrderRef} - {PartnerDisplay}")
             : "Без заказа";
     }
 }

@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using System.Windows;
+using System.Windows.Data;
 using FlowStock.Core.Models;
 
 namespace FlowStock.App;
@@ -12,18 +13,10 @@ public partial class OrderDetailsWindow : Window
     private readonly AppServices _services;
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly ObservableCollection<OrderLineView> _lines = new();
-    private readonly List<OrderStatusOption> _statusOptions = new()
+    private readonly List<OrderTypeOption> _typeOptions = new()
     {
-        new OrderStatusOption(OrderStatus.Draft, OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft)),
-        new OrderStatusOption(OrderStatus.Accepted, OrderStatusMapper.StatusToDisplayName(OrderStatus.Accepted)),
-        new OrderStatusOption(OrderStatus.InProgress, OrderStatusMapper.StatusToDisplayName(OrderStatus.InProgress))
-    };
-    private readonly List<OrderStatusOption> _statusOptionsAll = new()
-    {
-        new OrderStatusOption(OrderStatus.Draft, OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft)),
-        new OrderStatusOption(OrderStatus.Accepted, OrderStatusMapper.StatusToDisplayName(OrderStatus.Accepted)),
-        new OrderStatusOption(OrderStatus.InProgress, OrderStatusMapper.StatusToDisplayName(OrderStatus.InProgress)),
-        new OrderStatusOption(OrderStatus.Shipped, OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped))
+        new OrderTypeOption(OrderType.Customer, "Клиентский заказ"),
+        new OrderTypeOption(OrderType.Internal, "Внутренний заказ на выпуск")
     };
 
     private Order? _order;
@@ -56,8 +49,10 @@ public partial class OrderDetailsWindow : Window
     {
         OrderLinesGrid.ItemsSource = _lines;
         PartnerCombo.ItemsSource = _partners;
+        TypeCombo.ItemsSource = _typeOptions;
 
         OrderRefBox.TextChanged += OrderHeaderChanged;
+        TypeCombo.SelectionChanged += TypeCombo_SelectionChanged;
         PartnerCombo.SelectionChanged += OrderHeaderChanged;
         DueDatePicker.SelectedDateChanged += OrderHeaderChanged;
         StatusCombo.SelectionChanged += OrderHeaderChanged;
@@ -86,12 +81,13 @@ public partial class OrderDetailsWindow : Window
         _order = null;
         _orderId = null;
         OrderRefBox.Text = GenerateNextOrderRef();
+        TypeCombo.SelectedItem = _typeOptions.First(option => option.Type == OrderType.Customer);
         PartnerCombo.SelectedItem = null;
         DueDatePicker.SelectedDate = null;
         CommentBox.Text = string.Empty;
-        StatusCombo.ItemsSource = _statusOptions;
-        StatusCombo.SelectedItem = _statusOptions[0];
+        RebuildStatusOptions(OrderType.Customer, includeFinal: false);
         _lines.Clear();
+        UpdateTypeUi();
         RefreshLineMetrics();
         SetEditingEnabled(true);
         SaveStatusText.Text = string.Empty;
@@ -118,12 +114,16 @@ public partial class OrderDetailsWindow : Window
 
         Title = $"Заказ: {_order.OrderRef}";
         OrderRefBox.Text = _order.OrderRef;
-        PartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _order.PartnerId);
+        TypeCombo.SelectedItem = _typeOptions.FirstOrDefault(option => option.Type == _order.Type)
+                                ?? _typeOptions.First();
+        PartnerCombo.SelectedItem = _order.PartnerId.HasValue
+            ? _partners.FirstOrDefault(p => p.Id == _order.PartnerId.Value)
+            : null;
         DueDatePicker.SelectedDate = _order.DueDate;
         CommentBox.Text = _order.Comment ?? string.Empty;
 
         var isShipped = _order.Status == OrderStatus.Shipped;
-        StatusCombo.ItemsSource = isShipped ? _statusOptionsAll : _statusOptions;
+        RebuildStatusOptions(_order.Type, isShipped);
         StatusCombo.SelectedItem = (StatusCombo.ItemsSource as IEnumerable<OrderStatusOption>)?
             .FirstOrDefault(option => option.Status == _order.Status);
 
@@ -134,6 +134,7 @@ public partial class OrderDetailsWindow : Window
         }
 
         SaveStatusText.Text = string.Empty;
+        UpdateTypeUi();
         RefreshLineMetrics();
         SetEditingEnabled(!isShipped);
         EndLoad();
@@ -152,7 +153,7 @@ public partial class OrderDetailsWindow : Window
 
     private bool TrySaveOrder(bool showFeedback)
     {
-        if (!TryGetHeaderValues(out var orderRef, out var partnerId, out var dueDate, out var status, out var comment))
+        if (!TryGetHeaderValues(out var orderRef, out var type, out var partnerId, out var dueDate, out var status, out var comment))
         {
             return false;
         }
@@ -166,11 +167,11 @@ public partial class OrderDetailsWindow : Window
         {
             if (_orderId.HasValue)
             {
-                _services.Orders.UpdateOrder(_orderId.Value, orderRef, partnerId, dueDate, status, comment, _lines);
+                _services.Orders.UpdateOrder(_orderId.Value, orderRef, partnerId, dueDate, status, comment, _lines, type);
             }
             else
             {
-                _orderId = _services.Orders.CreateOrder(orderRef, partnerId, dueDate, status, comment, _lines);
+                _orderId = _services.Orders.CreateOrder(orderRef, partnerId, dueDate, status, comment, _lines, type);
             }
 
             LoadOrder();
@@ -306,25 +307,45 @@ public partial class OrderDetailsWindow : Window
 
     private void RefreshLineMetrics()
     {
+        var type = GetSelectedOrderType();
         var availableByItem = _services.Orders.GetItemAvailability();
-        var shippedByLine = _orderId.HasValue
-            ? _services.Orders.GetShippedTotals(_orderId.Value)
-            : new Dictionary<long, double>();
+        var processedByLine = new Dictionary<long, double>();
+
+        if (_orderId.HasValue)
+        {
+            if (type == OrderType.Internal)
+            {
+                processedByLine = _services.Documents.GetOrderReceiptRemaining(_orderId.Value)
+                    .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
+            }
+            else
+            {
+                processedByLine = _services.Orders.GetShippedTotals(_orderId.Value)
+                    .ToDictionary(entry => entry.Key, entry => entry.Value);
+            }
+        }
 
         foreach (var line in _lines)
         {
             var available = availableByItem.TryGetValue(line.ItemId, out var availableQty) ? availableQty : 0;
-            var shipped = shippedByLine.TryGetValue(line.Id, out var shippedQty) ? shippedQty : 0;
-            var remaining = Math.Max(0, line.QtyOrdered - shipped);
-            var availableForShip = Math.Max(0, available);
-            var canShip = Math.Min(remaining, availableForShip);
-            var shortage = Math.Max(0, remaining - availableForShip);
+            var processed = processedByLine.TryGetValue(line.Id, out var processedQty) ? processedQty : 0;
+            var remaining = Math.Max(0, line.QtyOrdered - processed);
 
             line.QtyAvailable = available;
-            line.QtyShipped = shipped;
+            line.QtyProduced = type == OrderType.Internal ? processed : 0;
+            line.QtyShipped = processed;
             line.QtyRemaining = remaining;
-            line.CanShipNow = canShip;
-            line.Shortage = shortage;
+
+            if (type == OrderType.Internal)
+            {
+                line.CanShipNow = 0;
+                line.Shortage = 0;
+                continue;
+            }
+
+            var availableForShip = Math.Max(0, available);
+            line.CanShipNow = Math.Min(remaining, availableForShip);
+            line.Shortage = Math.Max(0, remaining - availableForShip);
         }
 
         UpdateEmptyState();
@@ -342,7 +363,7 @@ public partial class OrderDetailsWindow : Window
         {
             if (showMessage)
             {
-                MessageBox.Show("Отгруженный заказ нельзя редактировать.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show($"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, _order.Type)} заказ нельзя редактировать.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             return false;
         }
@@ -353,7 +374,6 @@ public partial class OrderDetailsWindow : Window
     private void SetEditingEnabled(bool enabled)
     {
         OrderRefBox.IsEnabled = enabled;
-        PartnerCombo.IsEnabled = enabled;
         DueDatePicker.IsEnabled = enabled;
         StatusCombo.IsEnabled = enabled;
         CommentBox.IsEnabled = enabled;
@@ -361,10 +381,72 @@ public partial class OrderDetailsWindow : Window
         EditLineButton.IsEnabled = enabled && _selectedLine != null;
         DeleteLineButton.IsEnabled = enabled && _selectedLine != null;
         SaveButton.IsEnabled = enabled;
+        UpdateTypeUi();
+    }
+
+    private void RebuildStatusOptions(OrderType type, bool includeFinal)
+    {
+        var currentStatus = (StatusCombo.SelectedItem as OrderStatusOption)?.Status
+                            ?? _order?.Status
+                            ?? OrderStatus.Draft;
+        var options = new List<OrderStatusOption>
+        {
+            new(OrderStatus.Draft, OrderStatusMapper.StatusToDisplayName(OrderStatus.Draft, type)),
+            new(OrderStatus.Accepted, OrderStatusMapper.StatusToDisplayName(OrderStatus.Accepted, type)),
+            new(OrderStatus.InProgress, OrderStatusMapper.StatusToDisplayName(OrderStatus.InProgress, type))
+        };
+        if (includeFinal)
+        {
+            options.Add(new OrderStatusOption(OrderStatus.Shipped, OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, type)));
+        }
+
+        StatusCombo.ItemsSource = options;
+        StatusCombo.SelectedItem = options.FirstOrDefault(option => option.Status == currentStatus)
+                                   ?? options.First();
+    }
+
+    private void UpdateTypeUi()
+    {
+        var type = GetSelectedOrderType();
+        var canEdit = _order?.Status != OrderStatus.Shipped;
+
+        TypeCombo.IsEnabled = canEdit && !_orderId.HasValue;
+        PartnerCombo.IsEnabled = canEdit && type == OrderType.Customer;
+
+        if (type == OrderType.Internal && PartnerCombo.SelectedItem != null)
+        {
+            PartnerCombo.SelectedItem = null;
+        }
+
+        OrderTypeHintText.Text = type == OrderType.Internal
+            ? "Внутренний заказ на выпуск. Контрагент не нужен, закрывается по проведенным PRD."
+            : "Клиентский заказ. Закрывается по проведенным отгрузкам OUT.";
+
+        ProcessedQtyColumn.Header = type == OrderType.Internal ? "Выпущено" : "Отгружено";
+        ProcessedQtyColumn.Binding = new System.Windows.Data.Binding(type == OrderType.Internal ? nameof(OrderLineView.QtyProduced) : nameof(OrderLineView.QtyShipped));
+        AvailableQtyColumn.Header = type == OrderType.Internal ? "В наличии ГП" : "В наличии";
+        CanShipNowColumn.Visibility = type == OrderType.Internal ? Visibility.Collapsed : Visibility.Visible;
+        ShortageColumn.Visibility = type == OrderType.Internal ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private OrderType GetSelectedOrderType()
+    {
+        return (TypeCombo.SelectedItem as OrderTypeOption)?.Type
+               ?? _order?.Type
+               ?? OrderType.Customer;
     }
 
     private void OrderHeaderChanged(object? sender, RoutedEventArgs e)
     {
+        MarkDirty();
+    }
+
+    private void TypeCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        var includeFinal = _order?.Status == OrderStatus.Shipped;
+        RebuildStatusOptions(GetSelectedOrderType(), includeFinal);
+        UpdateTypeUi();
+        RefreshLineMetrics();
         MarkDirty();
     }
 
@@ -390,10 +472,11 @@ public partial class OrderDetailsWindow : Window
         SaveStatusText.Text = string.Empty;
     }
 
-    private bool TryGetHeaderValues(out string orderRef, out long partnerId, out DateTime? dueDate, out OrderStatus status, out string? comment)
+    private bool TryGetHeaderValues(out string orderRef, out OrderType type, out long? partnerId, out DateTime? dueDate, out OrderStatus status, out string? comment)
     {
         orderRef = OrderRefBox.Text ?? string.Empty;
-        partnerId = 0;
+        type = GetSelectedOrderType();
+        partnerId = null;
         dueDate = DueDatePicker.SelectedDate;
         comment = CommentBox.Text;
         status = OrderStatus.Draft;
@@ -404,25 +487,28 @@ public partial class OrderDetailsWindow : Window
             return false;
         }
 
-        if (PartnerCombo.SelectedItem is not Partner partner)
+        if (type == OrderType.Customer)
         {
-            if (_order?.PartnerId is long existingPartnerId && IsSupplierPartner(existingPartnerId))
+            if (PartnerCombo.SelectedItem is not Partner partner)
+            {
+                if (_order?.PartnerId is long existingPartnerId && IsSupplierPartner(existingPartnerId))
+                {
+                    MessageBox.Show("В заказе нельзя выбрать контрагента со статусом \"Поставщик\".", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+
+                MessageBox.Show("Выберите контрагента.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+
+            if (IsSupplierPartner(partner.Id))
             {
                 MessageBox.Show("В заказе нельзя выбрать контрагента со статусом \"Поставщик\".", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
 
-            MessageBox.Show("Выберите контрагента.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
+            partnerId = partner.Id;
         }
-
-        if (IsSupplierPartner(partner.Id))
-        {
-            MessageBox.Show("В заказе нельзя выбрать контрагента со статусом \"Поставщик\".", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
-
-        partnerId = partner.Id;
 
         if (StatusCombo.SelectedItem is OrderStatusOption option)
         {
@@ -431,7 +517,7 @@ public partial class OrderDetailsWindow : Window
 
         if (status == OrderStatus.Shipped)
         {
-            MessageBox.Show("Статус \"Отгружен\" ставится автоматически.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show($"Статус \"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, type)}\" ставится автоматически.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
@@ -564,6 +650,18 @@ public partial class OrderDetailsWindow : Window
         }
 
         public OrderStatus Status { get; }
+        public string Name { get; }
+    }
+
+    private sealed class OrderTypeOption
+    {
+        public OrderTypeOption(OrderType type, string name)
+        {
+            Type = type;
+            Name = name;
+        }
+
+        public OrderType Type { get; }
         public string Name { get; }
     }
 }

@@ -11,4 +11,5 @@ public sealed class KmCodeBatch
     public string? ImportedBy { get; init; }
     public int TotalCodes { get; init; }
     public int ErrorCount { get; init; }
+    public string BatchStatusDisplay { get; init; } = string.Empty;
 }

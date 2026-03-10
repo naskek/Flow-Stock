@@ -1,5 +1,11 @@
 namespace FlowStock.Core.Models;
 
+public enum OrderType
+{
+    Customer,
+    Internal
+}
+
 public enum OrderStatus
 {
     Draft,
@@ -10,6 +16,36 @@ public enum OrderStatus
 
 public static class OrderStatusMapper
 {
+    public static OrderType? TypeFromString(string? type)
+    {
+        return type?.Trim().ToUpperInvariant() switch
+        {
+            "CUSTOMER" => OrderType.Customer,
+            "INTERNAL" => OrderType.Internal,
+            _ => null
+        };
+    }
+
+    public static string TypeToString(OrderType type)
+    {
+        return type switch
+        {
+            OrderType.Customer => "CUSTOMER",
+            OrderType.Internal => "INTERNAL",
+            _ => "CUSTOMER"
+        };
+    }
+
+    public static string TypeToDisplayName(OrderType type)
+    {
+        return type switch
+        {
+            OrderType.Customer => "Клиентский",
+            OrderType.Internal => "Внутренний выпуск",
+            _ => "Неизвестно"
+        };
+    }
+
     public static OrderStatus? StatusFromString(string? status)
     {
         return status?.Trim().ToUpperInvariant() switch
@@ -36,12 +72,17 @@ public static class OrderStatusMapper
 
     public static string StatusToDisplayName(OrderStatus status)
     {
+        return StatusToDisplayName(status, OrderType.Customer);
+    }
+
+    public static string StatusToDisplayName(OrderStatus status, OrderType type)
+    {
         return status switch
         {
             OrderStatus.Draft => "Черновик",
             OrderStatus.Accepted => "Принят",
             OrderStatus.InProgress => "В процессе",
-            OrderStatus.Shipped => "Отгружен",
+            OrderStatus.Shipped => type == OrderType.Internal ? "Завершен" : "Отгружен",
             _ => "Неизвестно"
         };
     }

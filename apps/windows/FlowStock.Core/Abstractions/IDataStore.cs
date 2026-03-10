@@ -63,6 +63,8 @@ public interface IDataStore
     IReadOnlyList<DocLineView> GetDocLineViews(long docId);
     long AddDocLine(DocLine line);
     void UpdateDocLineQty(long docLineId, double qty, double? qtyInput, string? uomCode);
+    void UpdateDocLineHu(long docLineId, string? fromHu, string? toHu);
+    void UpdateDocLineOrderLineId(long docLineId, long? orderLineId);
     void DeleteDocLine(long docLineId);
     void DeleteDocLines(long docId);
     void UpdateDocHeader(long docId, long? partnerId, string? orderRef, string? shippingRef);
@@ -82,6 +84,8 @@ public interface IDataStore
     IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId);
     IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId);
     long AddOrderLine(OrderLine line);
+    void UpdateOrderLineQty(long orderLineId, double qtyOrdered);
+    void DeleteOrderLine(long orderLineId);
     void DeleteOrderLines(long orderId);
     void DeleteOrder(long orderId);
     IReadOnlyDictionary<long, double> GetLedgerTotalsByItem();
@@ -141,6 +145,7 @@ public interface IDataStore
     int CountKmCodesByReceiptLine(long receiptLineId);
     int CountKmCodesByShipmentLine(long shipLineId);
     IReadOnlyList<long> GetAvailableKmCodeIds(long? batchId, long? orderId, long skuId, string? gtin14, int take);
+    IReadOnlyList<long> GetAvailableKmOnHandCodeIds(long? orderId, long skuId, string? gtin14, long? locationId, long? huId, int take);
     int AssignKmCodesToReceipt(IReadOnlyList<long> codeIds, long docId, long lineId, long? huId, long? locationId);
     void MarkKmCodeShipped(long codeId, long docId, long lineId, long? orderId);
     int DeleteKmCodesFromBatch(long batchId, IReadOnlyList<long> codeIds);

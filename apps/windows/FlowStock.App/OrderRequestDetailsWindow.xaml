@@ -1,0 +1,99 @@
+<Window x:Class="FlowStock.App.OrderRequestDetailsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Подробности заявки заказа" Height="620" Width="980">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="180" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="180" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="ID заявки:" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="0" Grid.Column="1" x:Name="RequestIdText" />
+            <TextBlock Grid.Row="0" Grid.Column="2" Text="Статус:" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="0" Grid.Column="3" x:Name="StatusText" />
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="Тип:" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="1" Grid.Column="1" x:Name="TypeText" />
+            <TextBlock Grid.Row="1" Grid.Column="2" Text="Создан:" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="1" Grid.Column="3" x:Name="CreatedAtText" />
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="Отправитель:" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3" x:Name="RequestedByText" />
+        </Grid>
+
+        <GroupBox Grid.Row="1" Header="Заказ" Margin="0,0,0,10">
+            <Grid Margin="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="180" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Номер заказа:" FontWeight="SemiBold" />
+                <TextBlock Grid.Row="0" Grid.Column="1" x:Name="OrderRefText" />
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Контрагент:" FontWeight="SemiBold" />
+                <TextBlock Grid.Row="1" Grid.Column="1" x:Name="PartnerText" />
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Плановая дата:" FontWeight="SemiBold" />
+                <TextBlock Grid.Row="2" Grid.Column="1" x:Name="DueDateText" />
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="Целевой статус:" FontWeight="SemiBold" />
+                <TextBlock Grid.Row="3" Grid.Column="1" x:Name="TargetStatusText" />
+
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="Комментарий:" FontWeight="SemiBold" />
+                <TextBlock Grid.Row="4" Grid.Column="1" x:Name="CommentText" TextWrapping="Wrap" />
+            </Grid>
+        </GroupBox>
+
+        <Grid Grid.Row="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Строки заказа" FontWeight="SemiBold" Margin="0,0,0,6" />
+            <DataGrid Grid.Row="1" x:Name="LinesGrid" AutoGenerateColumns="False" IsReadOnly="True">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="ID товара" Binding="{Binding ItemId}" Width="Auto" MaxWidth="120" />
+                    <DataGridTextColumn Header="Наименование" Binding="{Binding ItemName}" Width="*" />
+                    <DataGridTextColumn Header="SKU / ШК" Binding="{Binding Barcode}" Width="Auto" MaxWidth="220" />
+                    <DataGridTextColumn Header="GTIN" Binding="{Binding Gtin}" Width="Auto" MaxWidth="180" />
+                    <DataGridTextColumn Header="Кол-во" Binding="{Binding QtyOrdered}" Width="Auto" MaxWidth="120" />
+                </DataGrid.Columns>
+            </DataGrid>
+            <TextBlock x:Name="NoLinesText"
+                       Grid.Row="1"
+                       Text="Для этого типа заявки строки не передаются."
+                       Foreground="Gray"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Visibility="Collapsed" />
+        </Grid>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="Закрыть" Width="120" Click="Close_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

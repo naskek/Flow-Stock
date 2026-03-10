@@ -45,6 +45,7 @@ public partial class ItemEditWindow : Window
         {
             Title = "Добавление товара";
             IdBox.Text = "(будет присвоен)";
+            MaxQtyPerHuBox.Text = string.Empty;
             UomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, "шт", StringComparison.OrdinalIgnoreCase))
                                     ?? _uoms.FirstOrDefault();
             TaraCombo.SelectedItem = TaraOption.Empty;
@@ -60,6 +61,9 @@ public partial class ItemEditWindow : Window
         VolumeBox.Text = _item.Volume ?? string.Empty;
         ShelfLifeBox.Text = _item.ShelfLifeMonths.HasValue
             ? _item.ShelfLifeMonths.Value.ToString(CultureInfo.InvariantCulture)
+            : string.Empty;
+        MaxQtyPerHuBox.Text = _item.MaxQtyPerHu.HasValue
+            ? _item.MaxQtyPerHu.Value.ToString("0.###", CultureInfo.InvariantCulture)
             : string.Empty;
         MarkedCheck.IsChecked = _item.IsMarked;
         UomCombo.SelectedItem = _uoms.FirstOrDefault(u => string.Equals(u.Name, _item.BaseUom, StringComparison.OrdinalIgnoreCase))
@@ -96,6 +100,11 @@ public partial class ItemEditWindow : Window
             return;
         }
 
+        if (!TryParseMaxQtyPerHu(MaxQtyPerHuBox.Text, out var maxQtyPerHu))
+        {
+            return;
+        }
+
         if (!TryValidateItemIdentifiers(barcode, gtin, _item?.Id))
         {
             return;
@@ -109,12 +118,12 @@ public partial class ItemEditWindow : Window
         {
             if (_item == null)
             {
-                var itemId = _services.Catalog.CreateItem(name, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked);
+                var itemId = _services.Catalog.CreateItem(name, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked, maxQtyPerHu);
                 SavedItemId = itemId;
             }
             else
             {
-                _services.Catalog.UpdateItem(_item.Id, name, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked);
+                _services.Catalog.UpdateItem(_item.Id, name, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked, maxQtyPerHu);
                 SavedItemId = _item.Id;
             }
 
@@ -154,6 +163,32 @@ public partial class ItemEditWindow : Window
         }
 
         months = parsed;
+        return true;
+    }
+
+    private bool TryParseMaxQtyPerHu(string? value, out double? maxQtyPerHu)
+    {
+        maxQtyPerHu = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        var raw = value.Trim();
+        if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.CurrentCulture, out var parsed)
+            && !double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out parsed))
+        {
+            MessageBox.Show("Максимум на HU должен быть числом.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        if (parsed <= 0)
+        {
+            MessageBox.Show("Максимум на HU должен быть больше 0.", "Товары", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        maxQtyPerHu = parsed;
         return true;
     }
 

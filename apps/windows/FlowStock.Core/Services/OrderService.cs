@@ -41,7 +41,7 @@ public sealed class OrderService
         }
 
         var lines = _data.GetOrderLineViews(orderId);
-        ApplyLineMetrics(orderId, lines);
+        ApplyLineMetrics(order, lines);
         return lines;
     }
 
@@ -55,27 +55,36 @@ public sealed class OrderService
         return _data.GetShippedTotalsByOrderLine(orderId);
     }
 
-    public long CreateOrder(string orderRef, long partnerId, DateTime? dueDate, OrderStatus status, string? comment, IReadOnlyList<OrderLineView> lines)
+    public long CreateOrder(string orderRef, long? partnerId, DateTime? dueDate, OrderStatus status, string? comment, IReadOnlyList<OrderLineView> lines, OrderType type = OrderType.Customer)
     {
         if (string.IsNullOrWhiteSpace(orderRef))
         {
             throw new ArgumentException("Номер заказа обязателен.", nameof(orderRef));
         }
 
-        if (_data.GetPartner(partnerId) == null)
+        if (type == OrderType.Customer)
         {
-            throw new ArgumentException("Контрагент не найден.", nameof(partnerId));
+            if (!partnerId.HasValue)
+            {
+                throw new ArgumentException("Контрагент обязателен.", nameof(partnerId));
+            }
+
+            if (_data.GetPartner(partnerId.Value) == null)
+            {
+                throw new ArgumentException("Контрагент не найден.", nameof(partnerId));
+            }
         }
 
         if (status == OrderStatus.Shipped)
         {
-            throw new ArgumentException("Статус \"Отгружен\" ставится автоматически.", nameof(status));
+            throw new ArgumentException($"Статус \"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, type)}\" ставится автоматически.", nameof(status));
         }
 
         var order = new Order
         {
             OrderRef = orderRef.Trim(),
-            PartnerId = partnerId,
+            Type = type,
+            PartnerId = type == OrderType.Customer ? partnerId : null,
             DueDate = dueDate?.Date,
             Status = status,
             Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
@@ -102,22 +111,35 @@ public sealed class OrderService
         return orderId;
     }
 
-    public void UpdateOrder(long orderId, string orderRef, long partnerId, DateTime? dueDate, OrderStatus status, string? comment, IReadOnlyList<OrderLineView> lines)
+    public void UpdateOrder(long orderId, string orderRef, long? partnerId, DateTime? dueDate, OrderStatus status, string? comment, IReadOnlyList<OrderLineView> lines, OrderType type = OrderType.Customer)
     {
         var existing = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         if (existing.Status == OrderStatus.Shipped)
         {
-            throw new InvalidOperationException("Отгруженный заказ нельзя редактировать.");
+            throw new InvalidOperationException($"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, existing.Type)} заказ нельзя редактировать.");
         }
 
-        if (_data.GetPartner(partnerId) == null)
+        if (existing.Type != type)
         {
-            throw new ArgumentException("Контрагент не найден.", nameof(partnerId));
+            throw new InvalidOperationException("Тип существующего заказа менять нельзя.");
+        }
+
+        if (type == OrderType.Customer)
+        {
+            if (!partnerId.HasValue)
+            {
+                throw new ArgumentException("Контрагент обязателен.", nameof(partnerId));
+            }
+
+            if (_data.GetPartner(partnerId.Value) == null)
+            {
+                throw new ArgumentException("Контрагент не найден.", nameof(partnerId));
+            }
         }
 
         if (status == OrderStatus.Shipped)
         {
-            throw new ArgumentException("Статус \"Отгружен\" ставится автоматически.", nameof(status));
+            throw new ArgumentException($"Статус \"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, type)}\" ставится автоматически.", nameof(status));
         }
 
         if (string.IsNullOrWhiteSpace(orderRef))
@@ -129,7 +151,8 @@ public sealed class OrderService
         {
             Id = orderId,
             OrderRef = orderRef.Trim(),
-            PartnerId = partnerId,
+            Type = existing.Type,
+            PartnerId = existing.Type == OrderType.Customer ? partnerId : null,
             DueDate = dueDate?.Date,
             Status = status,
             Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
@@ -141,15 +164,50 @@ public sealed class OrderService
         _data.ExecuteInTransaction(store =>
         {
             store.UpdateOrder(updated);
-            store.DeleteOrderLines(orderId);
+
+            var existingLines = store.GetOrderLines(orderId);
+            var existingByItem = existingLines
+                .GroupBy(line => line.ItemId)
+                .ToDictionary(group => group.Key, group => group.OrderBy(line => line.Id).ToList());
+            var incomingItemIds = normalized.Select(line => line.ItemId).ToHashSet();
+
             foreach (var line in normalized)
             {
+                if (existingByItem.TryGetValue(line.ItemId, out var matched) && matched.Count > 0)
+                {
+                    var primary = matched[0];
+                    if (Math.Abs(primary.QtyOrdered - line.QtyOrdered) > QtyTolerance)
+                    {
+                        store.UpdateOrderLineQty(primary.Id, line.QtyOrdered);
+                    }
+
+                    // Legacy cleanup: keep one line per item, remove accidental duplicates.
+                    for (var i = 1; i < matched.Count; i++)
+                    {
+                        store.DeleteOrderLine(matched[i].Id);
+                    }
+                    continue;
+                }
+
                 store.AddOrderLine(new OrderLine
                 {
                     OrderId = orderId,
                     ItemId = line.ItemId,
                     QtyOrdered = line.QtyOrdered
                 });
+            }
+
+            foreach (var entry in existingByItem)
+            {
+                if (incomingItemIds.Contains(entry.Key))
+                {
+                    continue;
+                }
+
+                foreach (var staleLine in entry.Value)
+                {
+                    store.DeleteOrderLine(staleLine.Id);
+                }
             }
         });
     }
@@ -173,6 +231,22 @@ public sealed class OrderService
             throw new InvalidOperationException("Нельзя удалить заказ: есть отгрузки.");
         }
 
+        if (existing.Type == OrderType.Internal)
+        {
+            var hasProductionReceipts = _data.GetDocsByOrder(orderId)
+                .Any(doc => doc.Type == DocType.ProductionReceipt);
+            if (hasProductionReceipts)
+            {
+                throw new InvalidOperationException("Нельзя удалить внутренний заказ: есть выпуски продукции или связанные документы.");
+            }
+
+            var receiptRemaining = _data.GetOrderReceiptRemaining(orderId);
+            if (receiptRemaining.Any(line => line.QtyReceived > QtyTolerance))
+            {
+                throw new InvalidOperationException("Нельзя удалить внутренний заказ: по нему уже был выпуск продукции.");
+            }
+        }
+
         _data.ExecuteInTransaction(store =>
         {
             store.DeleteOrderLines(orderId);
@@ -185,12 +259,12 @@ public sealed class OrderService
         var existing = _data.GetOrder(orderId) ?? throw new InvalidOperationException("Заказ не найден.");
         if (existing.Status == OrderStatus.Shipped)
         {
-            throw new InvalidOperationException("Отгруженный заказ нельзя менять.");
+            throw new InvalidOperationException($"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, existing.Type)} заказ нельзя менять.");
         }
 
         if (status == OrderStatus.Shipped)
         {
-            throw new InvalidOperationException("Статус \"Отгружен\" ставится автоматически.");
+            throw new InvalidOperationException($"Статус \"{OrderStatusMapper.StatusToDisplayName(OrderStatus.Shipped, existing.Type)}\" ставится автоматически.");
         }
 
         if (status != OrderStatus.Accepted && status != OrderStatus.InProgress)
@@ -201,10 +275,32 @@ public sealed class OrderService
         _data.UpdateOrderStatus(orderId, status);
     }
 
-    private void ApplyLineMetrics(long orderId, IReadOnlyList<OrderLineView> lines)
+    private void ApplyLineMetrics(Order order, IReadOnlyList<OrderLineView> lines)
     {
         var availableByItem = _data.GetLedgerTotalsByItem();
-        var shippedByLine = _data.GetShippedTotalsByOrderLine(orderId);
+        if (order.Type == OrderType.Internal)
+        {
+            var producedByLine = _data.GetOrderReceiptRemaining(order.Id)
+                .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
+
+            foreach (var line in lines)
+            {
+                var available = availableByItem.TryGetValue(line.ItemId, out var availableQty) ? availableQty : 0;
+                var produced = producedByLine.TryGetValue(line.Id, out var producedQty) ? producedQty : 0;
+                var remaining = Math.Max(0, line.QtyOrdered - produced);
+
+                line.QtyAvailable = available;
+                line.QtyProduced = produced;
+                line.QtyShipped = produced;
+                line.QtyRemaining = remaining;
+                line.CanShipNow = 0;
+                line.Shortage = 0;
+            }
+
+            return;
+        }
+
+        var shippedByLine = _data.GetShippedTotalsByOrderLine(order.Id);
 
         foreach (var line in lines)
         {
@@ -217,6 +313,7 @@ public sealed class OrderService
 
             line.QtyAvailable = available;
             line.QtyShipped = shipped;
+            line.QtyProduced = 0;
             line.QtyRemaining = remaining;
             line.CanShipNow = canShip;
             line.Shortage = shortage;
@@ -252,6 +349,55 @@ public sealed class OrderService
 
     private Order ApplyAutoStatus(Order order)
     {
+        if (order.Type == OrderType.Internal)
+        {
+            var receiptLines = _data.GetOrderReceiptRemaining(order.Id);
+            var fullyProduced = receiptLines.Count > 0 && receiptLines.All(line => line.QtyReceived + QtyTolerance >= line.QtyOrdered);
+            var anyProduced = receiptLines.Any(line => line.QtyReceived > QtyTolerance);
+
+            var internalStatus = order.Status;
+            if (fullyProduced)
+            {
+                internalStatus = OrderStatus.Shipped;
+            }
+            else if (anyProduced)
+            {
+                internalStatus = OrderStatus.InProgress;
+            }
+            else
+            {
+                internalStatus = order.Status == OrderStatus.Draft ? OrderStatus.Draft : OrderStatus.Accepted;
+            }
+
+            if (internalStatus != order.Status)
+            {
+                _data.UpdateOrderStatus(order.Id, internalStatus);
+            }
+
+            var completedAt = internalStatus == OrderStatus.Shipped
+                ? _data.GetDocsByOrder(order.Id)
+                    .Where(doc => doc.Type == DocType.ProductionReceipt && doc.Status == DocStatus.Closed && doc.ClosedAt.HasValue)
+                    .Select(doc => doc.ClosedAt!.Value)
+                    .DefaultIfEmpty()
+                    .Max()
+                : (DateTime?)null;
+
+            return new Order
+            {
+                Id = order.Id,
+                OrderRef = order.OrderRef,
+                Type = order.Type,
+                PartnerId = order.PartnerId,
+                DueDate = order.DueDate,
+                Status = internalStatus,
+                Comment = order.Comment,
+                CreatedAt = order.CreatedAt,
+                ShippedAt = completedAt == DateTime.MinValue ? null : completedAt,
+                PartnerName = order.PartnerName,
+                PartnerCode = order.PartnerCode
+            };
+        }
+
         var hasOutbound = _data.HasOutboundDocs(order.Id);
         var lines = _data.GetOrderLines(order.Id);
         var shippedTotals = _data.GetShippedTotalsByOrderLine(order.Id);
@@ -282,6 +428,7 @@ public sealed class OrderService
         {
             Id = order.Id,
             OrderRef = order.OrderRef,
+            Type = order.Type,
             PartnerId = order.PartnerId,
             DueDate = order.DueDate,
             Status = nextStatus,

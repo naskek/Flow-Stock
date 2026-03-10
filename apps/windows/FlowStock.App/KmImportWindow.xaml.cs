@@ -26,7 +26,7 @@ public partial class KmImportWindow : Window
         _orders.Clear();
         foreach (var order in _services.Orders.GetOrders())
         {
-            _orders.Add(new OrderOption(order.Id, order.OrderRef, order.PartnerDisplay));
+            _orders.Add(new OrderOption(order.Id, order.OrderRef, order.Type, order.PartnerDisplay));
         }
 
         OrderCombo.ItemsSource = _orders;
@@ -183,8 +183,10 @@ public partial class KmImportWindow : Window
         SelectedFilesText.Text = string.Join("\n", _selectedFiles.Select(Path.GetFileName));
     }
 
-    private sealed record OrderOption(long Id, string OrderRef, string PartnerDisplay)
+    private sealed record OrderOption(long Id, string OrderRef, OrderType Type, string PartnerDisplay)
     {
-        public string DisplayName => string.IsNullOrWhiteSpace(PartnerDisplay) ? OrderRef : $"{OrderRef} - {PartnerDisplay}";
+        public string DisplayName => Type == OrderType.Internal
+            ? $"{OrderRef} - Внутренний выпуск"
+            : string.IsNullOrWhiteSpace(PartnerDisplay) ? OrderRef : $"{OrderRef} - {PartnerDisplay}";
     }
 }

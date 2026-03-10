@@ -644,7 +644,7 @@ public partial class MainWindow : Window
         if (!wasClosed && refreshed?.Status == DocStatus.Closed)
         {
             LoadStock(StatusSearchBox.Text);
-            if (refreshed.Type == DocType.Outbound)
+            if (refreshed.Type == DocType.Outbound || refreshed.Type == DocType.ProductionReceipt)
             {
                 LoadOrders();
             }
@@ -1706,28 +1706,21 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
-    private void OpenItemRequests_Click(object sender, RoutedEventArgs e)
+    private void OpenIncomingRequests_Click(object sender, RoutedEventArgs e)
     {
-        var window = new ItemRequestsWindow(_services, UpdateItemRequestsBadge)
+        var window = new IncomingRequestsWindow(_services, () =>
         {
-            Owner = this
-        };
-        window.ShowDialog();
-        UpdateItemRequestsBadge();
-    }
-
-    private void OpenOrderRequests_Click(object sender, RoutedEventArgs e)
-    {
-        var window = new OrderRequestsWindow(_services, () =>
-        {
-            LoadOrders();
             LoadStock(StatusSearchBox.Text);
+            LoadOrders();
+            UpdateItemRequestsBadge();
         })
         {
             Owner = this
         };
         window.ShowDialog();
+        LoadStock(StatusSearchBox.Text);
         LoadOrders();
+        UpdateItemRequestsBadge();
     }
 
     private void OpenTsdDevices_Click(object sender, RoutedEventArgs e)
@@ -1838,13 +1831,18 @@ public partial class MainWindow : Window
 
         try
         {
-            var count = _services.DataStore.GetItemRequests(false).Count;
+            var itemCount = _services.DataStore.GetItemRequests(false).Count;
+            var orderCount = _services.DataStore.GetOrderRequests(false).Count;
+            var count = itemCount + orderCount;
             ItemRequestsCountText.Text = count.ToString();
             ItemRequestsBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            ItemRequestsButton.ToolTip = count > 0
+                ? $"Входящие запросы: {count} (товары: {itemCount}, заказы: {orderCount})"
+                : "Входящие запросы";
         }
         catch (Exception ex)
         {
-            _services.AppLogger.Error("Item requests badge update failed", ex);
+            _services.AppLogger.Error("Incoming requests badge update failed", ex);
         }
     }
 

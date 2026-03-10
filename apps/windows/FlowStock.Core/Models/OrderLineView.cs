@@ -8,6 +8,7 @@ public sealed class OrderLineView
     public string ItemName { get; init; } = string.Empty;
     public double QtyOrdered { get; set; }
     public double QtyShipped { get; set; }
+    public double QtyProduced { get; set; }
     public double QtyRemaining { get; set; }
     public double QtyAvailable { get; set; }
     public double CanShipNow { get; set; }

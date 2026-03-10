@@ -26,8 +26,7 @@
                 <MenuItem Header="Сервис">
                     <MenuItem Header="Подключение к БД..." Click="OpenDbConnection_Click" />
                     <MenuItem Header="Создание аккаунта..." Click="OpenTsdDevices_Click" />
-                    <MenuItem Header="Запросы по товарам..." Click="OpenItemRequests_Click" />
-                    <MenuItem Header="Заявки по заказам (веб)..." Click="OpenOrderRequests_Click" />
+                    <MenuItem Header="Входящие запросы..." Click="OpenIncomingRequests_Click" />
                     <Separator />
                     <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
                     <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
@@ -38,7 +37,7 @@
                 </MenuItem>
             </Menu>
             <Button Grid.Column="1" x:Name="ItemRequestsButton" Margin="6,0,6,0" Padding="8,2"
-                    VerticalAlignment="Center" Click="OpenItemRequests_Click">
+                    VerticalAlignment="Center" Click="OpenIncomingRequests_Click">
                 <Grid>
                     <TextBlock Text="🔔" FontSize="14" VerticalAlignment="Center" />
                     <Border x:Name="ItemRequestsBadge" Background="#C62828" CornerRadius="8"
@@ -148,10 +147,11 @@
                               KeyDown="OrdersGrid_KeyDown">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Номер" Binding="{Binding OrderRef}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Тип" Binding="{Binding TypeDisplay}" Width="Auto" MaxWidth="220" />
                             <DataGridTextColumn Header="Контрагент" Binding="{Binding PartnerDisplay}" Width="Auto" MaxWidth="320" />
-                            <DataGridTextColumn Header="Плановая отгрузка" Binding="{Binding DueDate, StringFormat={}{0:dd'/'MM'/'yyyy}}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Плановая дата" Binding="{Binding DueDate, StringFormat={}{0:dd'/'MM'/'yyyy}}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Статус" Binding="{Binding StatusDisplay}" Width="Auto" MaxWidth="320" />
-                            <DataGridTextColumn Header="Факт отгрузки" Binding="{Binding ShippedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
+                            <DataGridTextColumn Header="Завершен" Binding="{Binding ShippedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                             <DataGridTextColumn Header="Создан" Binding="{Binding CreatedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="320" />
                         </DataGrid.Columns>
                     </DataGrid>
@@ -190,6 +190,7 @@
                             <DataGridTextColumn Header="Бренд" Binding="{Binding Brand}" Width="Auto" MaxWidth="240" />
                             <DataGridTextColumn Header="Объем" Binding="{Binding Volume}" Width="Auto" MaxWidth="160" />
                             <DataGridTextColumn Header="Срок годности (мес.)" Binding="{Binding ShelfLifeMonths}" Width="Auto" MaxWidth="180" />
+                            <DataGridTextColumn Header="Макс. шт/HU" Binding="{Binding MaxQtyPerHu, StringFormat={}{0:0.###}}" Width="Auto" MaxWidth="160" />
                             <DataGridTextColumn Header="Тара" Binding="{Binding TaraName}" Width="Auto" MaxWidth="200" />
                             <DataGridTextColumn Header="Базовая единица" Binding="{Binding BaseUom}" Width="Auto" MaxWidth="320" />
                             <DataGridCheckBoxColumn Header="КМ" Binding="{Binding IsMarked}" Width="Auto" MaxWidth="80" />
@@ -259,6 +260,7 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Дата" Binding="{Binding ImportedAt, StringFormat={}{0:dd'/'MM'/'yyyy HH':'mm}}" Width="Auto" MaxWidth="200" />
                             <DataGridTextColumn Header="Заказ" Binding="{Binding OrderRef}" Width="Auto" MaxWidth="200" />
+                            <DataGridTextColumn Header="Статус пакета" Binding="{Binding BatchStatusDisplay}" Width="Auto" MaxWidth="280" />
                             <DataGridTextColumn Header="Файл" Binding="{Binding FileName}" Width="*" />
                             <DataGridTextColumn Header="Кодов" Binding="{Binding TotalCodes}" Width="Auto" MaxWidth="120" />
                             <DataGridTextColumn Header="Ошибок" Binding="{Binding ErrorCount}" Width="Auto" MaxWidth="120" />

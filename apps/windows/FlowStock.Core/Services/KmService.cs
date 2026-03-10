@@ -16,7 +16,36 @@ public sealed class KmService
 
     public IReadOnlyList<KmCodeBatch> GetBatches()
     {
-        return _data.GetKmCodeBatches();
+        var batches = _data.GetKmCodeBatches();
+        if (batches.Count == 0)
+        {
+            return batches;
+        }
+
+        var result = new List<KmCodeBatch>(batches.Count);
+        foreach (var batch in batches)
+        {
+            var inPool = _data.CountKmCodesByBatch(batch.Id, KmCodeStatus.InPool);
+            var onHand = _data.CountKmCodesByBatch(batch.Id, KmCodeStatus.OnHand);
+            var shipped = _data.CountKmCodesByBatch(batch.Id, KmCodeStatus.Shipped);
+            var blocked = _data.CountKmCodesByBatch(batch.Id, KmCodeStatus.Blocked);
+
+            result.Add(new KmCodeBatch
+            {
+                Id = batch.Id,
+                OrderId = batch.OrderId,
+                OrderRef = batch.OrderRef,
+                FileName = batch.FileName,
+                FileHash = batch.FileHash,
+                ImportedAt = batch.ImportedAt,
+                ImportedBy = batch.ImportedBy,
+                TotalCodes = batch.TotalCodes,
+                ErrorCount = batch.ErrorCount,
+                BatchStatusDisplay = BuildBatchStatusDisplay(inPool, onHand, shipped, blocked)
+            });
+        }
+
+        return result;
     }
 
     public IReadOnlyList<KmCode> GetCodes(long batchId, string? search, KmCodeStatus? status, int take = 1000)
@@ -127,6 +156,8 @@ public sealed class KmService
             });
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var skuByGtin = new Dictionary<string, long?>(StringComparer.Ordinal);
+            var markedItems = new HashSet<long>();
             foreach (var rawLine in File.ReadLines(filePath))
             {
                 if (string.IsNullOrWhiteSpace(rawLine))
@@ -159,10 +190,22 @@ public sealed class KmService
                     errors++;
                 }
 
-                var skuId = gtin14 != null ? store.FindItemByGtin(gtin14)?.Id : null;
+                long? skuId = null;
+                if (gtin14 != null)
+                {
+                    if (!skuByGtin.TryGetValue(gtin14, out skuId))
+                    {
+                        skuId = ResolveItemByGtin(store, gtin14)?.Id;
+                        skuByGtin[gtin14] = skuId;
+                    }
+                }
                 if (!skuId.HasValue)
                 {
                     unmatchedSku++;
+                }
+                else if (markedItems.Add(skuId.Value))
+                {
+                    EnsureItemMarked(store, skuId.Value);
                 }
 
                 try
@@ -234,7 +277,7 @@ public sealed class KmService
             var ids = store.GetAvailableKmCodeIds(batchId, orderId, item.Id, gtin14, required);
             if (ids.Count < required)
             {
-                throw new InvalidOperationException($"Недостаточно кодов для {item.Name}. Нужно {required}, доступно {ids.Count}.");
+                throw new InvalidOperationException(BuildInsufficientCodesMessage(store, batchId, orderId, item, gtin14, required, ids.Count));
             }
 
             var huId = ResolveHuId(store, line.ToHu);
@@ -265,7 +308,7 @@ public sealed class KmService
             throw new InvalidOperationException("Код не найден в реестре.");
         }
 
-        if (code.Status != KmCodeStatus.OnHand)
+        if (code.Status != KmCodeStatus.OnHand && code.Status != KmCodeStatus.InPool)
         {
             throw new InvalidOperationException($"Код имеет статус {KmCodeStatusMapper.ToDisplayName(code.Status)}.");
         }
@@ -276,6 +319,46 @@ public sealed class KmService
         }
 
         _data.MarkKmCodeShipped(code.Id, docId, line.Id, orderId);
+    }
+
+    public int AssignCodesToShipment(long docId, DocLine line, Item item, long? orderId)
+    {
+        var required = EnsureIntegerQty(line.Qty);
+        var gtin14 = NormalizeGtin(item.Gtin, out _);
+        var assigned = 0;
+        _data.ExecuteInTransaction(store =>
+        {
+            var alreadyAssigned = store.CountKmCodesByShipmentLine(line.Id);
+            var toAssign = required - alreadyAssigned;
+            if (toAssign <= 0)
+            {
+                assigned = 0;
+                return;
+            }
+
+            var huId = ResolveHuId(store, line.FromHu);
+            var onHandIds = store.GetAvailableKmOnHandCodeIds(orderId, item.Id, gtin14, line.FromLocationId, huId, toAssign);
+            var ids = onHandIds.ToList();
+            if (ids.Count < toAssign)
+            {
+                var fromPool = store.GetAvailableKmCodeIds(null, orderId, item.Id, gtin14, toAssign - ids.Count);
+                ids.AddRange(fromPool);
+            }
+
+            if (ids.Count < toAssign)
+            {
+                throw new InvalidOperationException($"Недостаточно кодов для {item.Name}. Нужно {toAssign}, доступно {ids.Count}.");
+            }
+
+            foreach (var id in ids)
+            {
+                store.MarkKmCodeShipped(id, docId, line.Id, orderId);
+            }
+
+            assigned = ids.Count;
+        });
+
+        return assigned;
     }
 
     private static long? ResolveHuId(IDataStore store, string? huCode)
@@ -316,6 +399,70 @@ public sealed class KmService
         return (int)rounded;
     }
 
+    private static void EnsureItemMarked(IDataStore store, long itemId)
+    {
+        var item = store.FindItemById(itemId);
+        if (item == null || item.IsMarked)
+        {
+            return;
+        }
+
+        store.UpdateItem(new Item
+        {
+            Id = item.Id,
+            Name = item.Name,
+            Barcode = item.Barcode,
+            Gtin = item.Gtin,
+            BaseUom = item.BaseUom,
+            DefaultPackagingId = item.DefaultPackagingId,
+            Brand = item.Brand,
+            Volume = item.Volume,
+            ShelfLifeMonths = item.ShelfLifeMonths,
+            TaraId = item.TaraId,
+            IsMarked = true
+        });
+    }
+
+    private static Item? ResolveItemByGtin(IDataStore store, string gtin14)
+    {
+        var direct = store.FindItemByGtin(gtin14);
+        if (direct != null)
+        {
+            return direct;
+        }
+
+        if (gtin14.Length == 14 && gtin14[0] == '0')
+        {
+            var shortGtin = gtin14.Substring(1);
+            return store.FindItemByGtin(shortGtin);
+        }
+
+        return null;
+    }
+
+    private static string BuildInsufficientCodesMessage(
+        IDataStore store,
+        long? batchId,
+        long? orderId,
+        Item item,
+        string? gtin14,
+        int required,
+        int availableWithCurrentFilter)
+    {
+        if (orderId.HasValue)
+        {
+            var availableWithoutOrder = store.GetAvailableKmCodeIds(batchId, null, item.Id, gtin14, required).Count;
+            if (availableWithoutOrder >= required)
+            {
+                return $"Недостаточно кодов для {item.Name}. Нужно {required}, доступно {availableWithCurrentFilter}. " +
+                       "Коды есть в пуле, но не привязаны к выбранному заказу. " +
+                       "Откройте пакет КМ и задайте ему нужный заказ (Маркировка -> Редактировать).";
+            }
+        }
+
+        return $"Недостаточно кодов для {item.Name}. Нужно {required}, доступно {availableWithCurrentFilter}.";
+    }
+
     private static string? NormalizeGtin(string? value, out bool invalid)
     {
         invalid = false;
@@ -325,13 +472,24 @@ public sealed class KmService
         }
 
         var trimmed = value.Trim();
-        if (trimmed.Length != 14 || !trimmed.All(char.IsDigit))
+        if (!trimmed.All(char.IsDigit))
         {
             invalid = true;
             return null;
         }
 
-        return trimmed;
+        if (trimmed.Length == 14)
+        {
+            return trimmed;
+        }
+
+        if (trimmed.Length == 13)
+        {
+            return "0" + trimmed;
+        }
+
+        invalid = true;
+        return null;
     }
 
     private static string NormalizeCodeRaw(string? value)
@@ -384,5 +542,48 @@ public sealed class KmService
         using var sha = SHA256.Create();
         var hash = sha.ComputeHash(stream);
         return Convert.ToHexString(hash);
+    }
+
+    private static string BuildBatchStatusDisplay(int inPool, int onHand, int shipped, int blocked)
+    {
+        if (inPool > 0 && onHand == 0 && shipped == 0 && blocked == 0)
+        {
+            return "В пуле";
+        }
+
+        if (onHand > 0 && inPool == 0 && shipped == 0 && blocked == 0)
+        {
+            return "На складе";
+        }
+
+        if (shipped > 0 && inPool == 0 && onHand == 0 && blocked == 0)
+        {
+            return "Отгружен";
+        }
+
+        if (blocked > 0 && inPool == 0 && onHand == 0 && shipped == 0)
+        {
+            return "Заблокирован";
+        }
+
+        var parts = new List<string>();
+        if (inPool > 0)
+        {
+            parts.Add($"Пул {inPool}");
+        }
+        if (onHand > 0)
+        {
+            parts.Add($"Склад {onHand}");
+        }
+        if (shipped > 0)
+        {
+            parts.Add($"Отгр {shipped}");
+        }
+        if (blocked > 0)
+        {
+            parts.Add($"Блок {blocked}");
+        }
+
+        return parts.Count == 0 ? "Пусто" : string.Join(" · ", parts);
     }
 }

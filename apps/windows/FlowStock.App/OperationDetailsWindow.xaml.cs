@@ -107,7 +107,7 @@ public partial class OperationDetailsWindow : Window
                 continue;
             }
 
-            _ordersAll.Add(new OrderOption(order.Id, order.OrderRef, order.PartnerId, order.PartnerDisplay));
+            _ordersAll.Add(new OrderOption(order.Id, order.OrderRef, order.Type, order.PartnerId, order.PartnerDisplay));
         }
 
         RefreshOrderList();
@@ -119,6 +119,11 @@ public partial class OperationDetailsWindow : Window
         var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
         foreach (var order in _ordersAll)
         {
+            if (_doc?.Type == DocType.Outbound && order.Type != OrderType.Customer)
+            {
+                continue;
+            }
+
             if (partnerId.HasValue && order.PartnerId != partnerId.Value)
             {
                 continue;
@@ -198,14 +203,19 @@ public partial class OperationDetailsWindow : Window
             var kmAssigned = 0;
             var kmDisplay = string.Empty;
             var kmEnabled = false;
-            if (isProductionReceipt)
+            if (isProductionReceipt || isOutbound)
             {
-                kmAssigned = isMarked ? _services.Km.GetAssignedCountForReceiptLine(line.Id) : 0;
+                kmAssigned = isMarked
+                    ? (isProductionReceipt
+                        ? _services.Km.GetAssignedCountForReceiptLine(line.Id)
+                        : _services.Km.GetAssignedCountForShipmentLine(line.Id))
+                    : 0;
                 kmDisplay = isMarked ? $"КМ: {kmAssigned}/{FormatQty(line.Qty)}" : "КМ: -";
                 kmEnabled = isEditable
                             && isMarked
-                            && !string.IsNullOrWhiteSpace(line.ToLocation)
-                            && !string.IsNullOrWhiteSpace(line.ToHu);
+                            && (isOutbound
+                                || !string.IsNullOrWhiteSpace(line.ToLocation)
+                                && !string.IsNullOrWhiteSpace(line.ToHu));
             }
             var inventoryDbQty = (double?)null;
             var inventoryDiffQty = (double?)null;
@@ -561,6 +571,22 @@ public partial class OperationDetailsWindow : Window
                 return;
             }
         }
+        else if (_doc?.Type == DocType.Outbound)
+        {
+            if (DocFromCombo.SelectedItem is not Location selectedFromLocation)
+            {
+                MessageBox.Show("Выберите локацию отгрузки.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var selectedHu = GetSelectedHuCode(DocHuCombo);
+            filteredItems = _services.DataStore.GetItemsByLocationAndHu(selectedFromLocation.Id, NormalizeHuValue(selectedHu));
+            if (!filteredItems.Any())
+            {
+                MessageBox.Show("Нет доступных товаров для выбранной локации и HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+        }
 
         var picker = new ItemPickerWindow(_services, filteredItems)
         {
@@ -710,7 +736,7 @@ public partial class OperationDetailsWindow : Window
 
     private void KmDistribute_Click(object sender, RoutedEventArgs e)
     {
-        if (_doc == null || _doc.Type != DocType.ProductionReceipt)
+        if (_doc == null || (_doc.Type != DocType.ProductionReceipt && _doc.Type != DocType.Outbound))
         {
             return;
         }
@@ -734,32 +760,54 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (!line.ToLocationId.HasValue)
+        if (_doc.Type == DocType.ProductionReceipt)
         {
-            MessageBox.Show("Выберите локацию приемки.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
+            if (!line.ToLocationId.HasValue)
+            {
+                MessageBox.Show("Выберите локацию приемки.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
 
-        if (string.IsNullOrWhiteSpace(line.ToHu))
-        {
-            MessageBox.Show("Для выпуска продукции требуется HU.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
+            if (string.IsNullOrWhiteSpace(line.ToHu))
+            {
+                MessageBox.Show("Для выпуска продукции требуется HU.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
         }
 
         try
         {
-            if (_doc.OrderId.HasValue)
+            if (_doc.Type == DocType.ProductionReceipt)
             {
-                var assigned = _services.Km.AssignCodesToReceipt(_doc.Id, line, item, null, _doc.OrderId.Value);
-                MessageBox.Show($"Распределено кодов: {assigned}.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+                if (_doc.OrderId.HasValue)
+                {
+                    var assigned = _services.Km.AssignCodesToReceipt(_doc.Id, line, item, null, _doc.OrderId.Value);
+                    MessageBox.Show($"Распределено кодов: {assigned}.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    var window = new KmAssignReceiptWindow(_services, _doc, line, item)
+                    {
+                        Owner = this
+                    };
+                    window.ShowDialog();
+                }
             }
             else
             {
-                var window = new KmAssignReceiptWindow(_services, _doc, line, item)
+                if (_doc.OrderId.HasValue)
                 {
-                    Owner = this
-                };
-                window.ShowDialog();
+                    var assigned = _services.Km.AssignCodesToShipment(_doc.Id, line, item, _doc.OrderId);
+                    MessageBox.Show($"Распределено кодов: {assigned}.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    var window = new KmAssignShipmentWindow(_services, _doc, line, item)
+                    {
+                        Owner = this
+                    };
+                    window.ShowDialog();
+                }
             }
 
             LoadDocLines();
@@ -847,6 +895,168 @@ public partial class OperationDetailsWindow : Window
         {
             MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private void AssignHuButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureDraftDocSelected())
+        {
+            return;
+        }
+
+        if (!SupportsLineHuAssignment())
+        {
+            return;
+        }
+
+        if (_doc == null || _selectedDocLine == null)
+        {
+            MessageBox.Show("Выберите строку.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var line = _services.DataStore.GetDocLines(_doc.Id).FirstOrDefault(entry => entry.Id == _selectedDocLine.Id);
+        if (line == null)
+        {
+            MessageBox.Show("Строка не найдена.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var selectedHu = GetSelectedHuCode(DocHuCombo);
+        if (string.IsNullOrWhiteSpace(selectedHu))
+        {
+            MessageBox.Show("Выберите HU в шапке документа.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (_doc.Type == DocType.ProductionReceipt && !TryEnsureHuExists(selectedHu))
+        {
+            return;
+        }
+
+        var item = _services.DataStore.FindItemById(line.ItemId);
+        if (_doc.Type == DocType.ProductionReceipt
+            && item?.MaxQtyPerHu is double maxQtyPerHu
+            && maxQtyPerHu > 0)
+        {
+            try
+            {
+                if (TryAssignProductionLineByCapacity(line, selectedHu, maxQtyPerHu))
+                {
+                    LoadDoc();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            return;
+        }
+
+        var targetFromHu = line.FromHu;
+        var targetToHu = line.ToHu;
+        ApplyLineHu(_doc.Type, selectedHu, ref targetFromHu, ref targetToHu);
+
+        var sameHu = string.Equals(NormalizeHuValue(line.FromHu), NormalizeHuValue(targetFromHu), StringComparison.OrdinalIgnoreCase)
+                     && string.Equals(NormalizeHuValue(line.ToHu), NormalizeHuValue(targetToHu), StringComparison.OrdinalIgnoreCase);
+
+        var qtyDialog = new QuantityDialog(line.Qty)
+        {
+            Owner = this
+        };
+        if (qtyDialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var qty = qtyDialog.Qty;
+        if (qty <= 0 || qty > line.Qty + 0.000001)
+        {
+            MessageBox.Show($"Количество должно быть от 1 до {FormatQty(line.Qty)}.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (sameHu && qty < line.Qty - 0.000001)
+        {
+            MessageBox.Show("Выбранный HU уже назначен строке. Выберите другой HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            _services.Documents.AssignDocLineHu(_doc.Id, line.Id, qty, targetFromHu, targetToHu);
+            LoadDoc();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private bool TryAssignProductionLineByCapacity(DocLine line, string selectedHu, double maxQtyPerHu)
+    {
+        if (_doc == null)
+        {
+            return false;
+        }
+
+        var requiredHuCount = (int)Math.Ceiling(line.Qty / maxQtyPerHu);
+        var huCodes = new List<string> { selectedHu };
+        if (requiredHuCount > 1)
+        {
+            var totalsByHu = _services.DataStore.GetLedgerTotalsByHu();
+            foreach (var freeCode in GetFreeHuCodes(totalsByHu))
+            {
+                if (string.Equals(freeCode, selectedHu, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                huCodes.Add(freeCode);
+                if (huCodes.Count >= requiredHuCount)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (huCodes.Count < requiredHuCount)
+        {
+            MessageBox.Show(
+                $"Недостаточно свободных HU. Нужно: {requiredHuCount}, доступно: {huCodes.Count}.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+
+        _services.Documents.DistributeProductionLineByHuCapacity(_doc.Id, line.Id, maxQtyPerHu, huCodes);
+        if (requiredHuCount > 1)
+        {
+            MessageBox.Show(
+                $"Строка распределена по {requiredHuCount} HU ({BuildHuDistributionSummary(line.Qty, maxQtyPerHu)}).",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        return true;
+    }
+
+    private static string BuildHuDistributionSummary(double qty, double maxQtyPerHu)
+    {
+        var fullCount = (int)Math.Floor(qty / maxQtyPerHu);
+        var remainder = qty - fullCount * maxQtyPerHu;
+        if (remainder <= 0.000001)
+        {
+            return $"{fullCount} x {FormatQty(maxQtyPerHu)}";
+        }
+
+        if (fullCount <= 0)
+        {
+            return $"1 x {FormatQty(remainder)}";
+        }
+
+        return $"{fullCount} x {FormatQty(maxQtyPerHu)} + 1 x {FormatQty(remainder)}";
     }
 
     private bool TryValidateReceiptQty(DocLineDisplay lineDisplay, double newQty)
@@ -1127,7 +1337,12 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var partner = _partners.FirstOrDefault(p => p.Id == selected.PartnerId);
+        if (!selected.PartnerId.HasValue)
+        {
+            return;
+        }
+
+        var partner = _partners.FirstOrDefault(p => p.Id == selected.PartnerId.Value);
         if (partner == null)
         {
             return;
@@ -1193,7 +1408,7 @@ public partial class OperationDetailsWindow : Window
         _isPartialShipment = DocPartialCheck.IsChecked == true;
         if (!_isPartialShipment && _doc?.OrderId.HasValue == true)
         {
-            TryApplyOrderSelection(new OrderOption(_doc.OrderId.Value, _doc.OrderRef ?? string.Empty, _doc.PartnerId ?? 0, string.Empty));
+            TryApplyOrderSelection(new OrderOption(_doc.OrderId.Value, _doc.OrderRef ?? string.Empty, OrderType.Customer, _doc.PartnerId, string.Empty));
         }
 
         UpdateLineButtons();
@@ -1280,6 +1495,8 @@ public partial class OperationDetailsWindow : Window
                 showPartner = true;
                 partnerLabel = "Покупатель";
                 showOrder = true;
+                showFrom = true;
+                fromLabel = "Локация отгрузки";
                 break;
             case DocType.Move:
                 showFrom = true;
@@ -1321,7 +1538,9 @@ public partial class OperationDetailsWindow : Window
         DocToLabel.Text = toLabel;
         DocHuLabel.Text = doc.Type == DocType.Move
             ? "HU (куда)"
-            : doc.Type == DocType.ProductionReceipt ? "HU (палета)" : "HU";
+            : doc.Type == DocType.ProductionReceipt
+                ? "HU (палета)"
+                : doc.Type == DocType.Outbound ? "HU (источник)" : "HU";
         DocPartialCheck.Visibility = doc.Type == DocType.Outbound ? Visibility.Visible : Visibility.Collapsed;
         DocHuCombo.IsEnabled = isEditable;
         DocHuFromCombo.IsEnabled = isEditable;
@@ -1357,10 +1576,12 @@ public partial class OperationDetailsWindow : Window
         DocInventoryDbColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
         DocInventoryDiffColumn.Visibility = showInventory ? Visibility.Visible : Visibility.Collapsed;
         DocHuColumn.Visibility = showHu ? Visibility.Visible : Visibility.Collapsed;
-        DocKmColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
+        DocKmColumn.Visibility = doc.Type is DocType.ProductionReceipt or DocType.Outbound ? Visibility.Visible : Visibility.Collapsed;
         DocOrderLineColumn.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Visibility = showFrom ? Visibility.Visible : Visibility.Collapsed;
         DocToColumn.Visibility = showTo ? Visibility.Visible : Visibility.Collapsed;
+        KmCodesButton.Visibility = doc.Type is DocType.ProductionReceipt or DocType.Outbound ? Visibility.Visible : Visibility.Collapsed;
+        AssignHuButton.Visibility = showHu && doc.Type != DocType.Move ? Visibility.Visible : Visibility.Collapsed;
         DocFromColumn.Header = fromLabel;
         DocToColumn.Header = toLabel;
 
@@ -1400,6 +1621,7 @@ public partial class OperationDetailsWindow : Window
         var allowPartialEdit = hasOrder && _isPartialShipment;
         AddItemButton.IsEnabled = isEditable && !hasOrder;
         EditLineButton.IsEnabled = isEditable && _selectedDocLine != null && (!hasOrder || allowPartialEdit);
+        AssignHuButton.IsEnabled = isEditable && _selectedDocLine != null && SupportsLineHuAssignment();
         DeleteLineButton.IsEnabled = isEditable && _selectedDocLine != null && !hasOrder;
         DocPartialCheck.IsEnabled = isEditable && _doc?.Type == DocType.Outbound && hasOrder;
         KmCodesButton.IsEnabled = isEditable
@@ -1633,8 +1855,7 @@ public partial class OperationDetailsWindow : Window
         }
 
         var toLocation = DocToCombo.SelectedItem as Location;
-        var toHu = GetSelectedHuCode(DocHuCombo);
-        if (toLocation == null || string.IsNullOrWhiteSpace(toHu))
+        if (toLocation == null)
         {
             LoadDoc();
             return;
@@ -1764,7 +1985,9 @@ public partial class OperationDetailsWindow : Window
         var comment = DocCommentBox.Text;
         try
         {
-            if (_doc.Type == DocType.ProductionReceipt && !TryEnsureHuExists(huCode))
+            if (_doc.Type == DocType.ProductionReceipt
+                && !string.IsNullOrWhiteSpace(huCode)
+                && !TryEnsureHuExists(huCode))
             {
                 return false;
             }
@@ -1971,6 +2194,12 @@ public partial class OperationDetailsWindow : Window
             }
 
             return (null, false);
+        }
+
+        if (DocFromCombo.SelectedItem is Location outboundFrom)
+        {
+            var outboundFromHu = GetSelectedHuCode(DocHuCombo);
+            return (_services.DataStore.GetAvailableQty(itemId, outboundFrom.Id, NormalizeHuValue(outboundFromHu)), true);
         }
 
         var availableByItem = _services.Orders.GetItemAvailability();
@@ -2433,7 +2662,9 @@ public partial class OperationDetailsWindow : Window
             ApplyLineHu(_doc.Type, GetSelectedHuCode(DocHuCombo), ref fromHu, ref toHu);
         }
 
-        if (_doc.Type == DocType.ProductionReceipt && !TryEnsureHuExists(toHu))
+        if (_doc.Type == DocType.ProductionReceipt
+            && !string.IsNullOrWhiteSpace(toHu)
+            && !TryEnsureHuExists(toHu))
         {
             return false;
         }
@@ -2506,11 +2737,6 @@ public partial class OperationDetailsWindow : Window
                 if (toLocation == null)
                 {
                     MessageBox.Show("Для выпуска продукции выберите локацию приёмки.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return false;
-                }
-                if (string.IsNullOrWhiteSpace(NormalizeHuValue(toHu)))
-                {
-                    MessageBox.Show("Для выпуска продукции требуется HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
                 return true;
@@ -2599,6 +2825,11 @@ public partial class OperationDetailsWindow : Window
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
+    private bool SupportsLineHuAssignment()
+    {
+        return _doc?.Type is DocType.Inbound or DocType.Inventory or DocType.ProductionReceipt or DocType.WriteOff or DocType.Outbound;
+    }
+
     private sealed class DocLineDisplay
     {
         public long Id { get; init; }
@@ -2641,11 +2872,13 @@ public partial class OperationDetailsWindow : Window
 
     private sealed record WriteOffReasonOption(string Code, string Label);
 
-    private sealed record OrderOption(long Id, string OrderRef, long PartnerId, string PartnerDisplay)
+    private sealed record OrderOption(long Id, string OrderRef, OrderType Type, long? PartnerId, string PartnerDisplay)
     {
-        public string DisplayName => string.IsNullOrWhiteSpace(PartnerDisplay)
-            ? OrderRef
-            : $"{OrderRef} - {PartnerDisplay}";
+        public string DisplayName => Type == OrderType.Internal
+            ? $"{OrderRef} - Внутренний выпуск"
+            : string.IsNullOrWhiteSpace(PartnerDisplay)
+                ? OrderRef
+                : $"{OrderRef} - {PartnerDisplay}";
     }
 }
 

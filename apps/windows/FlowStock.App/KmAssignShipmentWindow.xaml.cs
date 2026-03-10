@@ -23,6 +23,7 @@ public partial class KmAssignShipmentWindow : Window
         InitializeComponent();
 
         CodesGrid.ItemsSource = _codes;
+        FillAutoButton.Content = _doc.OrderId.HasValue ? "Заполнить из заказа" : "Заполнить из остатков";
         LoadCodes();
     }
 
@@ -45,6 +46,24 @@ public partial class KmAssignShipmentWindow : Window
     private void Add_Click(object sender, RoutedEventArgs e)
     {
         TryAddCode();
+    }
+
+    private void FillAuto_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var assigned = _services.Km.AssignCodesToShipment(_doc.Id, _line, _item, _doc.OrderId);
+            if (assigned == 0)
+            {
+                MessageBox.Show("Требуемое количество кодов уже привязано.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+
+            LoadCodes();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void CodeInput_KeyDown(object sender, KeyEventArgs e)

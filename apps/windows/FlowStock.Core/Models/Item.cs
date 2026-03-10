@@ -11,6 +11,7 @@ public sealed class Item
     public string? Brand { get; init; }
     public string? Volume { get; init; }
     public int? ShelfLifeMonths { get; init; }
+    public double? MaxQtyPerHu { get; init; }
     public long? TaraId { get; init; }
     public string? TaraName { get; init; }
     public bool IsMarked { get; init; }

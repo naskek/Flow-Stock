@@ -5,7 +5,8 @@
 Таблица `orders`:
 - `id` INTEGER PRIMARY KEY
 - `order_ref` TEXT NOT NULL
-- `partner_id` INTEGER NOT NULL (FK -> `partners.id`)
+- `order_type` TEXT NOT NULL DEFAULT `CUSTOMER`  // `CUSTOMER` | `INTERNAL`
+- `partner_id` INTEGER NULL (FK -> `partners.id`)
 - `due_date` TEXT NULL (ISO date)
 - `status` TEXT NOT NULL DEFAULT `ACCEPTED`  // `ACCEPTED` | `IN_PROGRESS` | `SHIPPED`
 - `comment` TEXT NULL
@@ -21,6 +22,12 @@
 - В `docs` добавлено поле `order_id` (NULL, FK -> `orders.id`)
 - OUTBOUND, созданные из заказа, получают `order_id` и `order_ref`.
 - В `doc_lines` используется `order_line_id` для связи строки отгрузки с позицией заказа.
+- При редактировании заказа существующие строки сохраняют свой `order_lines.id` (для тех же `item_id`), чтобы не ломать связи уже созданных документов.
+
+Связь с выпуском продукции:
+- PRD (`docs.type = PRODUCTION_RECEIPT`) также может быть связан с заказом через `order_id` / `order_ref`.
+- В `doc_lines.order_line_id` хранится связь строки выпуска с позицией заказа.
+- Для `INTERNAL`-заказа PRD является документом исполнения заказа.
 
 Индексы:
 - `orders(order_ref)`
@@ -29,20 +36,37 @@
 - `docs(order_id)`
 - `ledger(item_id, location_id)` (уже было)
 
+## Типы заказов
+
+- `CUSTOMER`
+  - контрагент обязателен
+  - заказ закрывается отгрузками OUTBOUND
+  - участвует в клиентской отгрузке и в `/api/orders`
+- `INTERNAL`
+  - контрагент не обязателен
+  - используется как внутренняя потребность на выпуск продукции
+  - закрывается выпусками PRD
+  - не участвует в клиентской отгрузке и по умолчанию не отдается в `/api/orders` для TSD/PC web
+
 ## Вычисляемые поля по строке заказа
 
-Для каждой позиции:
+Для `CUSTOMER`:
 - `available_qty` = сумма `ledger.qty_delta` по `item_id` (по всем местам хранения)
 - `shipped_qty` = сумма `doc_lines.qty` по закрытым OUTBOUND, где `doc_lines.order_line_id = order_lines.id`
 - `remaining_qty` = max(0, `qty_ordered` - `shipped_qty`)
 - `can_ship_now` = min(`remaining_qty`, max(0, `available_qty`))
 - `shortage` = max(0, `remaining_qty` - max(0, `available_qty`))
 
+Для `INTERNAL`:
+- `produced_qty` = сумма `doc_lines.qty` по закрытым PRD, где `doc_lines.order_line_id = order_lines.id`
+- `remaining_qty` = max(0, `qty_ordered` - `produced_qty`)
+- `available_qty` = текущий остаток ГП по `ledger` для `item_id` (информационно)
+
 ## Создание отгрузки из наличия
 
 Команда "Создать отгрузку из наличия":
 1. Создается OUTBOUND-документ со статусом DRAFT:
-   - `partner_id` = из заказа
+   - `partner_id` = из заказа (`CUSTOMER` only)
    - `order_ref` = из заказа
    - `order_id` = id заказа
    - `doc_ref` = `OUT-YYYY-000001` (глобальная последовательность за год, уникальна для всех типов)
@@ -53,12 +77,26 @@
      - иначе первая доступная локация
 3. Документ открывается в окне деталей операции.
 
+Для `INTERNAL` создается/заполняется PRD:
+- документ `PRODUCTION_RECEIPT` может быть привязан к заказу
+- строки подставляются по `remaining_qty` из еще не выпущенного остатка заказа
+- один `INTERNAL`-заказ может закрываться несколькими PRD (частичный выпуск)
+
 ## Правила статусов
 
 - `ACCEPTED` и `IN_PROGRESS` можно выставлять вручную.
-- `SHIPPED` выставляется автоматически, если по всем позициям `remaining_qty == 0`.
-- Если для заказа создана хотя бы одна OUTBOUND, статус может автоматически перейти в `IN_PROGRESS`.
-- `shipped_at` вычисляется как MAX(`closed_at`) по закрытым OUTBOUND с `order_id` и показывается только если заказ полностью отгружен.
+- Финальный статус в БД остается `SHIPPED`, но:
+  - для `CUSTOMER` в UI показывается как `Отгружен`
+  - для `INTERNAL` в UI показывается как `Завершен`
+- Для `CUSTOMER`:
+  - `SHIPPED` выставляется автоматически, если по всем позициям `remaining_qty == 0` по OUTBOUND
+  - если есть факт отгрузки, статус может автоматически перейти в `IN_PROGRESS`
+  - `shipped_at` = MAX(`closed_at`) по закрытым OUTBOUND
+- Для `INTERNAL`:
+  - ничего не выпущено -> `DRAFT` или `ACCEPTED` (если заказ не в черновике)
+  - выпущено частично -> `IN_PROGRESS`
+  - выпущено полностью или больше -> финальный статус `SHIPPED` / UI `Завершен`
+  - `shipped_at` используется как дата завершения заказа и вычисляется как MAX(`closed_at`) по закрытым PRD
 
 ## Веб-заявки по заказам (PC)
 
@@ -66,7 +104,13 @@
 - Доступны 2 типа заявок: `CREATE_ORDER` и `SET_ORDER_STATUS`.
 - Заявки сохраняются в `order_requests` со статусом `PENDING`.
 - Отправка заявки разрешена только для активного PC-аккаунта (`tsd_devices.platform=PC`).
-- WPF оператор в разделе заявок подтверждает или отклоняет:
+- При создании заказа номер подставляется автоматически как следующий числовой `order_ref` по текущей БД.
+- В выборе контрагента для веб-заказа показываются только клиенты (`role=customer`), поставщики исключены.
+- PC web создает только клиентские (`CUSTOMER`) заказы; внутренние заказы создаются и ведутся в WPF.
+- Страница заказов в PC web используется как просмотр заказов и загружает оба типа (`CUSTOMER` и `INTERNAL`) через `/api/orders?include_internal=1`, но создание нового заказа из PC web остается только для `CUSTOMER`.
+- В строке товара доступен ввод GTIN/SKU/названия с фильтрацией с первого символа и выбором мышью из выпадающего списка подсказок.
+- WPF оператор обрабатывает заявки в едином окне входящих запросов (колокольчик/меню):
   - `APPROVED`: выполняется бизнес-логика `OrderService` (создание заказа или смена статуса), заявка помечается обработанной.
   - `REJECTED`: заявка помечается отклоненной без изменения заказов.
+- Для заявок заказа в WPF доступно модальное окно подробностей перед подтверждением.
 - Для `SET_ORDER_STATUS` разрешены только ручные статусы `ACCEPTED` и `IN_PROGRESS`; `SHIPPED` остается автоматическим.

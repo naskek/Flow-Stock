@@ -18,7 +18,7 @@ public sealed class PostgresDataStore : IDataStore
         "LEFT JOIN partners p ON p.id = d.partner_id " +
         "LEFT JOIN (SELECT doc_id, COUNT(*) AS line_count FROM doc_lines GROUP BY doc_id) dl ON dl.doc_id = d.id " +
         "LEFT JOIN (SELECT doc_id, MAX(device_id) AS device_id, MAX(doc_uid) AS doc_uid FROM api_docs GROUP BY doc_id) ad ON ad.doc_id = d.id";
-    private const string OrderSelectBase = "SELECT o.id, o.order_ref, o.partner_id, o.due_date, o.status, o.comment, o.created_at, p.name, p.code FROM orders o LEFT JOIN partners p ON p.id = o.partner_id";
+    private const string OrderSelectBase = "SELECT o.id, o.order_ref, o.order_type, o.partner_id, o.due_date, o.status, o.comment, o.created_at, p.name, p.code FROM orders o LEFT JOIN partners p ON p.id = o.partner_id";
 
     public PostgresDataStore(string connectionString)
     {
@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS items (
     brand TEXT,
     volume TEXT,
     shelf_life_months INTEGER,
+    max_qty_per_hu REAL,
     tara_id BIGINT,
     is_marked INTEGER NOT NULL DEFAULT 0
 );
@@ -115,7 +116,8 @@ CREATE INDEX IF NOT EXISTS ix_order_requests_status ON order_requests(status);
 CREATE TABLE IF NOT EXISTS orders (
     id BIGSERIAL PRIMARY KEY,
     order_ref TEXT NOT NULL,
-    partner_id BIGINT NOT NULL,
+    order_type TEXT NOT NULL DEFAULT 'CUSTOMER',
+    partner_id BIGINT,
     due_date TEXT,
     status TEXT NOT NULL DEFAULT 'ACCEPTED',
     comment TEXT,
@@ -302,9 +304,11 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
         EnsureColumn(connection, "items", "brand", "TEXT");
         EnsureColumn(connection, "items", "volume", "TEXT");
         EnsureColumn(connection, "items", "shelf_life_months", "INTEGER");
+        EnsureColumn(connection, "items", "max_qty_per_hu", "REAL");
         EnsureColumn(connection, "items", "tara_id", "BIGINT");
         EnsureColumn(connection, "items", "is_marked", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "partners", "created_at", "TEXT");
+        EnsureColumn(connection, "orders", "order_type", "TEXT NOT NULL DEFAULT 'CUSTOMER'");
         EnsureColumn(connection, "docs", "partner_id", "BIGINT");
         EnsureColumn(connection, "docs", "order_id", "BIGINT");
         EnsureColumn(connection, "docs", "order_ref", "TEXT");
@@ -345,10 +349,13 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
         EnsureIndex(connection, "idx_hus_created_at", "hus(created_at)");
         EnsureIndex(connection, "ux_hus_hu_code", "hus(hu_code)");
 
+        EnsureNullable(connection, "orders", "partner_id");
         BackfillBaseUom(connection);
         BackfillPartnerCreatedAt(connection);
+        BackfillOrderTypes(connection);
         BackfillLedgerHuCode(connection);
         BackfillHuRegistry(connection);
+        BackfillMarkedItemsFromKmCodes(connection);
     }
 
     public void ExecuteInTransaction(Action<IDataStore> work)
@@ -367,7 +374,7 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.barcode = @barcode OR i.gtin = @barcode");
             command.Parameters.AddWithValue("@barcode", barcode);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -378,7 +385,7 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.gtin = @gtin");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.gtin = @gtin");
             command.Parameters.AddWithValue("@gtin", gtin);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -389,7 +396,7 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.id = @id");
+            using var command = CreateCommand(connection, "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.id = @id");
             command.Parameters.AddWithValue("@id", id);
             using var reader = command.ExecuteReader();
             return reader.Read() ? ReadItem(reader) : null;
@@ -422,8 +429,8 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO items(name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, tara_id, is_marked)
-VALUES(@name, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @tara_id, @is_marked)
+INSERT INTO items(name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked)
+VALUES(@name, @barcode, @gtin, @base_uom, @default_packaging_id, @brand, @volume, @shelf_life_months, @max_qty_per_hu, @tara_id, @is_marked)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@name", item.Name);
@@ -434,6 +441,7 @@ RETURNING id;
             command.Parameters.AddWithValue("@brand", string.IsNullOrWhiteSpace(item.Brand) ? DBNull.Value : item.Brand.Trim());
             command.Parameters.AddWithValue("@volume", string.IsNullOrWhiteSpace(item.Volume) ? DBNull.Value : item.Volume.Trim());
             command.Parameters.AddWithValue("@shelf_life_months", item.ShelfLifeMonths.HasValue ? item.ShelfLifeMonths.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@max_qty_per_hu", item.MaxQtyPerHu.HasValue ? item.MaxQtyPerHu.Value : DBNull.Value);
             command.Parameters.AddWithValue("@tara_id", item.TaraId.HasValue ? item.TaraId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@is_marked", item.IsMarked ? 1 : 0);
             return (long)(command.ExecuteScalar() ?? 0L);
@@ -466,6 +474,7 @@ SET name = @name,
     brand = @brand,
     volume = @volume,
     shelf_life_months = @shelf_life_months,
+    max_qty_per_hu = @max_qty_per_hu,
     tara_id = @tara_id,
     is_marked = @is_marked
 WHERE id = @id;
@@ -478,6 +487,7 @@ WHERE id = @id;
             command.Parameters.AddWithValue("@brand", string.IsNullOrWhiteSpace(item.Brand) ? DBNull.Value : item.Brand.Trim());
             command.Parameters.AddWithValue("@volume", string.IsNullOrWhiteSpace(item.Volume) ? DBNull.Value : item.Volume.Trim());
             command.Parameters.AddWithValue("@shelf_life_months", item.ShelfLifeMonths.HasValue ? item.ShelfLifeMonths.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@max_qty_per_hu", item.MaxQtyPerHu.HasValue ? item.MaxQtyPerHu.Value : DBNull.Value);
             command.Parameters.AddWithValue("@tara_id", item.TaraId.HasValue ? item.TaraId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@is_marked", item.IsMarked ? 1 : 0);
             command.Parameters.AddWithValue("@id", item.Id);
@@ -1237,6 +1247,31 @@ RETURNING id;
         });
     }
 
+    public void UpdateDocLineHu(long docLineId, string? fromHu, string? toHu)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE doc_lines SET from_hu = @from_hu, to_hu = @to_hu WHERE id = @id");
+            command.Parameters.AddWithValue("@from_hu", string.IsNullOrWhiteSpace(fromHu) ? DBNull.Value : fromHu);
+            command.Parameters.AddWithValue("@to_hu", string.IsNullOrWhiteSpace(toHu) ? DBNull.Value : toHu);
+            command.Parameters.AddWithValue("@id", docLineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void UpdateDocLineOrderLineId(long docLineId, long? orderLineId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE doc_lines SET order_line_id = @order_line_id WHERE id = @id");
+            command.Parameters.AddWithValue("@order_line_id", orderLineId.HasValue ? orderLineId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@id", docLineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
     public void DeleteDocLine(long docLineId)
     {
         WithConnection(connection =>
@@ -1390,12 +1425,13 @@ WHERE id = @id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO orders(order_ref, partner_id, due_date, status, comment, created_at)
-VALUES(@order_ref, @partner_id, @due_date, @status, @comment, @created_at)
+INSERT INTO orders(order_ref, order_type, partner_id, due_date, status, comment, created_at)
+VALUES(@order_ref, @order_type, @partner_id, @due_date, @status, @comment, @created_at)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@order_ref", order.OrderRef);
-            command.Parameters.AddWithValue("@partner_id", order.PartnerId);
+            command.Parameters.AddWithValue("@order_type", OrderStatusMapper.TypeToString(order.Type));
+            command.Parameters.AddWithValue("@partner_id", order.PartnerId.HasValue ? order.PartnerId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@due_date", order.DueDate.HasValue ? ToDbDateOnly(order.DueDate.Value) : DBNull.Value);
             command.Parameters.AddWithValue("@status", OrderStatusMapper.StatusToString(order.Status));
             command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(order.Comment) ? DBNull.Value : order.Comment);
@@ -1411,6 +1447,7 @@ RETURNING id;
             using var command = CreateCommand(connection, @"
 UPDATE orders
 SET order_ref = @order_ref,
+    order_type = @order_type,
     partner_id = @partner_id,
     due_date = @due_date,
     status = @status,
@@ -1418,7 +1455,8 @@ SET order_ref = @order_ref,
 WHERE id = @id;
 ");
             command.Parameters.AddWithValue("@order_ref", order.OrderRef);
-            command.Parameters.AddWithValue("@partner_id", order.PartnerId);
+            command.Parameters.AddWithValue("@order_type", OrderStatusMapper.TypeToString(order.Type));
+            command.Parameters.AddWithValue("@partner_id", order.PartnerId.HasValue ? order.PartnerId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@due_date", order.DueDate.HasValue ? ToDbDateOnly(order.DueDate.Value) : DBNull.Value);
             command.Parameters.AddWithValue("@status", OrderStatusMapper.StatusToString(order.Status));
             command.Parameters.AddWithValue("@comment", string.IsNullOrWhiteSpace(order.Comment) ? DBNull.Value : order.Comment);
@@ -1594,6 +1632,29 @@ RETURNING id;
             command.Parameters.AddWithValue("@item_id", line.ItemId);
             command.Parameters.AddWithValue("@qty_ordered", line.QtyOrdered);
             return (long)(command.ExecuteScalar() ?? 0L);
+        });
+    }
+
+    public void UpdateOrderLineQty(long orderLineId, double qtyOrdered)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "UPDATE order_lines SET qty_ordered = @qty_ordered WHERE id = @id");
+            command.Parameters.AddWithValue("@qty_ordered", qtyOrdered);
+            command.Parameters.AddWithValue("@id", orderLineId);
+            command.ExecuteNonQuery();
+            return 0;
+        });
+    }
+
+    public void DeleteOrderLine(long orderLineId)
+    {
+        WithConnection(connection =>
+        {
+            using var command = CreateCommand(connection, "DELETE FROM order_lines WHERE id = @id");
+            command.Parameters.AddWithValue("@id", orderLineId);
+            command.ExecuteNonQuery();
+            return 0;
         });
     }
 
@@ -1859,9 +1920,10 @@ ORDER BY COALESCE(hu_code, hu);
         return WithConnection(connection =>
         {
             var sql = @"
-SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, NULL AS tara_name
+SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name
 FROM ledger l
 INNER JOIN items i ON i.id = l.item_id
+LEFT JOIN taras t ON t.id = i.tara_id
 WHERE l.location_id = @location_id";
             if (string.IsNullOrWhiteSpace(huCode))
             {
@@ -1871,7 +1933,23 @@ WHERE l.location_id = @location_id";
             {
                 sql += " AND (l.hu_code = @hu OR (l.hu_code IS NULL AND l.hu = @hu))";
             }
-            sql += "\nGROUP BY i.id HAVING COALESCE(SUM(l.qty_delta), 0) > 0 ORDER BY i.name;";
+            sql += @"
+GROUP BY
+    i.id,
+    i.name,
+    i.barcode,
+    i.gtin,
+    i.base_uom,
+    i.default_packaging_id,
+    i.brand,
+    i.volume,
+    i.shelf_life_months,
+    i.max_qty_per_hu,
+    i.tara_id,
+    i.is_marked,
+    t.name
+HAVING COALESCE(SUM(l.qty_delta), 0) > 0
+ORDER BY i.name;";
 
             using var command = CreateCommand(connection, sql);
             command.Parameters.AddWithValue("@location_id", locationId);
@@ -2301,9 +2379,10 @@ RETURNING id;
             Brand = reader.IsDBNull(6) ? null : reader.GetString(6),
             Volume = reader.IsDBNull(7) ? null : reader.GetString(7),
             ShelfLifeMonths = reader.IsDBNull(8) ? null : reader.GetInt32(8),
-            TaraId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
-            IsMarked = !reader.IsDBNull(10) && reader.GetInt64(10) != 0,
-            TaraName = reader.IsDBNull(11) ? null : reader.GetString(11)
+            MaxQtyPerHu = reader.IsDBNull(9) ? null : Convert.ToDouble(reader.GetValue(9), CultureInfo.InvariantCulture),
+            TaraId = reader.IsDBNull(10) ? null : reader.GetInt64(10),
+            IsMarked = !reader.IsDBNull(11) && Convert.ToInt32(reader.GetValue(11), CultureInfo.InvariantCulture) != 0,
+            TaraName = reader.IsDBNull(12) ? null : reader.GetString(12)
         };
     }
 
@@ -2481,22 +2560,24 @@ RETURNING id;
 
     private static Order ReadOrder(NpgsqlDataReader reader)
     {
-        var status = OrderStatusMapper.StatusFromString(reader.GetString(4)) ?? OrderStatus.Accepted;
+        var type = OrderStatusMapper.TypeFromString(reader.IsDBNull(2) ? null : reader.GetString(2)) ?? OrderType.Customer;
+        var status = OrderStatusMapper.StatusFromString(reader.GetString(5)) ?? OrderStatus.Accepted;
 
-        var dueDate = reader.IsDBNull(3) ? null : FromDbDate(reader.GetString(3));
-        var comment = reader.IsDBNull(5) ? null : reader.GetString(5);
-        var partnerName = reader.IsDBNull(7) ? null : reader.GetString(7);
-        var partnerCode = reader.IsDBNull(8) ? null : reader.GetString(8);
+        var dueDate = reader.IsDBNull(4) ? null : FromDbDate(reader.GetString(4));
+        var comment = reader.IsDBNull(6) ? null : reader.GetString(6);
+        var partnerName = reader.IsDBNull(8) ? null : reader.GetString(8);
+        var partnerCode = reader.IsDBNull(9) ? null : reader.GetString(9);
 
         return new Order
         {
             Id = reader.GetInt64(0),
             OrderRef = reader.GetString(1),
-            PartnerId = reader.GetInt64(2),
+            Type = type,
+            PartnerId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
             DueDate = dueDate,
             Status = status,
             Comment = comment,
-            CreatedAt = FromDbDate(reader.GetString(6)) ?? DateTime.MinValue,
+            CreatedAt = FromDbDate(reader.GetString(7)) ?? DateTime.MinValue,
             PartnerName = partnerName,
             PartnerCode = partnerCode
         };
@@ -2551,6 +2632,29 @@ RETURNING id;
         command.ExecuteNonQuery();
     }
 
+    private static void EnsureNullable(NpgsqlConnection connection, string tableName, string columnName)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT is_nullable
+FROM information_schema.columns
+WHERE table_schema = current_schema()
+  AND table_name = @table_name
+  AND column_name = @column_name
+LIMIT 1;";
+        command.Parameters.AddWithValue("@table_name", tableName.ToLowerInvariant());
+        command.Parameters.AddWithValue("@column_name", columnName.ToLowerInvariant());
+        var isNullable = command.ExecuteScalar() as string;
+        if (string.Equals(isNullable, "YES", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        using var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {tableName} ALTER COLUMN {columnName} DROP NOT NULL;";
+        alter.ExecuteNonQuery();
+    }
+
     private static bool ColumnExists(NpgsqlConnection connection, string tableName, string columnName)
     {
         using var command = connection.CreateCommand();
@@ -2591,6 +2695,18 @@ LIMIT 1;";
         using var command = connection.CreateCommand();
         command.CommandText = "UPDATE partners SET created_at = @created_at WHERE created_at IS NULL OR created_at = '';";
         command.Parameters.AddWithValue("@created_at", ToDbDate(DateTime.Now));
+        command.ExecuteNonQuery();
+    }
+
+    private static void BackfillOrderTypes(NpgsqlConnection connection)
+    {
+        if (!ColumnExists(connection, "orders", "order_type"))
+        {
+            return;
+        }
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE orders SET order_type = 'CUSTOMER' WHERE order_type IS NULL OR order_type = '';";
         command.ExecuteNonQuery();
     }
 
@@ -2659,14 +2775,43 @@ ON CONFLICT (hu_code) DO NOTHING;";
         command.ExecuteNonQuery();
     }
 
+    private static void BackfillMarkedItemsFromKmCodes(NpgsqlConnection connection)
+    {
+        if (!TableExists(connection, "km_code"))
+        {
+            return;
+        }
+
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+UPDATE items i
+SET is_marked = 1
+WHERE COALESCE(i.is_marked, 0) = 0
+  AND EXISTS (
+      SELECT 1
+      FROM km_code c
+      WHERE c.sku_id = i.id
+         OR (
+            c.sku_id IS NULL
+            AND c.gtin14 IS NOT NULL
+            AND i.gtin IS NOT NULL
+            AND (
+                c.gtin14 = i.gtin
+                OR (LENGTH(i.gtin) = 13 AND c.gtin14 = '0' || i.gtin)
+            )
+         )
+  );";
+        command.ExecuteNonQuery();
+    }
+
     private static string BuildItemsQuery(string? search)
     {
         if (string.IsNullOrWhiteSpace(search))
         {
-            return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id ORDER BY i.name";
+            return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id ORDER BY i.name";
         }
 
-        return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
+        return "SELECT i.id, i.name, i.barcode, i.gtin, i.base_uom, i.default_packaging_id, i.brand, i.volume, i.shelf_life_months, i.max_qty_per_hu, i.tara_id, i.is_marked, t.name FROM items i LEFT JOIN taras t ON t.id = i.tara_id WHERE i.name ILIKE @search OR i.barcode ILIKE @search OR i.gtin ILIKE @search ORDER BY i.name";
     }
 
     private static string BuildStockQuery(string? search)
@@ -3048,6 +3193,49 @@ LIMIT @take;";
         });
     }
 
+    public IReadOnlyList<long> GetAvailableKmOnHandCodeIds(long? orderId, long skuId, string? gtin14, long? locationId, long? huId, int take)
+    {
+        return WithConnection(connection =>
+        {
+            var sql = @"
+SELECT c.id
+FROM km_code c
+WHERE c.status = @status
+  AND c.ship_line_id IS NULL
+  AND (c.sku_id = @sku_id OR (c.sku_id IS NULL AND @gtin14::text IS NOT NULL AND c.gtin14 = @gtin14::text))
+  AND (
+    @order_id::bigint IS NULL
+    OR c.order_id = @order_id::bigint
+    OR EXISTS (
+        SELECT 1
+        FROM km_code_batch b
+        WHERE b.id = c.batch_id AND b.order_id = @order_id::bigint
+    )
+  )
+  AND (@location_id::bigint IS NULL OR c.location_id = @location_id::bigint)
+  AND (@hu_id::bigint IS NULL OR c.hu_id = @hu_id::bigint)
+ORDER BY c.id
+FOR UPDATE SKIP LOCKED
+LIMIT @take;";
+            using var command = CreateCommand(connection, sql);
+            command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.OnHand));
+            command.Parameters.AddWithValue("@sku_id", skuId);
+            command.Parameters.AddWithValue("@gtin14", string.IsNullOrWhiteSpace(gtin14) ? DBNull.Value : gtin14.Trim());
+            command.Parameters.AddWithValue("@order_id", orderId.HasValue ? orderId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@location_id", locationId.HasValue ? locationId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@hu_id", huId.HasValue ? huId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("@take", take);
+            using var reader = command.ExecuteReader();
+            var list = new List<long>();
+            while (reader.Read())
+            {
+                list.Add(reader.GetInt64(0));
+            }
+
+            return list;
+        });
+    }
+
     public int AssignKmCodesToReceipt(IReadOnlyList<long> codeIds, long docId, long lineId, long? huId, long? locationId)
     {
         return WithConnection(connection =>
@@ -3086,10 +3274,11 @@ UPDATE km_code
 SET status = @status,
     ship_doc_id = @doc_id,
     ship_line_id = @line_id,
-    order_id = @order_id
-WHERE id = @id AND status = @expected_status;");
+    order_id = COALESCE(@order_id, order_id)
+WHERE id = @id AND (status = @expected_status_on_hand OR status = @expected_status_in_pool);");
             command.Parameters.AddWithValue("@status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.Shipped));
-            command.Parameters.AddWithValue("@expected_status", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.OnHand));
+            command.Parameters.AddWithValue("@expected_status_on_hand", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.OnHand));
+            command.Parameters.AddWithValue("@expected_status_in_pool", (short)KmCodeStatusMapper.ToInt(KmCodeStatus.InPool));
             command.Parameters.AddWithValue("@doc_id", docId);
             command.Parameters.AddWithValue("@line_id", lineId);
             command.Parameters.AddWithValue("@order_id", orderId.HasValue ? orderId.Value : DBNull.Value);

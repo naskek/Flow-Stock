@@ -13,7 +13,8 @@
         <TextBlock Grid.Row="1" x:Name="CountText" Margin="0,4,0,0" />
         <StackPanel Grid.Row="2">
             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                <TextBox x:Name="CodeInput" Width="320" KeyDown="CodeInput_KeyDown" />
+                <Button x:Name="FillAutoButton" Content="Заполнить авто" Click="FillAuto_Click" />
+                <TextBox x:Name="CodeInput" Width="320" Margin="8,0,0,0" KeyDown="CodeInput_KeyDown" />
                 <Button Content="Добавить" Click="Add_Click" Margin="8,0,0,0" />
             </StackPanel>
             <DataGrid x:Name="CodesGrid" AutoGenerateColumns="False" IsReadOnly="True" Margin="0,8,0,0">

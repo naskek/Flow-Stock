@@ -4,7 +4,8 @@ public sealed class Order
 {
     public long Id { get; init; }
     public string OrderRef { get; init; } = string.Empty;
-    public long PartnerId { get; init; }
+    public OrderType Type { get; init; } = OrderType.Customer;
+    public long? PartnerId { get; init; }
     public DateTime? DueDate { get; init; }
     public OrderStatus Status { get; init; }
     public string? Comment { get; init; }
@@ -13,7 +14,8 @@ public sealed class Order
     public string? PartnerName { get; init; }
     public string? PartnerCode { get; init; }
 
-    public string StatusDisplay => OrderStatusMapper.StatusToDisplayName(Status);
+    public string TypeDisplay => OrderStatusMapper.TypeToDisplayName(Type);
+    public string StatusDisplay => OrderStatusMapper.StatusToDisplayName(Status, Type);
 
     public string PartnerDisplay
     {

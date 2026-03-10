@@ -249,7 +249,67 @@ body.pc-body {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) 130px auto;
   gap: 8px;
-  align-items: center;
+  align-items: start;
+}
+
+.pc-order-line-item-cell {
+  display: grid;
+  gap: 6px;
+}
+
+.pc-order-line-autocomplete {
+  position: relative;
+}
+
+.pc-order-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  display: none;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--pc-border);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.16);
+}
+
+.pc-order-suggest.is-open {
+  display: block;
+}
+
+.pc-order-suggest-item {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #ebf1f5;
+  padding: 8px 10px;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: var(--pc-ink);
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.pc-order-suggest-item:last-child {
+  border-bottom: 0;
+}
+
+.pc-order-suggest-item:hover {
+  background: #f4f8fb;
+}
+
+.pc-order-suggest-item.is-selected {
+  background: #e8f3f8;
+  color: #103447;
+}
+
+.pc-order-line-hint {
+  min-height: 16px;
+  font-size: 12px;
+  color: var(--pc-muted);
 }
 
 .pc-order-status-box {

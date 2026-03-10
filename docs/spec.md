@@ -16,13 +16,13 @@
   - Request submission is allowed only for active PC accounts (`tsd_devices.platform=PC`).
 
 ## Data model (server DB)
-- items(id, name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, tara_id, is_marked)
+- items(id, name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked)
 - taras(id, name)
 - item_requests(id, barcode, comment, device_id, login, status, created_at, resolved_at)
 - order_requests(id, request_type, payload_json, status, created_at, created_by_login, created_by_device_id, resolved_at, resolved_by, resolution_note, applied_order_id)
 - locations(id, code, name)
 - partners(id, name, inn, ... )
-- orders(id, order_ref, partner_id, due_date, status, comment, created_at)
+- orders(id, order_ref, order_type, partner_id NULL, due_date, status, comment, created_at)
 - order_lines(id, order_id, item_id, qty_ordered)
 - docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment, production_batch_no)
 - doc_lines(id, doc_id, order_line_id, item_id, qty, from_location_id, to_location_id, uom, from_hu, to_hu)
@@ -52,30 +52,43 @@
 ## UI screens (MVP)
 - Status: stock list + search.
 - Documents: list + details + close action.
-- Items: list with ID + modal create/edit (name, barcode/SKU, gtin, brand, volume, shelf life months, tara, uom, is_marked) + Excel import with preview and column mapping.
+- Items: list with ID + modal create/edit (name, barcode/SKU, gtin, brand, volume, shelf life months, max qty per HU, tara, uom, is_marked) + Excel import with preview and column mapping.
 - Tara: dictionary editor in “Справочники”.
 - Locations: list with ID + modal create/edit (code, name).
 - Partners: list with ID + modal create/edit.
 - Orders: list + details (see spec_orders.md).
-- Item requests: bell notification + list with resolve action.
-- Order web requests: WPF list with approve/reject action; approved requests create orders or change order status.
+- Incoming requests: single WPF inbox window (from bell/menu) for item requests and order web requests, with processing actions in one place.
+  - For order requests, WPF provides a details modal with full order payload before approval.
 - Admin: no direct table reset/edit from WPF; only backup and temporary admin unlock for row deletion in tabs.
 - Row deletion in tabs (orders/items/locations/partners/KM batches/codes) is blocked by default and allowed only after admin unlock.
 - Admin includes a dedicated "clear operations" action for test cleanup (docs/doc_lines/ledger/orders/order_lines/import events/errors). Dictionaries stay intact.
+- KM tab batch list shows package status directly (without opening batch details), based on current KM code statuses in the batch.
 
 ## Documents (extra)
-- Выпуск продукции: приемка готовой продукции на склад (плюс в ledger), HU обязателен, партия производства хранится в `production_batch_no`, документ может быть связан с заказом (order_id/order_ref).
+- HU в документе хранится на уровне строки (`doc_lines.from_hu` / `doc_lines.to_hu`). Значение HU в шапке используется как значение по умолчанию и как быстрый выбор для операций со строками, но один документ может содержать строки с разными HU.
+- Выпуск продукции: приемка готовой продукции на склад (плюс в ledger), HU обязателен на момент проведения по каждой строке, партия производства хранится в `production_batch_no`, документ может быть связан с заказом (order_id/order_ref).
   - При выборе заказа автоматически подставляются остатки по строкам заказа (order_line_id) с учетом уже закрытых выпусков.
+  - Для `orders.order_type = INTERNAL` этот документ является основным способом закрытия заказа по факту выпуска.
+  - Если в карточке товара задан `items.max_qty_per_hu`, назначение HU в WPF для строки выпуска автоматически распределяет строку по нескольким HU так, чтобы каждая строка не превышала лимит на HU.
+  - При проведении проверяется, что количество в каждой строке выпуска не превышает `max_qty_per_hu` (если лимит задан).
+  - Для совместимости со старыми черновиками при проверке/проведении выполняется авто-ремап устаревшего `order_line_id` по `item_id` (только при однозначном совпадении строки заказа).
 - Отгрузка по заказу: OUTBOUND может быть связан с заказом (order_id/order_ref).
   - При выборе заказа автоматически подставляются остатки по строкам заказа (order_line_id) с учетом уже закрытых отгрузок.
+  - В OUTBOUND доступны только клиентские заказы (`order_type = CUSTOMER`); внутренние заказы не участвуют в клиентской отгрузке.
   - TSD показывает pick list HU/локаций по выбранной строке и позволяет привязать HU/локацию к строке отгрузки.
   - Для маркируемых SKU pick list строится по `km_code` (status=OnHand) с фильтром по заказу; для немаркируемых — по ledger.
+  - В ручной OUTBOUND выбор товара фильтруется по остаткам источника (выбранные локация/HU), чтобы показывать только отгружаемые позиции.
 
 ## Marking (KM) MVP
 - Импорт CSV/TSV кодов в `km_code_batch` + `km_code` (защита по hash файла и UNIQUE(code_raw)).
 - During KM import, code duplicate checks are enforced per file and against DB (case-insensitive), with normalization of wrapped quotes.
+- При сопоставлении GTIN в КМ поддерживаются 13 и 14 цифр: 13-значный GTIN нормализуется до 14-значного добавлением ведущего `0`.
+- При импорте КМ и при старте приложения выполняется авто-пометка `items.is_marked=1` для SKU, обнаруженных в `km_code` (включая сопоставление по GTIN), чтобы КМ-товары не выпадали из сценария выпуска/отгрузки.
 - Привязка пакета к заказу через `order_id`.
-- Коды в пуле имеют статус `InPool`, переходят в статус `OnHand` только через документ "Выпуск продукции".
+- Коды в пуле имеют статус `InPool`; стандартный перевод в `OnHand` выполняется через документ "Выпуск продукции".
 - Для маркируемых SKU (items.is_marked = true) требуется привязать ровно Qty кодов к строке документа (receipt_line_id, hu_id, location_id).
 - Распределение кодов в выпуске выполняется по строке (HU+SKU+Qty) из пула `InPool` по заказу или выбранному пакету.
 - Отгрузка переводит коды в статус `Shipped` и связывает с документом отгрузки.
+- Для отгрузки ручной ввод КМ не требуется: при проведении OUTBOUND коды `OnHand` подбираются и списываются автоматически по SKU, заказу (если указан) и источнику строки (локация/HU, если заданы).
+- В окне OUTBOUND для маркируемых строк доступны действия `Коды КМ...` и `Распределить`: можно открыть привязку кодов вручную (скан/ввод) или выполнить авто-подбор из остатков.
+- Если для OUTBOUND не хватает кодов `OnHand`, система добирает недостающее из пула `InPool` (по SKU/GTIN и заказу, если он указан), чтобы завершить распределение в отгрузке.
