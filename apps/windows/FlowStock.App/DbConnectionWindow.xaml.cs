@@ -20,9 +20,16 @@ public partial class DbConnectionWindow : Window
     private bool _useServerCloseDocument;
     private static readonly string[] ServerEnvironmentKeys =
     {
+        "FLOWSTOCK_USE_SERVER_CREATE_ORDER",
+        "FLOWSTOCK_USE_SERVER_UPDATE_ORDER",
+        "FLOWSTOCK_USE_SERVER_DELETE_ORDER",
+        "FLOWSTOCK_USE_SERVER_SET_ORDER_STATUS",
+        "FLOWSTOCK_USE_SERVER_INCOMING_REQUEST_ORDER_APPROVAL",
         "FLOWSTOCK_USE_SERVER_CREATE_DOC_DRAFT",
         "FLOWSTOCK_USE_SERVER_CLOSE_DOCUMENT",
         "FLOWSTOCK_USE_SERVER_ADD_DOC_LINE",
+        "FLOWSTOCK_USE_SERVER_UPDATE_DOC_LINE",
+        "FLOWSTOCK_USE_SERVER_DELETE_DOC_LINE",
         "FLOWSTOCK_SERVER_BASE_URL",
         "FLOWSTOCK_SERVER_DEVICE_ID",
         "FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS",
@@ -121,9 +128,16 @@ public partial class DbConnectionWindow : Window
         var server = (_settings.Server ?? new ServerSettings()).Normalize();
         ApplyServerSettingsToInputs(new ServerSettings
         {
+            UseServerCreateOrder = server.UseServerCreateOrder,
+            UseServerUpdateOrder = server.UseServerUpdateOrder,
+            UseServerDeleteOrder = server.UseServerDeleteOrder,
+            UseServerSetOrderStatus = server.UseServerSetOrderStatus,
+            UseServerIncomingRequestOrderApproval = server.UseServerIncomingRequestOrderApproval,
             UseServerCreateDocDraft = server.UseServerCreateDocDraft,
             UseServerCloseDocument = server.UseServerCloseDocument,
             UseServerAddDocLine = server.UseServerAddDocLine,
+            UseServerUpdateDocLine = server.UseServerUpdateDocLine,
+            UseServerDeleteDocLine = server.UseServerDeleteDocLine,
             BaseUrl = server.BaseUrl ?? WpfCloseDocumentService.DefaultServerBaseUrl,
             DeviceId = server.DeviceId ?? WpfCloseDocumentService.BuildDefaultDeviceId(),
             CloseTimeoutSeconds = server.CloseTimeoutSeconds < 1
@@ -137,9 +151,16 @@ public partial class DbConnectionWindow : Window
 
     private void ApplyServerSettingsToInputs(ServerSettings server)
     {
+        UseServerCreateOrderCheckBox.IsChecked = server.UseServerCreateOrder;
+        UseServerUpdateOrderCheckBox.IsChecked = server.UseServerUpdateOrder;
+        UseServerDeleteOrderCheckBox.IsChecked = server.UseServerDeleteOrder;
+        UseServerSetOrderStatusCheckBox.IsChecked = server.UseServerSetOrderStatus;
+        UseServerIncomingOrderApprovalCheckBox.IsChecked = server.UseServerIncomingRequestOrderApproval;
         UseServerCreateDraftCheckBox.IsChecked = server.UseServerCreateDocDraft;
         SetCloseMode(server.UseServerCloseDocument);
         UseServerAddLineCheckBox.IsChecked = server.UseServerAddDocLine;
+        UseServerUpdateLineCheckBox.IsChecked = server.UseServerUpdateDocLine;
+        UseServerDeleteLineCheckBox.IsChecked = server.UseServerDeleteDocLine;
         ServerBaseUrlBox.Text = server.BaseUrl ?? WpfCloseDocumentService.DefaultServerBaseUrl;
         ServerDeviceIdBox.Text = server.DeviceId ?? WpfCloseDocumentService.BuildDefaultDeviceId();
         ServerTimeoutBox.Text = server.CloseTimeoutSeconds.ToString(CultureInfo.InvariantCulture);
@@ -148,17 +169,39 @@ public partial class DbConnectionWindow : Window
 
     private void RefreshServerStatus()
     {
+        OrderCreateModeText.Text = $"Order create mode: {FormatCloseMode(UseServerCreateOrderCheckBox.IsChecked == true)}";
+        OrderUpdateModeText.Text = $"Order update mode: {FormatCloseMode(UseServerUpdateOrderCheckBox.IsChecked == true)}";
+        OrderDeleteModeText.Text = $"Order delete mode: {FormatCloseMode(UseServerDeleteOrderCheckBox.IsChecked == true)}";
+        OrderStatusModeText.Text = $"Order status mode: {FormatCloseMode(UseServerSetOrderStatusCheckBox.IsChecked == true)}";
+        OrderApprovalModeText.Text = $"Incoming request approval mode: {FormatCloseMode(UseServerIncomingOrderApprovalCheckBox.IsChecked == true)}";
         CreateModeText.Text = $"Draft create mode: {FormatCloseMode(UseServerCreateDraftCheckBox.IsChecked == true)}";
         CloseModeText.Text = $"Close mode: {FormatCloseMode(_useServerCloseDocument)}";
         LineAddModeText.Text = $"Line add mode (manual + batch): {FormatCloseMode(UseServerAddLineCheckBox.IsChecked == true)}";
+        LineUpdateModeText.Text = $"Line update mode: {FormatCloseMode(UseServerUpdateLineCheckBox.IsChecked == true)}";
+        LineDeleteModeText.Text = $"Line delete mode: {FormatCloseMode(UseServerDeleteLineCheckBox.IsChecked == true)}";
         ConfigLoadedText.Text = $"Config loaded: {(File.Exists(_services.SettingsPath) ? "yes" : "no")}";
 
+        var effectiveOrderCreate = _services.WpfCreateOrders.GetEffectiveConfiguration();
+        ActiveOrderCreatePathText.Text = $"Active order create path: {FormatCloseMode(effectiveOrderCreate.UseServerCreateOrder)}";
+        var effectiveOrderUpdate = _services.WpfUpdateOrders.GetEffectiveConfiguration();
+        ActiveOrderUpdatePathText.Text = $"Active order update path: {FormatCloseMode(effectiveOrderUpdate.UseServerUpdateOrder)}";
+        var effectiveOrderDelete = _services.WpfDeleteOrders.GetEffectiveConfiguration();
+        ActiveOrderDeletePathText.Text = $"Active order delete path: {FormatCloseMode(effectiveOrderDelete.UseServerDeleteOrder)}";
+        var effectiveOrderStatus = _services.WpfSetOrderStatuses.GetEffectiveConfiguration();
+        ActiveOrderStatusPathText.Text = $"Active order status path: {FormatCloseMode(effectiveOrderStatus.UseServerSetOrderStatus)}";
+        var effectiveIncomingOrderApproval = _services.IncomingRequestOrderApprovals.GetEffectiveConfiguration();
+        ActiveIncomingOrderApprovalPathText.Text =
+            $"Active incoming request approval path: {FormatCloseMode(effectiveIncomingOrderApproval.UseServerIncomingRequestOrderApproval)}";
         var effectiveCreate = _services.WpfCreateDocDrafts.GetEffectiveConfiguration();
         ActiveCreatePathText.Text = $"Active draft create path: {FormatCloseMode(effectiveCreate.UseServerCreateDocDraft)}";
         var effective = _services.WpfCloseDocuments.GetEffectiveConfiguration();
         ActiveClosePathText.Text = $"Active close path: {FormatCloseMode(effective.UseServerCloseDocument)}";
         var effectiveLine = _services.WpfAddDocLines.GetEffectiveConfiguration();
         ActiveLineAddPathText.Text = $"Active line add path (manual + batch): {FormatCloseMode(effectiveLine.UseServerAddDocLine)}";
+        var effectiveLineUpdate = _services.WpfUpdateDocLines.GetEffectiveConfiguration();
+        ActiveLineUpdatePathText.Text = $"Active line update path: {FormatCloseMode(effectiveLineUpdate.UseServerUpdateDocLine)}";
+        var effectiveLineDelete = _services.WpfDeleteDocLines.GetEffectiveConfiguration();
+        ActiveLineDeletePathText.Text = $"Active line delete path: {FormatCloseMode(effectiveLineDelete.UseServerDeleteDocLine)}";
 
         var overrides = GetServerEnvironmentOverrides();
         if (overrides.Count == 0)
@@ -186,7 +229,49 @@ public partial class DbConnectionWindow : Window
         SetServerStatus(string.Empty, MediaBrushes.Gray);
     }
 
+    private void UseServerCreateOrderCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        RefreshServerStatus();
+        SetServerStatus(string.Empty, MediaBrushes.Gray);
+    }
+
+    private void UseServerUpdateOrderCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        RefreshServerStatus();
+        SetServerStatus(string.Empty, MediaBrushes.Gray);
+    }
+
+    private void UseServerDeleteOrderCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        RefreshServerStatus();
+        SetServerStatus(string.Empty, MediaBrushes.Gray);
+    }
+
+    private void UseServerSetOrderStatusCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        RefreshServerStatus();
+        SetServerStatus(string.Empty, MediaBrushes.Gray);
+    }
+
+    private void UseServerIncomingOrderApprovalCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        RefreshServerStatus();
+        SetServerStatus(string.Empty, MediaBrushes.Gray);
+    }
+
     private void UseServerAddLineCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        RefreshServerStatus();
+        SetServerStatus(string.Empty, MediaBrushes.Gray);
+    }
+
+    private void UseServerUpdateLineCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        RefreshServerStatus();
+        SetServerStatus(string.Empty, MediaBrushes.Gray);
+    }
+
+    private void UseServerDeleteLineCheckBox_Changed(object sender, RoutedEventArgs e)
     {
         RefreshServerStatus();
         SetServerStatus(string.Empty, MediaBrushes.Gray);
@@ -264,9 +349,16 @@ public partial class DbConnectionWindow : Window
 
         serverSettings = new ServerSettings
         {
+            UseServerCreateOrder = UseServerCreateOrderCheckBox.IsChecked == true,
+            UseServerUpdateOrder = UseServerUpdateOrderCheckBox.IsChecked == true,
+            UseServerDeleteOrder = UseServerDeleteOrderCheckBox.IsChecked == true,
+            UseServerSetOrderStatus = UseServerSetOrderStatusCheckBox.IsChecked == true,
+            UseServerIncomingRequestOrderApproval = UseServerIncomingOrderApprovalCheckBox.IsChecked == true,
             UseServerCreateDocDraft = UseServerCreateDraftCheckBox.IsChecked == true,
             UseServerCloseDocument = _useServerCloseDocument,
             UseServerAddDocLine = UseServerAddLineCheckBox.IsChecked == true,
+            UseServerUpdateDocLine = UseServerUpdateLineCheckBox.IsChecked == true,
+            UseServerDeleteDocLine = UseServerDeleteLineCheckBox.IsChecked == true,
             BaseUrl = NormalizeServerBaseUrl(baseUrl),
             DeviceId = string.IsNullOrWhiteSpace(deviceId) ? WpfCloseDocumentService.BuildDefaultDeviceId() : deviceId,
             CloseTimeoutSeconds = timeoutSeconds,

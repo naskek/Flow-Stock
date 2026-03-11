@@ -101,6 +101,8 @@ These tests and docs prepare the next migration steps in a practical way:
 - they freeze append-only behavior and no-ledger/no-status-change invariants;
 - they freeze canonical replay semantics directly on the real HTTP endpoint;
 - they allow WPF to start consuming the canonical line-add contract without redefining it;
+- they now coexist with a separate append-only `UpdateDocLine` contract, so line edits no longer need to overload `AddDocLine` semantics;
+- they now also coexist with a separate append-only `DeleteDocLine` contract, so line removal no longer requires mutable SQL delete in canonical lifecycle;
 - they keep TSD compatibility visible while refusing to treat `/api/ops` or JSONL import as canonical line lifecycle.
 
 # WPF coverage in this step
@@ -139,5 +141,7 @@ The next migration steps should:
 
 1. keep the executable add-line tests green while moving more WPF line operations toward canonical API semantics;
 2. preserve append-only semantics and no-ledger/no-status-change invariants;
-3. leave `/api/ops` and JSONL import clearly outside canonical `AddDocLine` lifecycle unless explicitly redesigned;
-4. add WPF-side automated coverage only if a lightweight adapter or integration harness becomes available without forcing a UI test framework on the repo.
+3. keep `UpdateDocLine` as a separate append-only replacement operation built on `replaces_line_id`, rather than reintroducing mutable `doc_lines` updates into add-line flows;
+4. keep `DeleteDocLine` as a separate append-only tombstone operation built on `replaces_line_id`, rather than reintroducing physical deletes into canonical lifecycle;
+5. leave `/api/ops` and JSONL import clearly outside canonical `AddDocLine` lifecycle unless explicitly redesigned;
+6. add WPF-side automated coverage only if a lightweight adapter or integration harness becomes available without forcing a UI test framework on the repo.

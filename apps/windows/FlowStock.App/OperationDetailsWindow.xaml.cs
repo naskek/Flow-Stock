@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -588,7 +589,12 @@ public partial class OperationDetailsWindow : Window
 
         if (HasOrderBinding())
         {
-            MessageBox.Show("Нельзя добавлять строки вручную, когда выбран заказ.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+            LogOutboundOrderBoundInfo("manual add blocked: order-bound outbound requires explicit fill-from-order flow");
+            MessageBox.Show(
+                "Для отгрузки с привязанным заказом ручное добавление строк отключено. Используйте 'Заполнить из заказа'.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
             return;
         }
 
@@ -764,7 +770,7 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void DocDeleteLine_Click(object sender, RoutedEventArgs e)
+    private async void DocDeleteLine_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureDraftDocSelected())
         {
@@ -783,6 +789,28 @@ public partial class OperationDetailsWindow : Window
 
         try
         {
+            if (_services.WpfDeleteDocLines.IsServerDeleteEnabled())
+            {
+                var result = await _services.WpfDeleteDocLines.DeleteLinesAsync(_doc!, selectedLineIds);
+                if (result.ShouldRefresh)
+                {
+                    LoadDoc();
+                }
+
+                if (result.IsSuccess)
+                {
+                    if (!string.IsNullOrWhiteSpace(result.Message))
+                    {
+                        MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                    }
+
+                    return;
+                }
+
+                MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, ResolveServerDeleteLineMessageImage(result.Kind));
+                return;
+            }
+
             _services.Documents.DeleteDocLines(_doc!.Id, selectedLineIds);
             LoadDocLines();
         }
@@ -947,7 +975,7 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void DocEditLine_Click(object sender, RoutedEventArgs e)
+    private async void DocEditLine_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureDraftDocSelected())
         {
@@ -956,6 +984,12 @@ public partial class OperationDetailsWindow : Window
 
         if (HasOrderBinding() && !_isPartialShipment)
         {
+            LogOutboundOrderBoundInfo("line update blocked: order-bound outbound allows qty edit only in partial shipment mode");
+            MessageBox.Show(
+                "Изменение количества доступно только в режиме 'Частичная отгрузка'. Для полного восстановления строк используйте 'Заполнить из заказа'.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
             return;
         }
 
@@ -1015,6 +1049,50 @@ public partial class OperationDetailsWindow : Window
             }
         }
 
+        var currentLine = _services.DataStore.GetDocLines(_doc!.Id)
+            .FirstOrDefault(entry => entry.Id == _selectedDocLine.Id);
+        if (currentLine == null)
+        {
+            MessageBox.Show("Строка не найдена.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (_services.WpfUpdateDocLines.IsServerUpdateEnabled())
+        {
+            var result = await _services.WpfUpdateDocLines.UpdateLineAsync(
+                _doc,
+                new WpfUpdateDocLineContext(
+                    currentLine.Id,
+                    qtyDialog.QtyBase,
+                    qtyDialog.UomCode,
+                    currentLine.FromLocationId,
+                    currentLine.ToLocationId,
+                    currentLine.FromHu,
+                    currentLine.ToHu));
+
+            if (result.ShouldRefresh)
+            {
+                LoadDoc();
+            }
+
+            if (result.IsSuccess)
+            {
+                if (!string.IsNullOrWhiteSpace(result.Message))
+                {
+                    MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+
+                return;
+            }
+
+            MessageBox.Show(
+                result.Message,
+                "Операция",
+                MessageBoxButton.OK,
+                ResolveServerUpdateLineMessageImage(result.Kind));
+            return;
+        }
+
         try
         {
             _services.Documents.UpdateDocLineQty(_doc!.Id, _selectedDocLine.Id, qtyDialog.QtyBase, qtyDialog.QtyInput, qtyDialog.UomCode);
@@ -1026,7 +1104,31 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void AssignHuButton_Click(object sender, RoutedEventArgs e)
+    private static MessageBoxImage ResolveServerUpdateLineMessageImage(WpfUpdateDocLineResultKind kind)
+    {
+        return kind switch
+        {
+            WpfUpdateDocLineResultKind.ValidationFailed => MessageBoxImage.Warning,
+            WpfUpdateDocLineResultKind.NotFound => MessageBoxImage.Warning,
+            WpfUpdateDocLineResultKind.EventConflict => MessageBoxImage.Warning,
+            WpfUpdateDocLineResultKind.ServerRejected => MessageBoxImage.Warning,
+            _ => MessageBoxImage.Error
+        };
+    }
+
+    private static MessageBoxImage ResolveServerDeleteLineMessageImage(WpfDeleteDocLineResultKind kind)
+    {
+        return kind switch
+        {
+            WpfDeleteDocLineResultKind.ValidationFailed => MessageBoxImage.Warning,
+            WpfDeleteDocLineResultKind.NotFound => MessageBoxImage.Warning,
+            WpfDeleteDocLineResultKind.EventConflict => MessageBoxImage.Warning,
+            WpfDeleteDocLineResultKind.ServerRejected => MessageBoxImage.Warning,
+            _ => MessageBoxImage.Error
+        };
+    }
+
+    private async void AssignHuButton_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureDraftDocSelected())
         {
@@ -1109,6 +1211,24 @@ public partial class OperationDetailsWindow : Window
         {
             MessageBox.Show("Выбранный HU уже назначен строке. Выберите другой HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
+        }
+
+        if (_doc.Type == DocType.Outbound && IsFullServerLineLifecycleEnabled())
+        {
+            await TryApplyOutboundHuMutationViaServerAsync(
+                line,
+                qty,
+                line.FromLocationId,
+                targetFromHu,
+                targetToHu,
+                "Операция",
+                "assign-hu");
+            return;
+        }
+        else if (_doc.Type == DocType.Outbound)
+        {
+            LogHuServerFlowInfo(
+                $"assign-hu routed to legacy local path: add={_services.WpfAddDocLines.IsServerAddDocLineEnabled()} update={_services.WpfUpdateDocLines.IsServerUpdateEnabled()} delete={_services.WpfDeleteDocLines.IsServerDeleteEnabled()}");
         }
 
         try
@@ -1522,6 +1642,20 @@ public partial class OperationDetailsWindow : Window
         _suppressOrderSync = false;
         UpdatePartnerLock();
         ResetPartialMode();
+        if (_doc?.Type == DocType.Outbound)
+        {
+            MarkHeaderDirty();
+            LogOutboundOrderBoundInfo($"implicit trigger suppressed: order selection changed; order_id={selected.Id}; fill/rebuild not invoked");
+            MessageBox.Show(
+                "Заказ изменён. Нажмите 'Заполнить из заказа', чтобы пересобрать строки.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            UpdateLineButtons();
+            UpdateActionButtons();
+            return;
+        }
+
         await TryApplyOrderSelectionAsync(selected);
         UpdateLineButtons();
     }
@@ -1561,7 +1695,7 @@ public partial class OperationDetailsWindow : Window
         UpdateActionButtons();
     }
 
-    private async void DocPartialCheck_Changed(object sender, RoutedEventArgs e)
+    private void DocPartialCheck_Changed(object sender, RoutedEventArgs e)
     {
         if (_suppressPartialSync)
         {
@@ -1577,7 +1711,12 @@ public partial class OperationDetailsWindow : Window
         _isPartialShipment = DocPartialCheck.IsChecked == true;
         if (!_isPartialShipment && _doc?.OrderId.HasValue == true)
         {
-            await TryApplyOrderSelectionAsync(new OrderOption(_doc.OrderId.Value, _doc.OrderRef ?? string.Empty, OrderType.Customer, _doc.PartnerId, string.Empty));
+            LogOutboundOrderBoundInfo($"implicit trigger suppressed: partial shipment disabled; order_id={_doc.OrderId.Value}; fill/rebuild not invoked");
+            MessageBox.Show(
+                "Режим частичной отгрузки изменён. Нажмите 'Заполнить из заказа', чтобы пересобрать строки.",
+                "Операция",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
         }
 
         UpdateLineButtons();
@@ -1764,7 +1903,9 @@ public partial class OperationDetailsWindow : Window
         DocFromColumn.Header = fromLabel;
         DocToColumn.Header = toLabel;
 
-        FillFromOrderButton.Visibility = doc.Type == DocType.ProductionReceipt ? Visibility.Visible : Visibility.Collapsed;
+        FillFromOrderButton.Visibility = doc.Type == DocType.ProductionReceipt || doc.Type == DocType.Outbound
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         FillFromOrderButton.IsEnabled = isEditable && DocOrderCombo.SelectedItem != null;
     }
 
@@ -1797,13 +1938,12 @@ public partial class OperationDetailsWindow : Window
     {
         var isEditable = IsDocEditable();
         var hasOrder = HasOrderBinding();
-        var allowPartialEdit = hasOrder && _isPartialShipment;
         var selectedLineCount = GetSelectedDocLines().Count;
         var hasSelection = selectedLineCount > 0;
         var hasSingleSelection = selectedLineCount == 1 && _selectedDocLine != null;
-        AddItemButton.IsEnabled = isEditable && !hasOrder;
+        AddItemButton.IsEnabled = isEditable;
         AutoHuButton.IsEnabled = isEditable && _doc?.Type == DocType.ProductionReceipt && _docLines.Count > 0;
-        EditLineButton.IsEnabled = isEditable && hasSingleSelection && (!hasOrder || allowPartialEdit);
+        EditLineButton.IsEnabled = isEditable && hasSingleSelection;
         AssignHuButton.IsEnabled = isEditable && hasSingleSelection && SupportsLineHuAssignment();
         DeleteLineButton.IsEnabled = isEditable && hasSelection;
         DocPartialCheck.IsEnabled = isEditable && _doc?.Type == DocType.Outbound && hasOrder;
@@ -1812,7 +1952,7 @@ public partial class OperationDetailsWindow : Window
                                   && hasSingleSelection
                                   && _selectedDocLine?.IsMarked == true
                                   && (_doc?.Type == DocType.ProductionReceipt || _doc?.Type == DocType.Outbound);
-        if (_doc?.Type == DocType.ProductionReceipt)
+        if (_doc?.Type is DocType.ProductionReceipt or DocType.Outbound)
         {
             FillFromOrderButton.IsEnabled = isEditable && DocOrderCombo.SelectedItem != null;
         }
@@ -1868,7 +2008,7 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void OutboundHuApply_Click(object sender, RoutedEventArgs e)
+    private async void OutboundHuApply_Click(object sender, RoutedEventArgs e)
     {
         if (_doc == null || _doc.Type != DocType.Outbound)
         {
@@ -1916,6 +2056,22 @@ public partial class OperationDetailsWindow : Window
             MessageBox.Show($"Количество должно быть от 1 до {FormatQty(maxQty)}.", "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+
+        if (IsFullServerLineLifecycleEnabled())
+        {
+            await TryApplyOutboundHuMutationViaServerAsync(
+                line,
+                qty,
+                _selectedOutboundHu.LocationId,
+                _selectedOutboundHu.HuCode,
+                null,
+                "Отгрузка",
+                "outbound-hu-apply");
+            return;
+        }
+
+        LogHuServerFlowInfo(
+            $"outbound-hu-apply routed to legacy local path: add={_services.WpfAddDocLines.IsServerAddDocLineEnabled()} update={_services.WpfUpdateDocLines.IsServerUpdateEnabled()} delete={_services.WpfDeleteDocLines.IsServerDeleteEnabled()}");
 
         var ratio = line.QtyInput.HasValue && line.Qty > 0
             ? line.QtyInput.Value / line.Qty
@@ -1994,9 +2150,23 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        if (_services.WpfBatchAddDocLines.IsServerBatchAddDocLineEnabled())
+        var useServerBatchRebuild = IsServerBatchRebuildEnabled();
+        LogOutboundOrderBoundInfo(
+            $"explicit fill invoked: order_id={selected.Id}; mode={(useServerBatchRebuild ? "server" : "legacy")}; partial={_isPartialShipment}");
+
+        if (useServerBatchRebuild)
         {
+            LogOutboundOrderBoundInfo($"explicit fill routed to server batch path for order_id={selected.Id}");
             return await TryApplyOrderSelectionViaServerAsync(selected);
+        }
+
+        if (_services.WpfBatchAddDocLines.IsServerBatchAddDocLineEnabled() && !_services.WpfDeleteDocLines.IsServerDeleteEnabled())
+        {
+            LogOutboundOrderBoundInfo($"explicit fill routed to legacy local path for order_id={selected.Id}; reason=server delete-line mode disabled");
+        }
+        else
+        {
+            LogOutboundOrderBoundInfo($"explicit fill routed to legacy local path for order_id={selected.Id}");
         }
 
         TryApplyOrderSelectionLegacy(selected);
@@ -2026,6 +2196,139 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
+    private bool IsFullServerLineLifecycleEnabled()
+    {
+        return _services.WpfAddDocLines.IsServerAddDocLineEnabled()
+               && _services.WpfUpdateDocLines.IsServerUpdateEnabled()
+               && _services.WpfDeleteDocLines.IsServerDeleteEnabled();
+    }
+
+    private async Task<bool> TryApplyOutboundHuMutationViaServerAsync(
+        DocLine line,
+        double allocatedQty,
+        long? targetFromLocationId,
+        string? targetFromHu,
+        string? targetToHu,
+        string caption,
+        string flowName)
+    {
+        if (_doc == null)
+        {
+            return false;
+        }
+
+        if (!targetFromLocationId.HasValue)
+        {
+            LogHuServerFlowWarn($"{flowName} aborted before server call: missing target from_location_id for source_line_id={line.Id}");
+            MessageBox.Show(
+                "Для серверного HU-переназначения требуется локация-источник.",
+                caption,
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+
+        var remainingQty = line.Qty - allocatedQty;
+        LogHuServerFlowInfo(
+            $"{flowName} server sequence prepared: source_line_id={line.Id}; allocated_qty={FormatQty(allocatedQty)}; remaining_qty={FormatQty(Math.Max(remainingQty, 0))}; target_from_location_id={targetFromLocationId.Value}; target_from_hu={NormalizeHuValue(targetFromHu) ?? "-"}; target_to_hu={NormalizeHuValue(targetToHu) ?? "-"}");
+
+        var sourceMutated = false;
+        if (remainingQty <= 0.000001)
+        {
+            LogHuServerFlowInfo($"{flowName} server delete phase started: source_line_id={line.Id}");
+            var deleteResult = await _services.WpfDeleteDocLines.DeleteLinesAsync(_doc, new[] { line.Id });
+            if (!deleteResult.IsSuccess)
+            {
+                if (deleteResult.ShouldRefresh)
+                {
+                    LoadDoc();
+                }
+
+                LogHuServerFlowWarn($"{flowName} server delete phase failed: source_line_id={line.Id}; message={deleteResult.Message}");
+                MessageBox.Show(
+                    deleteResult.Message,
+                    caption,
+                    MessageBoxButton.OK,
+                    ResolveServerDeleteLineMessageImage(deleteResult.Kind));
+                return false;
+            }
+
+            sourceMutated = true;
+            LogHuServerFlowInfo($"{flowName} server delete phase completed: source_line_id={line.Id}");
+        }
+        else
+        {
+            LogHuServerFlowInfo($"{flowName} server update phase started: source_line_id={line.Id}; remaining_qty={FormatQty(remainingQty)}");
+            var updateResult = await _services.WpfUpdateDocLines.UpdateLineAsync(
+                _doc,
+                new WpfUpdateDocLineContext(
+                    line.Id,
+                    remainingQty,
+                    line.UomCode,
+                    line.FromLocationId,
+                    line.ToLocationId,
+                    line.FromHu,
+                    line.ToHu));
+            if (!updateResult.IsSuccess)
+            {
+                if (updateResult.ShouldRefresh)
+                {
+                    LoadDoc();
+                }
+
+                LogHuServerFlowWarn($"{flowName} server update phase failed: source_line_id={line.Id}; message={updateResult.Message}");
+                MessageBox.Show(
+                    updateResult.Message,
+                    caption,
+                    MessageBoxButton.OK,
+                    ResolveServerUpdateLineMessageImage(updateResult.Kind));
+                return false;
+            }
+
+            sourceMutated = true;
+            LogHuServerFlowInfo($"{flowName} server update phase completed: source_line_id={line.Id}; remaining_qty={FormatQty(remainingQty)}");
+        }
+
+        LogHuServerFlowInfo($"{flowName} server add phase started: source_line_id={line.Id}; allocated_qty={FormatQty(allocatedQty)}");
+        var addResult = await _services.WpfAddDocLines.AddLineAsync(
+            _doc,
+            new WpfAddDocLineContext(
+                line.ItemId,
+                null,
+                line.OrderLineId,
+                allocatedQty,
+                null,
+                line.UomCode,
+                targetFromLocationId,
+                null,
+                targetFromHu,
+                targetToHu));
+        if (!addResult.IsSuccess)
+        {
+            if (sourceMutated || addResult.ShouldRefresh)
+            {
+                LoadDoc();
+            }
+
+            LogHuServerFlowWarn($"{flowName} server add phase failed: source_line_id={line.Id}; message={addResult.Message}");
+            MessageBox.Show(
+                BuildHuServerPartialFailureMessage(addResult.Message),
+                caption,
+                MessageBoxButton.OK,
+                ResolveServerAddLineMessageImage(addResult.Kind));
+            return false;
+        }
+
+        LoadDoc();
+        LogHuServerFlowInfo($"{flowName} server sequence completed: source_line_id={line.Id}; allocated_qty={FormatQty(allocatedQty)}");
+        return true;
+    }
+
+    private static string BuildHuServerPartialFailureMessage(string message)
+    {
+        return $"Часть HU-операции уже применена сервером. Обновите документ и проверьте фактическое состояние строк перед повтором.{Environment.NewLine}{Environment.NewLine}{message}";
+    }
+
     private async Task<bool> TryApplyOrderSelectionViaServerAsync(OrderOption selected)
     {
         if (_doc == null)
@@ -2033,23 +2336,37 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        if (!TryGetLineLocations(out var fromLocation, out _, out var fromHu, out _))
+        if (!TryGetLineLocations(out var fromLocation, out _, out var fromHu, out _, nameof(TryApplyOrderSelectionViaServerAsync)))
         {
+            LogOutboundOrderBoundWarn($"fill from order aborted before server call: order_id={selected.Id}; source location/HU validation failed");
             return false;
         }
 
         var contexts = BuildOutboundOrderBatchContexts(selected.Id, fromLocation?.Id, fromHu);
         var headerHu = GetSelectedHuCode(DocHuCombo);
+        LogOutboundOrderBoundInfo($"fill from order server branch prepared: order_id={selected.Id}; contexts={contexts.Count}; from_location_id={fromLocation?.Id}; from_hu={NormalizeHuValue(fromHu) ?? "-"}");
 
         try
         {
             _services.Documents.UpdateDocHeader(_doc.Id, selected.PartnerId, selected.OrderRef, headerHu);
             _services.Documents.UpdateDocOrderBinding(_doc.Id, selected.Id);
-            _services.DataStore.DeleteDocLines(_doc.Id);
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
+        }
+
+        var existingLineIds = _services.DataStore.GetDocLines(_doc.Id)
+            .Select(line => line.Id)
+            .ToList();
+        LogOutboundOrderBoundInfo($"fill from order server branch delete phase prepared: order_id={selected.Id}; active_line_count={existingLineIds.Count}");
+        if (!await TryDeleteLinesForServerRebuildAsync(
+                existingLineIds,
+                "Операция",
+                logInfo: message => LogOutboundOrderBoundInfo(message),
+                logWarn: message => LogOutboundOrderBoundWarn(message)))
+        {
             return false;
         }
 
@@ -2116,7 +2433,7 @@ public partial class OperationDetailsWindow : Window
 
     private async void DocFillFromOrder_Click(object sender, RoutedEventArgs e)
     {
-        if (_doc == null || _doc.Type != DocType.ProductionReceipt)
+        if (_doc == null || (_doc.Type != DocType.ProductionReceipt && _doc.Type != DocType.Outbound))
         {
             return;
         }
@@ -2132,6 +2449,13 @@ public partial class OperationDetailsWindow : Window
             return;
         }
         var selected = orderOption;
+
+        if (_doc.Type == DocType.Outbound)
+        {
+            LogOutboundOrderBoundInfo($"explicit fill-from-order button clicked: order_id={selected.Id}");
+            await TryApplyOrderSelectionAsync(selected);
+            return;
+        }
 
         var existingLines = _services.DataStore.GetDocLines(_doc.Id);
         var replaceLines = false;
@@ -2166,21 +2490,29 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (_services.WpfBatchAddDocLines.IsServerBatchAddDocLineEnabled())
+        if (IsServerBatchRebuildEnabled())
         {
             var contexts = BuildProductionReceiptBatchContexts(orderId, toLocation?.Id, toHu);
             try
             {
                 _services.Documents.UpdateDocOrderBinding(_doc.Id, orderId);
-                if (replaceLines)
-                {
-                    _services.DataStore.DeleteDocLines(_doc.Id);
-                }
             }
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
+            }
+
+            if (replaceLines)
+            {
+                var existingLineIds = _services.DataStore.GetDocLines(_doc.Id)
+                    .Select(line => line.Id)
+                    .ToList();
+                _services.AppLogger.Info($"wpf_batch_rebuild doc_id={_doc.Id} doc_type=ProductionReceipt delete_phase mode=server active_line_count={existingLineIds.Count}");
+                if (!await TryDeleteLinesForServerRebuildAsync(existingLineIds, "Выпуск продукции"))
+                {
+                    return;
+                }
             }
 
             var result = await _services.WpfBatchAddDocLines.AddLinesBatchAsync(_doc, contexts);
@@ -2206,6 +2538,12 @@ public partial class OperationDetailsWindow : Window
             }
 
             return;
+        }
+
+        if (_services.WpfBatchAddDocLines.IsServerBatchAddDocLineEnabled()
+            && !_services.WpfDeleteDocLines.IsServerDeleteEnabled())
+        {
+            _services.AppLogger.Info($"wpf_batch_rebuild doc_id={_doc.Id} doc_type=ProductionReceipt mode=legacy reason=server_delete_disabled");
         }
 
         try
@@ -2259,6 +2597,46 @@ public partial class OperationDetailsWindow : Window
             .ToList();
     }
 
+    private bool IsServerBatchRebuildEnabled()
+    {
+        return _services.WpfBatchAddDocLines.IsServerBatchAddDocLineEnabled()
+               && _services.WpfDeleteDocLines.IsServerDeleteEnabled();
+    }
+
+    private async Task<bool> TryDeleteLinesForServerRebuildAsync(
+        IReadOnlyCollection<long> lineIds,
+        string caption,
+        Action<string>? logInfo = null,
+        Action<string>? logWarn = null)
+    {
+        if (_doc == null || lineIds.Count == 0)
+        {
+            logInfo?.Invoke("server rebuild delete phase skipped: no active lines");
+            return true;
+        }
+
+        logInfo?.Invoke($"server rebuild delete phase started: line_count={lineIds.Count}");
+        var result = await _services.WpfDeleteDocLines.DeleteLinesAsync(_doc, lineIds);
+        if (result.ShouldRefresh)
+        {
+            LoadDoc();
+        }
+
+        if (result.IsSuccess)
+        {
+            logInfo?.Invoke($"server rebuild delete phase completed: line_count={lineIds.Count}");
+            return true;
+        }
+
+        logWarn?.Invoke($"server rebuild delete phase failed: {result.Message}");
+        MessageBox.Show(
+            result.Message,
+            caption,
+            MessageBoxButton.OK,
+            ResolveServerDeleteLineMessageImage(result.Kind));
+        return false;
+    }
+
     private static string BuildBatchFailureMessage(WpfBatchAddDocLinesResult result)
     {
         if (result.AddedCount <= 0 && result.ReplayCount <= 0)
@@ -2296,24 +2674,24 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private async Task<bool> TrySaveHeaderAsync()
+    private Task<bool> TrySaveHeaderAsync()
     {
         if (_doc == null)
         {
             MessageBox.Show("Операция не выбрана.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-            return false;
+            return Task.FromResult(false);
         }
 
         if (_doc.Status != DocStatus.Draft)
         {
             MessageBox.Show("Операция уже закрыта.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-            return false;
+            return Task.FromResult(false);
         }
 
         if (_doc.IsRecountRequested)
         {
             MessageBox.Show("Операция находится на перерасчете. Изменения недоступны до ответа от ТСД.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-            return false;
+            return Task.FromResult(false);
         }
 
         var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
@@ -2323,18 +2701,19 @@ public partial class OperationDetailsWindow : Window
         var reasonCode = (DocReasonCombo.SelectedItem as WriteOffReasonOption)?.Code;
         var productionBatch = DocBatchBox.Text;
         var comment = DocCommentBox.Text;
+        var outboundFillReminderNeeded = false;
         try
         {
             if (_doc.Type == DocType.ProductionReceipt
                 && !string.IsNullOrWhiteSpace(huCode)
                 && !TryEnsureHuExists(huCode))
             {
-                return false;
+                return Task.FromResult(false);
             }
 
             if (!TryResolveOrder(out var orderOption))
             {
-                return false;
+                return Task.FromResult(false);
             }
 
             if (orderOption != null)
@@ -2342,16 +2721,15 @@ public partial class OperationDetailsWindow : Window
                 var headerPartnerId = _doc.Type == DocType.Outbound ? orderOption.PartnerId : partnerId;
                 if (_doc.Type == DocType.Outbound)
                 {
-                    if (!_isPartialShipment || _doc.OrderId != orderOption.Id)
+                    var orderChanged = _doc.OrderId != orderOption.Id
+                        || !string.Equals(_doc.OrderRef, orderOption.OrderRef, StringComparison.OrdinalIgnoreCase);
+                    _services.Documents.UpdateDocHeader(_doc.Id, headerPartnerId, orderOption.OrderRef, huCode);
+                    _services.Documents.UpdateDocOrderBinding(_doc.Id, orderOption.Id);
+                    LoadOrderQuantities(orderOption.Id);
+                    if (orderChanged)
                     {
-                        if (!await TryApplyOrderSelectionAsync(orderOption))
-                        {
-                            return false;
-                        }
-                    }
-                    else
-                    {
-                        _services.Documents.UpdateDocHeader(_doc.Id, headerPartnerId, orderOption.OrderRef, huCode);
+                        outboundFillReminderNeeded = true;
+                        LogOutboundOrderBoundInfo($"implicit trigger suppressed: save updated order binding/header for order_id={orderOption.Id}; fill/rebuild not invoked");
                     }
                 }
                 else if (_doc.Type == DocType.ProductionReceipt)
@@ -2391,12 +2769,20 @@ public partial class OperationDetailsWindow : Window
 
             LoadDoc();
             MarkHeaderSaved();
-            return true;
+            if (outboundFillReminderNeeded)
+            {
+                MessageBox.Show(
+                    "Параметры заказа сохранены. Нажмите 'Заполнить из заказа', чтобы пересобрать строки.",
+                    "Операция",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+            return Task.FromResult(true);
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
-            return false;
+            return Task.FromResult(false);
         }
     }
 
@@ -2986,7 +3372,12 @@ public partial class OperationDetailsWindow : Window
         public string DisplayName { get; }
     }
 
-    private bool TryGetLineLocations(out Location? fromLocation, out Location? toLocation, out string? fromHu, out string? toHu)
+    private bool TryGetLineLocations(
+        out Location? fromLocation,
+        out Location? toLocation,
+        out string? fromHu,
+        out string? toHu,
+        [CallerMemberName] string caller = "")
     {
         fromLocation = DocFromCombo.SelectedItem as Location;
         toLocation = DocToCombo.SelectedItem as Location;
@@ -3026,10 +3417,75 @@ public partial class OperationDetailsWindow : Window
             && !string.IsNullOrWhiteSpace(toHu)
             && !TryEnsureHuExists(toHu))
         {
+            LogLineLocationValidationFailure(caller, fromLocation, toLocation, fromHu, toHu);
             return false;
         }
 
-        return ValidateLineLocations(_doc, fromLocation, toLocation, fromHu, toHu);
+        var isValid = ValidateLineLocations(_doc, fromLocation, toLocation, fromHu, toHu);
+        if (!isValid)
+        {
+            LogLineLocationValidationFailure(caller, fromLocation, toLocation, fromHu, toHu);
+        }
+
+        return isValid;
+    }
+
+    private void LogOutboundOrderBoundInfo(string message)
+    {
+        if (_doc?.Type != DocType.Outbound)
+        {
+            return;
+        }
+
+        _services.AppLogger.Info($"wpf_outbound_order_bound doc_id={_doc.Id} order_id={_doc.OrderId?.ToString(CultureInfo.InvariantCulture) ?? "-"} partial={_isPartialShipment} {message}");
+    }
+
+    private void LogOutboundOrderBoundWarn(string message)
+    {
+        if (_doc?.Type != DocType.Outbound)
+        {
+            return;
+        }
+
+        _services.AppLogger.Warn($"wpf_outbound_order_bound doc_id={_doc.Id} order_id={_doc.OrderId?.ToString(CultureInfo.InvariantCulture) ?? "-"} partial={_isPartialShipment} {message}");
+    }
+
+    private void LogHuServerFlowInfo(string message)
+    {
+        if (_doc == null)
+        {
+            return;
+        }
+
+        _services.AppLogger.Info(
+            $"wpf_hu_server_flow doc_id={_doc.Id} doc_type={_doc.Type} order_id={_doc.OrderId?.ToString(CultureInfo.InvariantCulture) ?? "-"} {message}");
+    }
+
+    private void LogHuServerFlowWarn(string message)
+    {
+        if (_doc == null)
+        {
+            return;
+        }
+
+        _services.AppLogger.Warn(
+            $"wpf_hu_server_flow doc_id={_doc.Id} doc_type={_doc.Type} order_id={_doc.OrderId?.ToString(CultureInfo.InvariantCulture) ?? "-"} {message}");
+    }
+
+    private void LogLineLocationValidationFailure(
+        string caller,
+        Location? fromLocation,
+        Location? toLocation,
+        string? fromHu,
+        string? toHu)
+    {
+        if (_doc?.Type != DocType.Outbound)
+        {
+            return;
+        }
+
+        _services.AppLogger.Warn(
+            $"wpf_outbound_order_bound line_location_validation_failed caller={caller} doc_id={_doc.Id} order_id={_doc.OrderId?.ToString(CultureInfo.InvariantCulture) ?? "-"} partial={_isPartialShipment} from_location_id={fromLocation?.Id.ToString(CultureInfo.InvariantCulture) ?? "-"} to_location_id={toLocation?.Id.ToString(CultureInfo.InvariantCulture) ?? "-"} from_hu={NormalizeHuValue(fromHu) ?? "-"} to_hu={NormalizeHuValue(toHu) ?? "-"}");
     }
 
     private bool EnsureDraftDocSelected()

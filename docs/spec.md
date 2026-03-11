@@ -25,7 +25,7 @@
 - orders(id, order_ref, order_type, partner_id NULL, due_date, status, comment, created_at)
 - order_lines(id, order_id, item_id, qty_ordered)
 - docs(id, doc_ref, type, status, created_at, closed_at, partner_id, order_id, order_ref, shipping_ref, reason_code, comment, production_batch_no)
-- doc_lines(id, doc_id, order_line_id, item_id, qty, from_location_id, to_location_id, uom, from_hu, to_hu)
+- doc_lines(id, doc_id, replaces_line_id NULL, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)
 - ledger(id, ts, doc_id, item_id, location_id, qty_delta, hu_code)
 - km_code_batch(id, order_id, file_name, file_hash, imported_at, imported_by, total_codes, error_count)
 - km_code(id, batch_id, code_raw, gtin14, sku_id, product_name, status, receipt_doc_id, receipt_line_id, hu_id, location_id, ship_doc_id, ship_line_id, order_id)
@@ -36,6 +36,7 @@
 - Corrections are separate documents (out of MVP scope).
 - HU code can have stock only in one location at a time.
 - Write-off documents require a reason_code before closing.
+- Draft line edits on the server are append-only: replacing a draft line creates a new `doc_lines` row linked by `replaces_line_id`; active draft/read projections ignore superseded rows.
 
 ## TSD online flow
 - Drafts are created via API; server assigns `doc_ref`.
@@ -66,6 +67,7 @@
 
 ## Documents (extra)
 - HU в документе хранится на уровне строки (`doc_lines.from_hu` / `doc_lines.to_hu`). Значение HU в шапке используется как значение по умолчанию и как быстрый выбор для операций со строками, но один документ может содержать строки с разными HU.
+- `doc_lines.replaces_line_id` используется для append-only draft lifecycle semantics (`UpdateDocLine` / `DeleteDocLine`). Историческая строка остаётся в БД; удаление строки создаёт tombstone-row с `qty = 0` и `replaces_line_id = deleted_line_id`. В read-model документа и в расчетах заказов/проведения учитываются только активные строки с `qty > 0`, на которые не ссылается более новая запись.
 - Выпуск продукции: приемка готовой продукции на склад (плюс в ledger), HU обязателен на момент проведения по каждой строке, партия производства хранится в `production_batch_no`, документ может быть связан с заказом (order_id/order_ref).
   - При выборе заказа автоматически подставляются остатки по строкам заказа (order_line_id) с учетом уже закрытых выпусков.
   - Для `orders.order_type = INTERNAL` этот документ является основным способом закрытия заказа по факту выпуска.

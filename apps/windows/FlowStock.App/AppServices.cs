@@ -20,10 +20,17 @@ public sealed class AppServices
     public AdminAuthService AdminAuth { get; }
     public AdminService Admin { get; }
     public PartnerStatusService PartnerStatuses { get; }
+    public WpfCreateOrderService WpfCreateOrders { get; }
+    public WpfUpdateOrderService WpfUpdateOrders { get; }
+    public WpfDeleteOrderService WpfDeleteOrders { get; }
+    public WpfSetOrderStatusService WpfSetOrderStatuses { get; }
+    public IncomingRequestOrderApiBridgeService IncomingRequestOrderApprovals { get; }
     public WpfCreateDocDraftService WpfCreateDocDrafts { get; }
     public WpfCloseDocumentService WpfCloseDocuments { get; }
     public WpfAddDocLineService WpfAddDocLines { get; }
     public WpfBatchAddDocLineService WpfBatchAddDocLines { get; }
+    public WpfUpdateDocLineService WpfUpdateDocLines { get; }
+    public WpfDeleteDocLineService WpfDeleteDocLines { get; }
     public FileLogger AppLogger { get; }
     public FileLogger AdminLogger { get; }
     public string DatabasePath { get; }
@@ -62,10 +69,17 @@ public sealed class AppServices
         AdminAuth = new AdminAuthService(adminPath, adminLogger);
         Admin = new AdminService(connectionString, dataStore, Backups, adminLogger);
         PartnerStatuses = new PartnerStatusService(partnerStatusPath);
+        WpfCreateOrders = new WpfCreateOrderService(Settings, appLogger);
+        WpfUpdateOrders = new WpfUpdateOrderService(Settings, appLogger);
+        WpfDeleteOrders = new WpfDeleteOrderService(Settings, appLogger);
+        WpfSetOrderStatuses = new WpfSetOrderStatusService(Settings, appLogger);
+        IncomingRequestOrderApprovals = new IncomingRequestOrderApiBridgeService(Settings, appLogger, dataStore);
         WpfCreateDocDrafts = new WpfCreateDocDraftService(Settings, appLogger);
         WpfCloseDocuments = new WpfCloseDocumentService(connectionString, Settings, appLogger);
         WpfAddDocLines = new WpfAddDocLineService(connectionString, Settings, appLogger);
         WpfBatchAddDocLines = new WpfBatchAddDocLineService(connectionString, Settings, appLogger);
+        WpfUpdateDocLines = new WpfUpdateDocLineService(connectionString, Settings, appLogger);
+        WpfDeleteDocLines = new WpfDeleteDocLineService(connectionString, Settings, appLogger);
         DatabasePath = databaseTarget;
         ConnectionString = connectionString;
         BaseDir = baseDir;

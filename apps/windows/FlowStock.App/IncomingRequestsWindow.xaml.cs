@@ -107,7 +107,7 @@ public partial class IncomingRequestsWindow : Window
             .ToList();
     }
 
-    private void Approve_Click(object sender, RoutedEventArgs e)
+    private async void Approve_Click(object sender, RoutedEventArgs e)
     {
         var selected = GetSelectedForApprove();
         if (selected.Count == 0)
@@ -145,13 +145,31 @@ public partial class IncomingRequestsWindow : Window
 
                 if (row.OrderRequest != null)
                 {
-                    var outcome = ApplyOrderRequest(row.OrderRequest);
+                    if (_services.IncomingRequestOrderApprovals.IsServerApprovalEnabled()
+                        && _services.IncomingRequestOrderApprovals.CanHandle(row.OrderRequest.RequestType))
+                    {
+                        var outcome = await _services.IncomingRequestOrderApprovals
+                            .ApproveAsync(row.OrderRequest, resolvedBy)
+                            .ConfigureAwait(true);
+
+                        if (!outcome.IsSuccess)
+                        {
+                            var requestId = row.OrderRequest.Id;
+                            errors.Add($"#{requestId}: {outcome.Message}");
+                            continue;
+                        }
+
+                        approvedOrders++;
+                        continue;
+                    }
+
+                    var legacyOutcome = ApplyOrderRequest(row.OrderRequest);
                     _services.DataStore.ResolveOrderRequest(
                         row.OrderRequest.Id,
                         OrderRequestStatus.Approved,
                         resolvedBy,
-                        outcome.Note,
-                        outcome.AppliedOrderId);
+                        legacyOutcome.Note,
+                        legacyOutcome.AppliedOrderId);
                     approvedOrders++;
                 }
             }

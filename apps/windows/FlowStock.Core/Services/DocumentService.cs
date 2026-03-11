@@ -671,7 +671,7 @@ public sealed class DocumentService
         _data.UpdateDocOrder(docId, order.Id, cleanedOrderRef);
     }
 
-    public void AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null, string? fromHu = null, string? toHu = null, long? orderLineId = null)
+    public long AddDocLine(long docId, long itemId, double qty, long? fromLocationId, long? toLocationId, double? qtyInput = null, string? uomCode = null, string? fromHu = null, string? toHu = null, long? orderLineId = null, long? replacesLineId = null)
     {
         if (qty <= 0)
         {
@@ -691,9 +691,10 @@ public sealed class DocumentService
 
         ValidateLineLocations(doc.Type, fromLocationId, toLocationId, NormalizeHuValue(fromHu), NormalizeHuValue(toHu));
 
-        _data.AddDocLine(new DocLine
+        return _data.AddDocLine(new DocLine
         {
             DocId = docId,
+            ReplacesLineId = replacesLineId,
             OrderLineId = orderLineId,
             ItemId = itemId,
             Qty = qty,

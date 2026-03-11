@@ -694,7 +694,26 @@ public partial class MainWindow : Window
 
         try
         {
-            _services.Orders.DeleteOrder(order.Id);
+            if (_services.WpfDeleteOrders.IsServerDeleteEnabled())
+            {
+                var result = _services.WpfDeleteOrders.DeleteOrderAsync(order.Id)
+                    .ConfigureAwait(false)
+                    .GetAwaiter()
+                    .GetResult();
+                if (!result.IsSuccess)
+                {
+                    var icon = result.Kind is WpfDeleteOrderResultKind.Timeout or WpfDeleteOrderResultKind.ServerUnavailable
+                        ? MessageBoxImage.Error
+                        : MessageBoxImage.Warning;
+                    MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
+                    return;
+                }
+            }
+            else
+            {
+                _services.Orders.DeleteOrder(order.Id);
+            }
+
             LoadOrders();
             LoadStock(StatusSearchBox.Text);
         }

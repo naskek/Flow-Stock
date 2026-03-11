@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -25,6 +25,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\\FlowStock.App\\FlowStock.App.csproj" />
     <ProjectReference Include="..\\FlowStock.Core\\FlowStock.Core.csproj" />
     <ProjectReference Include="..\\FlowStock.Server\\FlowStock.Server.csproj" />
   </ItemGroup>

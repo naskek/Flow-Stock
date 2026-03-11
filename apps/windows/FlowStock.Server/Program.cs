@@ -36,6 +36,11 @@ var app = builder.Build();
 // direct SQL connections and may execute before IDataStore is lazily resolved.
 app.Services.GetRequiredService<PostgresDataStore>();
 
+OrderCreateEndpoint.Map(app);
+OrderUpdateEndpoint.Map(app);
+OrderDeleteEndpoint.Map(app);
+OrderStatusEndpoint.Map(app);
+
 app.UseHttpsRedirection();
 
 LogDbInfo(app.Logger, postgresConnectionString);

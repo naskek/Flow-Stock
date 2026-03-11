@@ -112,6 +112,21 @@ public sealed class BackupSettings
 
 public sealed class ServerSettings
 {
+    [JsonPropertyName("use_server_create_order")]
+    public bool UseServerCreateOrder { get; set; }
+
+    [JsonPropertyName("use_server_update_order")]
+    public bool UseServerUpdateOrder { get; set; }
+
+    [JsonPropertyName("use_server_delete_order")]
+    public bool UseServerDeleteOrder { get; set; }
+
+    [JsonPropertyName("use_server_set_order_status")]
+    public bool UseServerSetOrderStatus { get; set; }
+
+    [JsonPropertyName("use_server_incoming_request_order_approval")]
+    public bool UseServerIncomingRequestOrderApproval { get; set; }
+
     [JsonPropertyName("use_server_create_doc_draft")]
     public bool UseServerCreateDocDraft { get; set; }
 
@@ -120,6 +135,12 @@ public sealed class ServerSettings
 
     [JsonPropertyName("use_server_add_doc_line")]
     public bool UseServerAddDocLine { get; set; }
+
+    [JsonPropertyName("use_server_update_doc_line")]
+    public bool UseServerUpdateDocLine { get; set; }
+
+    [JsonPropertyName("use_server_delete_doc_line")]
+    public bool UseServerDeleteDocLine { get; set; }
 
     [JsonPropertyName("base_url")]
     public string? BaseUrl { get; set; }

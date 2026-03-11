@@ -14,11 +14,18 @@ internal sealed class CloseDocumentHarness
     private readonly Dictionary<long, Location> _locations = new();
     private readonly Dictionary<long, Partner> _partners = new();
     private readonly Dictionary<long, Order> _orders = new();
+    private readonly Dictionary<long, List<OrderLine>> _orderLinesByOrder = new();
+    private readonly Dictionary<long, OrderRequest> _orderRequests = new();
+    private readonly Dictionary<long, IReadOnlyList<OrderReceiptLine>> _orderReceiptRemaining = new();
+    private readonly Dictionary<long, IReadOnlyDictionary<long, double>> _shippedTotalsByOrderLine = new();
+    private readonly HashSet<long> _ordersWithOutboundDocs = new();
     private readonly Dictionary<string, HuRecord> _hus = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<(long ItemId, long LocationId, string? HuCode), double> _seedBalances = new();
     private readonly List<LedgerEntry> _postedLedger = new();
     private long _nextDocId = 1;
     private long _nextDocLineId = 1;
+    private long _nextOrderId = 1;
+    private long _nextOrderLineId = 1;
 
     public CloseDocumentHarness()
     {
@@ -30,6 +37,8 @@ internal sealed class CloseDocumentHarness
     public IDataStore Store => _store.Object;
     public int DocCount => _docs.Count;
     public int TotalDocLineCount => _linesByDoc.Values.Sum(lines => lines.Count);
+    public int OrderCount => _orders.Count;
+    public int TotalOrderLineCount => _orderLinesByOrder.Values.Sum(lines => lines.Count);
 
     public DocumentService CreateService()
     {
@@ -46,27 +55,111 @@ internal sealed class CloseDocumentHarness
         return _docs.Values.FirstOrDefault(doc => string.Equals(doc.DocRef, docRef, StringComparison.OrdinalIgnoreCase));
     }
 
+    public Order GetOrder(long orderId)
+    {
+        return _orders[orderId];
+    }
+
+    public IReadOnlyList<OrderLine> GetOrderLines(long orderId)
+    {
+        return _orderLinesByOrder.TryGetValue(orderId, out var lines)
+            ? lines
+                .OrderBy(line => line.Id)
+                .Select(CloneOrderLine)
+                .ToArray()
+            : Array.Empty<OrderLine>();
+    }
+
+    public OrderRequest? GetOrderRequest(long requestId)
+    {
+        return _orderRequests.TryGetValue(requestId, out var request)
+            ? CloneOrderRequest(request)
+            : null;
+    }
+
+    public IReadOnlyList<OrderRequest> GetOrderRequests(bool includeResolved)
+    {
+        return _orderRequests.Values
+            .Where(request => includeResolved
+                              || !string.Equals(request.Status, OrderRequestStatus.Approved, StringComparison.OrdinalIgnoreCase)
+                              && !string.Equals(request.Status, OrderRequestStatus.Rejected, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(request => request.CreatedAt)
+            .Select(CloneOrderRequest)
+            .ToArray();
+    }
+
     public IReadOnlyList<DocLine> GetDocLines(long docId)
+    {
+        return GetActiveDocLines(docId);
+    }
+
+    public IReadOnlyList<DocLine> GetAllDocLines(long docId)
     {
         return _linesByDoc.TryGetValue(docId, out var lines)
             ? lines
                 .OrderBy(line => line.Id)
-                .Select(line => new DocLine
-                {
-                    Id = line.Id,
-                    DocId = line.DocId,
-                    OrderLineId = line.OrderLineId,
-                    ItemId = line.ItemId,
-                    Qty = line.Qty,
-                    QtyInput = line.QtyInput,
-                    UomCode = line.UomCode,
-                    FromLocationId = line.FromLocationId,
-                    ToLocationId = line.ToLocationId,
-                    FromHu = line.FromHu,
-                    ToHu = line.ToHu
-                })
+                .Select(CloneDocLine)
                 .ToArray()
             : Array.Empty<DocLine>();
+    }
+
+    private IReadOnlyList<DocLine> GetActiveDocLines(long docId)
+    {
+        return _linesByDoc.TryGetValue(docId, out var lines)
+            ? lines
+                .Where(line => line.Qty > 0 && !lines.Any(newer => newer.ReplacesLineId == line.Id))
+                .OrderBy(line => line.Id)
+                .Select(CloneDocLine)
+                .ToArray()
+            : Array.Empty<DocLine>();
+    }
+
+    private static DocLine CloneDocLine(DocLine line)
+    {
+        return new DocLine
+        {
+            Id = line.Id,
+            DocId = line.DocId,
+            ReplacesLineId = line.ReplacesLineId,
+            OrderLineId = line.OrderLineId,
+            ItemId = line.ItemId,
+            Qty = line.Qty,
+            QtyInput = line.QtyInput,
+            UomCode = line.UomCode,
+            FromLocationId = line.FromLocationId,
+            ToLocationId = line.ToLocationId,
+            FromHu = line.FromHu,
+            ToHu = line.ToHu
+        };
+    }
+
+    private static OrderLine CloneOrderLine(OrderLine line)
+    {
+        return new OrderLine
+        {
+            Id = line.Id,
+            OrderId = line.OrderId,
+            ItemId = line.ItemId,
+            QtyOrdered = line.QtyOrdered
+        };
+    }
+
+    private static OrderRequest CloneOrderRequest(OrderRequest request)
+    {
+        return new OrderRequest
+        {
+            Id = request.Id,
+            RequestType = request.RequestType,
+            PayloadJson = request.PayloadJson,
+            Status = request.Status,
+            CreatedAt = request.CreatedAt,
+            CreatedByLogin = request.CreatedByLogin,
+            CreatedByDeviceId = request.CreatedByDeviceId,
+            ResolvedAt = request.ResolvedAt,
+            ResolvedBy = request.ResolvedBy,
+            ResolutionNote = request.ResolutionNote,
+            AppliedOrderId = request.AppliedOrderId
+        };
     }
 
     public void SeedDoc(Doc doc)
@@ -109,6 +202,56 @@ internal sealed class CloseDocumentHarness
     public void SeedOrder(Order order)
     {
         _orders[order.Id] = order;
+        _nextOrderId = Math.Max(_nextOrderId, order.Id + 1);
+        _orderLinesByOrder.TryAdd(order.Id, new List<OrderLine>());
+    }
+
+    public void SeedOrderLine(OrderLine line)
+    {
+        if (!_orderLinesByOrder.TryGetValue(line.OrderId, out var lines))
+        {
+            lines = new List<OrderLine>();
+            _orderLinesByOrder[line.OrderId] = lines;
+        }
+
+        lines.Add(CloneOrderLine(line));
+        _nextOrderLineId = Math.Max(_nextOrderLineId, line.Id + 1);
+    }
+
+    public void SeedOrderRequest(OrderRequest request)
+    {
+        _orderRequests[request.Id] = CloneOrderRequest(request);
+    }
+
+    public void SeedOrderReceiptRemaining(long orderId, params OrderReceiptLine[] lines)
+    {
+        _orderReceiptRemaining[orderId] = (lines ?? Array.Empty<OrderReceiptLine>())
+            .Select(line => new OrderReceiptLine
+            {
+                OrderLineId = line.OrderLineId,
+                ItemId = line.ItemId,
+                ItemName = line.ItemName,
+                QtyOrdered = line.QtyOrdered,
+                QtyReceived = line.QtyReceived
+            })
+            .ToArray();
+    }
+
+    public void SeedShippedTotalsByOrderLine(long orderId, IReadOnlyDictionary<long, double> totals)
+    {
+        _shippedTotalsByOrderLine[orderId] = new Dictionary<long, double>(totals ?? new Dictionary<long, double>());
+    }
+
+    public void SeedHasOutboundDocs(long orderId, bool value = true)
+    {
+        if (value)
+        {
+            _ordersWithOutboundDocs.Add(orderId);
+        }
+        else
+        {
+            _ordersWithOutboundDocs.Remove(orderId);
+        }
     }
 
     public void SeedHu(HuRecord hu)
@@ -136,9 +279,7 @@ internal sealed class CloseDocumentHarness
                 string.Equals(doc.DocRef, docRef?.Trim(), StringComparison.OrdinalIgnoreCase)));
 
         _store.Setup(store => store.GetDocLines(It.IsAny<long>()))
-            .Returns<long>(docId => _linesByDoc.TryGetValue(docId, out var lines)
-                ? lines.ToArray()
-                : Array.Empty<DocLine>());
+            .Returns<long>(docId => GetActiveDocLines(docId));
 
         _store.Setup(store => store.FindItemByBarcode(It.IsAny<string>()))
             .Returns<string>(barcode => _items.Values.FirstOrDefault(item =>
@@ -172,6 +313,76 @@ internal sealed class CloseDocumentHarness
         _store.Setup(store => store.GetOrders())
             .Returns(() => _orders.Values.OrderBy(order => order.Id).ToArray());
 
+        _store.Setup(store => store.AddOrder(It.IsAny<Order>()))
+            .Returns<Order>(order =>
+            {
+                var orderId = order.Id > 0 ? order.Id : _nextOrderId++;
+                _orders[orderId] = new Order
+                {
+                    Id = orderId,
+                    OrderRef = order.OrderRef,
+                    Type = order.Type,
+                    PartnerId = order.PartnerId,
+                    DueDate = order.DueDate,
+                    Status = order.Status,
+                    Comment = order.Comment,
+                    CreatedAt = order.CreatedAt,
+                    ShippedAt = order.ShippedAt,
+                    PartnerName = order.PartnerName,
+                    PartnerCode = order.PartnerCode
+                };
+                _orderLinesByOrder.TryAdd(orderId, new List<OrderLine>());
+                return orderId;
+            });
+
+        _store.Setup(store => store.UpdateOrder(It.IsAny<Order>()))
+            .Callback<Order>(order =>
+            {
+                if (!_orders.TryGetValue(order.Id, out var current))
+                {
+                    return;
+                }
+
+                _orders[order.Id] = new Order
+                {
+                    Id = current.Id,
+                    OrderRef = order.OrderRef,
+                    Type = current.Type,
+                    PartnerId = order.PartnerId,
+                    DueDate = order.DueDate,
+                    Status = order.Status,
+                    Comment = order.Comment,
+                    CreatedAt = current.CreatedAt,
+                    ShippedAt = current.ShippedAt,
+                    PartnerName = current.PartnerName,
+                    PartnerCode = current.PartnerCode
+                };
+            });
+
+        _store.Setup(store => store.UpdateOrderStatus(It.IsAny<long>(), It.IsAny<OrderStatus>()))
+            .Callback<long, OrderStatus>((orderId, status) =>
+            {
+                if (!_orders.TryGetValue(orderId, out var current))
+                {
+                    return;
+                }
+
+                _orders[orderId] = new Order
+                {
+                    Id = current.Id,
+                    OrderRef = current.OrderRef,
+                    Type = current.Type,
+                    PartnerId = current.PartnerId,
+                    DueDate = current.DueDate,
+                    Status = status,
+                    Comment = current.Comment,
+                    CreatedAt = current.CreatedAt,
+                    ShippedAt = current.ShippedAt,
+                    PartnerName = current.PartnerName,
+                    PartnerCode = current.PartnerCode
+                };
+            });
+
         _store.Setup(store => store.GetDocs())
             .Returns(() => _docs.Values.OrderBy(doc => doc.Id).ToArray());
 
@@ -185,13 +396,179 @@ internal sealed class CloseDocumentHarness
             .Returns(0);
 
         _store.Setup(store => store.GetOrderLines(It.IsAny<long>()))
-            .Returns(Array.Empty<OrderLine>());
+            .Returns<long>(orderId => GetOrderLines(orderId));
+
+        _store.Setup(store => store.GetOrderLineViews(It.IsAny<long>()))
+            .Returns<long>(orderId =>
+            {
+                return GetOrderLines(orderId)
+                    .Select(line => new OrderLineView
+                    {
+                        Id = line.Id,
+                        OrderId = line.OrderId,
+                        ItemId = line.ItemId,
+                        ItemName = _items.TryGetValue(line.ItemId, out var item) ? item.Name : string.Empty,
+                        QtyOrdered = line.QtyOrdered
+                    })
+                    .ToArray();
+            });
 
         _store.Setup(store => store.GetOrderReceiptRemaining(It.IsAny<long>()))
-            .Returns(Array.Empty<OrderReceiptLine>());
+            .Returns<long>(orderId => _orderReceiptRemaining.TryGetValue(orderId, out var lines)
+                ? lines
+                    .Select(line => new OrderReceiptLine
+                    {
+                        OrderLineId = line.OrderLineId,
+                        ItemId = line.ItemId,
+                        ItemName = line.ItemName,
+                        QtyOrdered = line.QtyOrdered,
+                        QtyReceived = line.QtyReceived
+                    })
+                    .ToArray()
+                : Array.Empty<OrderReceiptLine>());
 
         _store.Setup(store => store.GetOrderShipmentRemaining(It.IsAny<long>()))
             .Returns(Array.Empty<OrderShipmentLine>());
+
+        _store.Setup(store => store.AddOrderLine(It.IsAny<OrderLine>()))
+            .Returns<OrderLine>(line =>
+            {
+                var orderLineId = line.Id > 0 ? line.Id : _nextOrderLineId++;
+                if (!_orderLinesByOrder.TryGetValue(line.OrderId, out var lines))
+                {
+                    lines = new List<OrderLine>();
+                    _orderLinesByOrder[line.OrderId] = lines;
+                }
+
+                lines.Add(new OrderLine
+                {
+                    Id = orderLineId,
+                    OrderId = line.OrderId,
+                    ItemId = line.ItemId,
+                    QtyOrdered = line.QtyOrdered
+                });
+
+                return orderLineId;
+            });
+
+        _store.Setup(store => store.UpdateOrderLineQty(It.IsAny<long>(), It.IsAny<double>()))
+            .Callback<long, double>((orderLineId, qtyOrdered) =>
+            {
+                foreach (var pair in _orderLinesByOrder)
+                {
+                    for (var index = 0; index < pair.Value.Count; index++)
+                    {
+                        if (pair.Value[index].Id != orderLineId)
+                        {
+                            continue;
+                        }
+
+                        var current = pair.Value[index];
+                        pair.Value[index] = new OrderLine
+                        {
+                            Id = current.Id,
+                            OrderId = current.OrderId,
+                            ItemId = current.ItemId,
+                            QtyOrdered = qtyOrdered
+                        };
+                        return;
+                    }
+                }
+            });
+
+        _store.Setup(store => store.DeleteOrderLine(It.IsAny<long>()))
+            .Callback<long>(orderLineId =>
+            {
+                foreach (var pair in _orderLinesByOrder)
+                {
+                    pair.Value.RemoveAll(line => line.Id == orderLineId);
+                }
+            });
+
+        _store.Setup(store => store.DeleteOrderLines(It.IsAny<long>()))
+            .Callback<long>(orderId =>
+            {
+                if (_orderLinesByOrder.ContainsKey(orderId))
+                {
+                    _orderLinesByOrder[orderId].Clear();
+                }
+            });
+
+        _store.Setup(store => store.DeleteOrder(It.IsAny<long>()))
+            .Callback<long>(orderId =>
+            {
+                _orders.Remove(orderId);
+                _orderLinesByOrder.Remove(orderId);
+            });
+
+        _store.Setup(store => store.AddOrderRequest(It.IsAny<OrderRequest>()))
+            .Returns<OrderRequest>(request =>
+            {
+                var requestId = request.Id > 0
+                    ? request.Id
+                    : (_orderRequests.Count == 0 ? 1 : _orderRequests.Keys.Max() + 1);
+                _orderRequests[requestId] = new OrderRequest
+                {
+                    Id = requestId,
+                    RequestType = request.RequestType,
+                    PayloadJson = request.PayloadJson,
+                    Status = request.Status,
+                    CreatedAt = request.CreatedAt,
+                    CreatedByLogin = request.CreatedByLogin,
+                    CreatedByDeviceId = request.CreatedByDeviceId,
+                    ResolvedAt = request.ResolvedAt,
+                    ResolvedBy = request.ResolvedBy,
+                    ResolutionNote = request.ResolutionNote,
+                    AppliedOrderId = request.AppliedOrderId
+                };
+                return requestId;
+            });
+
+        _store.Setup(store => store.GetOrderRequests(It.IsAny<bool>()))
+            .Returns<bool>(includeResolved => GetOrderRequests(includeResolved));
+
+        _store.Setup(store => store.ResolveOrderRequest(
+                It.IsAny<long>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string?>(),
+                It.IsAny<long?>()))
+            .Callback<long, string, string, string?, long?>((requestId, status, resolvedBy, note, appliedOrderId) =>
+            {
+                if (!_orderRequests.TryGetValue(requestId, out var current))
+                {
+                    return;
+                }
+
+                _orderRequests[requestId] = new OrderRequest
+                {
+                    Id = current.Id,
+                    RequestType = current.RequestType,
+                    PayloadJson = current.PayloadJson,
+                    Status = status,
+                    CreatedAt = current.CreatedAt,
+                    CreatedByLogin = current.CreatedByLogin,
+                    CreatedByDeviceId = current.CreatedByDeviceId,
+                    ResolvedAt = DateTime.Now,
+                    ResolvedBy = resolvedBy,
+                    ResolutionNote = note,
+                    AppliedOrderId = appliedOrderId
+                };
+            });
+
+        _store.Setup(store => store.GetShippedTotalsByOrder(It.IsAny<long>()))
+            .Returns(() => new Dictionary<long, double>());
+
+        _store.Setup(store => store.GetShippedTotalsByOrderLine(It.IsAny<long>()))
+            .Returns<long>(orderId => _shippedTotalsByOrderLine.TryGetValue(orderId, out var totals)
+                ? new Dictionary<long, double>(totals)
+                : new Dictionary<long, double>());
+
+        _store.Setup(store => store.GetOrderShippedAt(It.IsAny<long>()))
+            .Returns((DateTime?)null);
+
+        _store.Setup(store => store.HasOutboundDocs(It.IsAny<long>()))
+            .Returns<long>(orderId => _ordersWithOutboundDocs.Contains(orderId));
 
         _store.Setup(store => store.GetAvailableQty(It.IsAny<long>(), It.IsAny<long>(), It.IsAny<string?>()))
             .Returns<long, long, string?>((itemId, locationId, huCode) => GetBalance(itemId, locationId, huCode));
@@ -251,6 +628,7 @@ internal sealed class CloseDocumentHarness
                 {
                     Id = lineId,
                     DocId = line.DocId,
+                    ReplacesLineId = line.ReplacesLineId,
                     OrderLineId = line.OrderLineId,
                     ItemId = line.ItemId,
                     Qty = line.Qty,
@@ -415,6 +793,7 @@ internal sealed class CloseDocumentHarness
                         {
                             Id = current.Id,
                             DocId = current.DocId,
+                            ReplacesLineId = current.ReplacesLineId,
                             OrderLineId = orderLineId,
                             ItemId = current.ItemId,
                             Qty = current.Qty,

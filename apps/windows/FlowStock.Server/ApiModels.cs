@@ -93,6 +93,48 @@ public sealed class AddDocLineRequest
     public string? ToHu { get; set; }
 }
 
+public sealed class UpdateDocLineRequest
+{
+    [JsonPropertyName("event_id")]
+    public string? EventId { get; set; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; set; }
+
+    [JsonPropertyName("line_id")]
+    public long? LineId { get; set; }
+
+    [JsonPropertyName("qty")]
+    public double Qty { get; set; }
+
+    [JsonPropertyName("uom_code")]
+    public string? UomCode { get; set; }
+
+    [JsonPropertyName("from_location_id")]
+    public long? FromLocationId { get; set; }
+
+    [JsonPropertyName("to_location_id")]
+    public long? ToLocationId { get; set; }
+
+    [JsonPropertyName("from_hu")]
+    public string? FromHu { get; set; }
+
+    [JsonPropertyName("to_hu")]
+    public string? ToHu { get; set; }
+}
+
+public sealed class DeleteDocLineRequest
+{
+    [JsonPropertyName("event_id")]
+    public string? EventId { get; set; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; set; }
+
+    [JsonPropertyName("line_id")]
+    public long? LineId { get; set; }
+}
+
 public sealed class CloseDocRequest
 {
     [JsonPropertyName("event_id")]
@@ -165,6 +207,162 @@ public sealed class ItemRequestCreateRequest
 
     [JsonPropertyName("login")]
     public string? Login { get; set; }
+}
+
+public sealed class CreateOrderLineRequest
+{
+    [JsonPropertyName("item_id")]
+    public long? ItemId { get; set; }
+
+    [JsonPropertyName("qty_ordered")]
+    public double QtyOrdered { get; set; }
+}
+
+public sealed class CreateOrderRequest
+{
+    [JsonPropertyName("order_ref")]
+    public string? OrderRef { get; set; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("partner_id")]
+    public long? PartnerId { get; set; }
+
+    [JsonPropertyName("due_date")]
+    public string? DueDate { get; set; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    [JsonPropertyName("comment")]
+    public string? Comment { get; set; }
+
+    [JsonPropertyName("lines")]
+    public List<CreateOrderLineRequest>? Lines { get; set; }
+}
+
+public sealed class CreateOrderEnvelope
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("result")]
+    public string Result { get; init; } = string.Empty;
+
+    [JsonPropertyName("order_id")]
+    public long OrderId { get; init; }
+
+    [JsonPropertyName("order_ref")]
+    public string OrderRef { get; init; } = string.Empty;
+
+    [JsonPropertyName("order_ref_changed")]
+    public bool OrderRefChanged { get; init; }
+
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = string.Empty;
+
+    [JsonPropertyName("status")]
+    public string Status { get; init; } = string.Empty;
+
+    [JsonPropertyName("line_count")]
+    public int LineCount { get; init; }
+}
+
+public sealed class UpdateOrderLineRequest
+{
+    [JsonPropertyName("item_id")]
+    public long? ItemId { get; set; }
+
+    [JsonPropertyName("qty_ordered")]
+    public double QtyOrdered { get; set; }
+}
+
+public sealed class UpdateOrderRequest
+{
+    [JsonPropertyName("order_ref")]
+    public string? OrderRef { get; set; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("partner_id")]
+    public long? PartnerId { get; set; }
+
+    [JsonPropertyName("due_date")]
+    public string? DueDate { get; set; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    [JsonPropertyName("comment")]
+    public string? Comment { get; set; }
+
+    [JsonPropertyName("lines")]
+    public List<UpdateOrderLineRequest>? Lines { get; set; }
+}
+
+public sealed class UpdateOrderEnvelope
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("result")]
+    public string Result { get; init; } = string.Empty;
+
+    [JsonPropertyName("order_id")]
+    public long OrderId { get; init; }
+
+    [JsonPropertyName("order_ref")]
+    public string OrderRef { get; init; } = string.Empty;
+
+    [JsonPropertyName("order_ref_changed")]
+    public bool OrderRefChanged { get; init; }
+
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = string.Empty;
+
+    [JsonPropertyName("status")]
+    public string Status { get; init; } = string.Empty;
+
+    [JsonPropertyName("line_count")]
+    public int LineCount { get; init; }
+}
+
+public sealed class DeleteOrderEnvelope
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("result")]
+    public string Result { get; init; } = string.Empty;
+
+    [JsonPropertyName("order_id")]
+    public long OrderId { get; init; }
+
+    [JsonPropertyName("order_ref")]
+    public string OrderRef { get; init; } = string.Empty;
+}
+
+public sealed class SetOrderStatusRequest
+{
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+}
+
+public sealed class SetOrderStatusEnvelope
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; init; }
+
+    [JsonPropertyName("result")]
+    public string Result { get; init; } = string.Empty;
+
+    [JsonPropertyName("order_id")]
+    public long OrderId { get; init; }
+
+    [JsonPropertyName("status")]
+    public string Status { get; init; } = string.Empty;
 }
 
 public sealed class OrderRequestLineCreateRequest

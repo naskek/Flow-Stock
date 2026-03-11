@@ -24,19 +24,21 @@ Migrated to canonical server add-line under feature flags:
 - outbound order fill / refill flow previously backed by `ApplyOrderToDoc()`
 - production receipt fill-from-order flow previously backed by `ApplyOrderToProductionReceipt()`
 - outbound order re-apply from `TrySaveHeaderAsync()` when order-bound lines must be rebuilt
+- explicit batch rebuild delete phase for outbound and production receipt, using canonical `DeleteDocLine`
+- outbound HU allocation from `OutboundHuApply_Click()` when full server line lifecycle mode is enabled
+- outbound HU reassignment / split from `AssignHuButton_Click()` when full server line lifecycle mode is enabled
 
 Still legacy-local in this step:
 
-- line update
-- line delete
-- HU split / reassignment
+- non-outbound HU assignment / distribution flows
 - JSONL import
-- batch delete / replace part of order-fill flows
+- any batch rebuild flow when full server rebuild mode is not enabled
 
 Important boundary:
 
-- batch line creation itself now uses API calls per line
-- destructive pre-steps required by current WPF UX, such as `DeleteDocLines()` and order/header binding writes, remain local for now because delete/update APIs are not migrated in this step
+- batch line creation uses API calls per line;
+- in full server rebuild mode, old active lines are removed through canonical delete requests instead of local `DeleteDocLines()`;
+- non-destructive header/order-binding writes remain local for now.
 
 # Files involved
 
@@ -59,15 +61,25 @@ WPF API orchestration:
   - `AddLinesBatchAsync()` for batch flows
   - one HTTP `POST /api/docs/{docUid}/lines` per batch line
   - shared temporary `api_docs` / `doc_uid` mapping bridge
+- `apps/windows/FlowStock.App/Services/WpfUpdateDocLineService.cs`
+  - `UpdateLineAsync()` for manual quantity edits of existing lines
+  - feature-flagged WPF bridge to canonical append-only update endpoint
+- `apps/windows/FlowStock.App/Services/WpfDeleteDocLineService.cs`
+  - `DeleteLinesAsync()` for manual deletion of selected lines
+  - feature-flagged WPF bridge to canonical append-only delete endpoint
 
 WPF HTTP client:
 
 - `apps/windows/FlowStock.App/Services/AddDocLineApiClient.cs`
+- `apps/windows/FlowStock.App/Services/UpdateDocLineApiClient.cs`
+- `apps/windows/FlowStock.App/Services/DeleteDocLineApiClient.cs`
 
 WPF settings:
 
 - `apps/windows/FlowStock.App/Services/SettingsService.cs`
   - `server.use_server_add_doc_line`
+  - `server.use_server_update_doc_line`
+  - `server.use_server_delete_doc_line`
 
 WPF settings UI:
 
@@ -102,15 +114,56 @@ Saved in `%APPDATA%\\FlowStock\\settings.json`:
 Environment overrides:
 
 - `FLOWSTOCK_USE_SERVER_ADD_DOC_LINE=true`
+- `FLOWSTOCK_USE_SERVER_UPDATE_DOC_LINE=true`
+- `FLOWSTOCK_USE_SERVER_DELETE_DOC_LINE=true`
 
 UI path:
 
 - `Сервис -> Подключение к БД`
 - `Use Server API for manual '+ Товар'`
+- `Use Server API for quantity edits of existing lines`
+- `Use Server API for deleting existing lines`
 
-Batch flows use the same flag as manual add-line. There is no separate batch toggle.
+Full server batch rebuild mode requires both:
+
+- `use_server_add_doc_line`
+- `use_server_delete_doc_line`
+
+There is no separate batch toggle. If delete-line server mode is disabled, batch rebuild falls back to legacy local path instead of mixing local destructive delete with server add-line.
 
 # WPF behavior in batch server mode
+
+# WPF line update mode
+
+Manual quantity edits from `Изменить количество...` now support a separate server mode:
+
+1. WPF reads the currently active line from the document.
+2. WPF keeps dialog-side quantity/UOM selection and existing line location/HU as client-side preparation.
+3. WPF sends `POST /api/docs/{docUid}/lines/update` through `WpfUpdateDocLineService`.
+4. Server appends a replacement line with `replaces_line_id = old_line_id`.
+5. WPF reloads the document and line grid from DB after success or replay.
+
+Important boundary:
+
+- WPF does not try to merge or mutate the old row locally;
+- server remains authoritative for append-only update semantics;
+- delete of selected lines can also use server append-only tombstones under feature flag;
+- outbound HU split/reassignment can now reuse canonical update/delete + add in full server mode.
+
+# WPF line delete mode
+
+Manual delete of selected lines now supports a separate server mode:
+
+1. WPF resolves selected active line ids from the grid.
+2. WPF sends one `POST /api/docs/{docUid}/lines/delete` request per selected line through `WpfDeleteDocLineService`.
+3. Server appends one tombstone row per accepted delete and records one `DOC_LINE_DELETE` event.
+4. WPF reloads the document and line grid after success or replay.
+
+Important boundary:
+
+- manual delete and explicit batch rebuild delete phases are migrated in this step;
+- destructive batch pre-steps that clear lines before rebuild are no longer local in full server rebuild mode;
+- WPF does not hide or fake server delete outcome and always refreshes authoritative state from DB.
 
 ## Batch line flows (ApplyOrderToDoc, ApplyOrderToProductionReceipt)
 
@@ -120,10 +173,10 @@ When batch server mode is enabled and WPF needs to rebuild outbound lines from a
 
 1. WPF validates current location/HU UI state.
 2. WPF builds intended line contexts from `GetOrderShipmentRemaining(orderId)`.
-3. WPF still performs current local pre-steps:
+3. WPF still performs local non-destructive pre-steps:
    - update header/order binding
-   - clear existing draft lines through local delete
-4. WPF then sends one `POST /api/docs/{docUid}/lines` request per line via `WpfBatchAddDocLineService.AddLinesBatchAsync()`.
+4. WPF resolves current active draft lines and removes them through `WpfDeleteDocLineService`.
+5. WPF then sends one `POST /api/docs/{docUid}/lines` request per line via `WpfBatchAddDocLineService.AddLinesBatchAsync()`.
 5. WPF reloads the document and line grid after the batch attempt.
 
 ## Production receipt fill from order
@@ -132,10 +185,10 @@ When batch server mode is enabled for production receipt fill:
 
 1. WPF validates receipt location/HU UI state.
 2. WPF builds intended line contexts from `GetOrderReceiptRemaining(orderId)`.
-3. WPF still performs current local pre-steps:
+3. WPF still performs local non-destructive pre-steps:
    - update order binding
-   - optionally clear existing draft lines when user chose replace
-4. WPF sends one canonical add-line request per line.
+4. If the user chose replace, WPF removes existing active draft lines through `WpfDeleteDocLineService`.
+5. WPF sends one canonical add-line request per line.
 5. WPF reloads the document and line grid after the batch attempt.
 
 # Client-side vs server-side responsibility
@@ -145,7 +198,7 @@ Client-side in WPF:
 - item/order selection UX
 - quantity and location/HU UI validation before call
 - deciding whether a batch should rebuild lines
-- local pre-steps for not-yet-migrated destructive operations
+- local pre-steps for not-yet-migrated non-destructive operations
 - showing timeout / validation / partial-failure messages
 
 Authoritative on server:
@@ -166,14 +219,43 @@ Why:
   - order binding update
   - line replacement
   - line creation
-- only canonical line creation is migrated in this step
-- update/delete APIs are still not migrated
+- canonical line creation, line update and line delete are already available through server APIs
+- explicit batch rebuild and outbound HU split / reassignment now reuse those canonical line APIs
+- non-destructive header/order-binding writes are still local
 
 Current consequence:
 
 - a batch rebuild is not yet atomic end-to-end
-- local delete may happen before all server add-line requests complete
+- canonical delete may succeed before all canonical add-line requests complete
 - after timeout or mid-batch failure, WPF must reload the document and the user must inspect the resulting line set before retrying
+- outbound HU split / reassignment is also non-atomic end-to-end in full server mode because source update/delete and resulting add remain separate requests
+
+# WPF outbound HU split / reassignment mode
+
+When full server line lifecycle mode is enabled for `Outbound`, WPF no longer uses local `DeleteDocLine()`, `UpdateDocLineQty()` and `AddDocLine()` for these flows:
+
+- `OutboundHuApply_Click()` from the outbound HU stock panel
+- `AssignHuButton_Click()` for outbound line reassignment to a selected HU
+
+Required flags:
+
+- `use_server_add_doc_line`
+- `use_server_update_doc_line`
+- `use_server_delete_doc_line`
+
+Server-mode sequence:
+
+1. WPF resolves the active source line and the intended target HU/location.
+2. If the source line must disappear entirely, WPF calls canonical `DeleteDocLine`.
+3. If the source line must shrink, WPF calls canonical `UpdateDocLine`.
+4. WPF creates the resulting split / reassigned line via canonical `AddDocLine`.
+5. WPF reloads the document and line grid from DB.
+
+Important boundary:
+
+- WPF does not mix local destructive writes with server writes inside full server HU mode;
+- server remains append-only and authoritative for line history;
+- if only a subset of line flags is enabled, outbound HU flows fall back to legacy local behavior and log the reason.
 
 # Manual checklist
 
@@ -187,35 +269,39 @@ Current consequence:
 ## Server batch path: outbound
 
 1. Enable `use_server_add_doc_line`.
-2. Open outbound draft.
-3. Select source location and optional HU.
-4. Choose order.
-5. Verify lines are rebuilt and reloaded from DB.
-6. Verify document stays `DRAFT`.
-7. Verify ledger is still untouched until close.
+2. Enable `use_server_delete_doc_line`.
+3. Open outbound draft.
+4. Select source location and optional HU.
+5. Choose order.
+6. Verify old lines are removed through canonical delete and new lines are added through canonical add.
+7. Verify lines are rebuilt and reloaded from DB.
+8. Verify document stays `DRAFT`.
+9. Verify ledger is still untouched until close.
 
 ## Server batch path: production receipt
 
 1. Enable `use_server_add_doc_line`.
-2. Open production receipt draft.
-3. Select receipt location.
-4. Run `Заполнить из заказа`.
-5. Verify lines are created through server path and reloaded from DB.
-6. Verify document stays `DRAFT`.
+2. Enable `use_server_delete_doc_line`.
+3. Open production receipt draft.
+4. Select receipt location.
+5. Run `Заполнить из заказа`.
+6. Verify lines are created through server path and reloaded from DB.
+7. Verify document stays `DRAFT`.
 
 ## Large order
 
 1. Enable `use_server_add_doc_line`.
-2. Open a draft tied to an order with 20+ remaining lines.
-3. Run `Заполнить из заказа`.
-4. Verify all expected lines appear after refresh.
-5. Verify the UI remains responsive while requests are processed.
+2. Enable `use_server_delete_doc_line`.
+3. Open a draft tied to an order with 20+ remaining lines.
+4. Run `Заполнить из заказа`.
+5. Verify all expected lines appear after refresh.
+6. Verify the UI remains responsive while requests are processed.
 
 ## Replace existing lines
 
 1. In production receipt server batch mode, create some lines first.
 2. Run `Заполнить из заказа` again and choose replace.
-3. Verify WPF clears old lines locally, then recreates target lines through API.
+3. Verify WPF removes old active lines through canonical delete requests, then recreates target lines through API.
 4. Verify final visible state matches refreshed DB state.
 
 ## Same semantic line twice
@@ -233,37 +319,63 @@ Current consequence:
 ## Timeout / server unavailable
 
 1. Enable `use_server_add_doc_line`.
-2. Stop `FlowStock.Server` or force timeout.
-3. Run batch fill.
-4. Verify WPF shows transport/timeout error.
-5. Verify WPF reloads document and lines after the attempt.
-6. Verify the operator is expected to inspect the document before retrying.
+2. Enable `use_server_delete_doc_line`.
+3. Stop `FlowStock.Server` or force timeout.
+4. Run batch fill.
+5. Verify WPF shows transport/timeout error.
+6. Verify WPF reloads document and lines after the attempt.
+7. Verify the operator is expected to inspect the document before retrying.
 
 ## Idempotency after partial success
 
 1. Enable `use_server_add_doc_line`.
-2. Start a batch fill and interrupt the server after some lines are accepted.
-3. Restart the server and repeat the batch action.
-4. Refresh the document after each attempt.
-5. Verify the final visible state does not contain duplicates beyond the expected append-only result of accepted events.
+2. Enable `use_server_delete_doc_line`.
+3. Start a batch fill and interrupt the server after some delete/add requests are accepted.
+4. Restart the server and repeat the batch action.
+5. Refresh the document after each attempt.
+6. Verify the final visible state reflects only server-accepted delete/add events.
+
+## Outbound HU split / reassignment: server mode
+
+1. Enable:
+   - `use_server_add_doc_line`
+   - `use_server_update_doc_line`
+   - `use_server_delete_doc_line`
+2. Open outbound draft.
+3. Run outbound HU allocation or outbound `Назначить HU...`.
+4. Verify:
+   - lines are rebuilt through canonical server requests;
+   - document stays `DRAFT`;
+   - `ledger` is untouched.
+5. Check server log for `UpdateDocLine`, `DeleteDocLine` and `AddDocLine`.
+6. Check WPF `app.log` for `wpf_hu_server_flow`.
+
+## Outbound HU split / reassignment: partial failure
+
+1. Enable all three line flags.
+2. Start outbound HU split / reassignment.
+3. Simulate timeout / server unavailable between source mutation and resulting add.
+4. Verify WPF shows a partial-failure message and reloads the document.
+5. Verify the user can inspect authoritative lines before deciding on retry.
 
 ## End-to-end with canonical lifecycle
 
 1. Enable:
    - `use_server_create_doc_draft`
    - `use_server_add_doc_line`
+   - `use_server_delete_doc_line`
    - `use_server_close_document`
 2. Create draft in WPF.
 3. Fill lines from order through batch mode.
-4. Optionally add one manual line.
-5. Close document through server close.
-6. Verify lifecycle works without switching back to legacy create/add/close for those steps.
+4. Optionally rebuild lines from order.
+5. Optionally add one manual line.
+6. Optionally delete one line.
+7. Close document through server close.
+8. Verify lifecycle works without switching back to legacy create/add/delete/close for those steps.
 
 # Remaining gaps before removing legacy WPF AddLine path
 
-- line delete is still local
-- line update is still local
-- batch rebuilds are not atomic because destructive pre-steps remain local
+- batch rebuilds are not atomic because canonical delete and canonical add still execute as separate requests
 - JSONL import stays outside canonical add-line lifecycle
-- HU reassignment/split flows are still local
+- non-outbound HU reassignment/distribution flows are still local
 - timeout recovery is safe but conservative: user must inspect refreshed lines before retrying a failed batch

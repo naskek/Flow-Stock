@@ -194,9 +194,21 @@ Current accepted-new-line response shape:
    - WPF add-line under feature flag does not change replay semantics;
    - WPF remains responsible only for client-side preparation and temporary `api_docs` bridge metadata until draft creation is also migrated.
 
+6. `UpdateDocLine` is now a separate append-only server operation.
+   - line edits no longer need to be modeled as mutable SQL updates in the canonical lifecycle;
+   - add-line semantics remain unchanged: `POST /api/docs/{docUid}/lines` still means only "append a new line intent";
+   - replacement semantics moved to `POST /api/docs/{docUid}/lines/update` with `replaces_line_id`.
+
+7. `DeleteDocLine` is now a separate append-only server operation.
+   - line delete no longer needs physical `DELETE FROM doc_lines` in canonical lifecycle;
+   - delete semantics moved to `POST /api/docs/{docUid}/lines/delete`;
+   - server appends a tombstone row with `qty = 0` and `replaces_line_id = deleted_line_id`;
+   - active draft/read projections ignore both superseded rows and tombstones (`qty <= 0`).
+
 # Remaining gaps after this step
 
 - WPF line operations still need broader migration beyond manual `+ Товар`.
+- WPF update-line and manual delete are feature-flagged, but split/reassignment and destructive batch pre-steps remain legacy-local.
 - JSONL import remains outside canonical add-line lifecycle.
 - `/api/ops` remains a compatibility wrapper outside canonical draft line lifecycle.
 - Legacy `DOC_LINE` events recorded before this hardening step may replay without a full authoritative line payload, because only new events carry the stored replay envelope.

@@ -4,6 +4,8 @@ This document describes the structured server-side business logging added for ca
 
 - `CreateDocDraft` via `POST /api/docs`
 - `AddDocLine` via `POST /api/docs/{docUid}/lines`
+- `UpdateDocLine` via `POST /api/docs/{docUid}/lines/update`
+- `DeleteDocLine` via `POST /api/docs/{docUid}/lines/delete`
 - `CloseDocument` via `POST /api/docs/{docUid}/close`
 
 The goal is to keep the existing HTTP request log while adding compact business-outcome logs that are useful for debugging, replay analysis, and operational support.
@@ -42,6 +44,7 @@ Each business log record uses the `doc_lifecycle` message template and may inclu
 - `doc_status_after`
 - `line_count`
 - `line_id`
+- `replaces_line_id`
 - `ledger_rows_written`
 - `event_id`
 - `device_id`
@@ -77,6 +80,26 @@ Wrapper-level results used in logs:
 Wrapper-level results used in logs:
 
 - `CREATED`
+- `IDEMPOTENT_REPLAY`
+- `EVENT_ID_CONFLICT`
+- `VALIDATION_FAILED`
+- `DOC_NOT_FOUND`
+
+## UpdateDocLine
+
+Wrapper-level results used in logs:
+
+- `UPDATED`
+- `IDEMPOTENT_REPLAY`
+- `EVENT_ID_CONFLICT`
+- `VALIDATION_FAILED`
+- `DOC_NOT_FOUND`
+
+## DeleteDocLine
+
+Wrapper-level results used in logs:
+
+- `DELETED`
 - `IDEMPOTENT_REPLAY`
 - `EVENT_ID_CONFLICT`
 - `VALIDATION_FAILED`
@@ -135,6 +158,42 @@ doc_lifecycle operation=AddDocLine path=/api/docs/tsd-doc-001/lines result=IDEMP
 
 ```text
 doc_lifecycle operation=AddDocLine path=/api/docs/tsd-doc-001/lines result=VALIDATION_FAILED doc_uid=tsd-doc-001 doc_id=412 doc_ref=IN-2026-000123 doc_type=INBOUND doc_status_before=DRAFT doc_status_after= line_count= line_id= ledger_rows_written=0 event_id=evt-line-002 device_id=TSD-01 api_event_written= appended= idempotent_replay= already_closed= elapsed_ms=2 errors=UNKNOWN_ITEM
+```
+
+## UpdateDocLine success
+
+```text
+doc_lifecycle operation=UpdateDocLine path=/api/docs/tsd-doc-001/lines/update result=UPDATED doc_uid=tsd-doc-001 doc_id=412 doc_ref=IN-2026-000123 doc_type=INBOUND doc_status_before=DRAFT doc_status_after=DRAFT line_count=1 line_id=956 replaces_line_id=955 ledger_rows_written=0 event_id=evt-line-update-001 device_id=WPF-01 api_event_written=True appended=True idempotent_replay=False already_closed= elapsed_ms=9 errors=
+```
+
+## UpdateDocLine replay
+
+```text
+doc_lifecycle operation=UpdateDocLine path=/api/docs/tsd-doc-001/lines/update result=IDEMPOTENT_REPLAY doc_uid=tsd-doc-001 doc_id=412 doc_ref=IN-2026-000123 doc_type=INBOUND doc_status_before=DRAFT doc_status_after=DRAFT line_count=1 line_id=956 replaces_line_id=955 ledger_rows_written=0 event_id=evt-line-update-001 device_id=WPF-01 api_event_written=False appended=False idempotent_replay=True already_closed= elapsed_ms=3 errors=
+```
+
+## UpdateDocLine conflict
+
+```text
+doc_lifecycle operation=UpdateDocLine path=/api/docs/tsd-doc-001/lines/update result=EVENT_ID_CONFLICT doc_uid=tsd-doc-001 doc_id=412 doc_ref=IN-2026-000123 doc_type=INBOUND doc_status_before=DRAFT doc_status_after=DRAFT line_count=1 line_id=955 replaces_line_id= ledger_rows_written=0 event_id=evt-line-update-001 device_id=WPF-01 api_event_written=False appended=False idempotent_replay=False already_closed= elapsed_ms=2 errors=EVENT_ID_CONFLICT
+```
+
+## DeleteDocLine success
+
+```text
+doc_lifecycle operation=DeleteDocLine path=/api/docs/tsd-doc-001/lines/delete result=DELETED doc_uid=tsd-doc-001 doc_id=412 doc_ref=IN-2026-000123 doc_type=INBOUND doc_status_before=DRAFT doc_status_after=DRAFT line_count=0 line_id=957 replaces_line_id=955 ledger_rows_written=0 event_id=evt-line-delete-001 device_id=WPF-01 api_event_written=True appended=True idempotent_replay=False already_closed= elapsed_ms=8 errors=
+```
+
+## DeleteDocLine replay
+
+```text
+doc_lifecycle operation=DeleteDocLine path=/api/docs/tsd-doc-001/lines/delete result=IDEMPOTENT_REPLAY doc_uid=tsd-doc-001 doc_id=412 doc_ref=IN-2026-000123 doc_type=INBOUND doc_status_before=DRAFT doc_status_after=DRAFT line_count=0 line_id=957 replaces_line_id=955 ledger_rows_written=0 event_id=evt-line-delete-001 device_id=WPF-01 api_event_written=False appended=False idempotent_replay=True already_closed= elapsed_ms=3 errors=
+```
+
+## DeleteDocLine conflict
+
+```text
+doc_lifecycle operation=DeleteDocLine path=/api/docs/tsd-doc-001/lines/delete result=EVENT_ID_CONFLICT doc_uid=tsd-doc-001 doc_id=412 doc_ref=IN-2026-000123 doc_type=INBOUND doc_status_before=DRAFT doc_status_after=DRAFT line_count=0 line_id=955 replaces_line_id= ledger_rows_written=0 event_id=evt-line-delete-001 device_id=WPF-01 api_event_written=False appended=False idempotent_replay=False already_closed= elapsed_ms=2 errors=EVENT_ID_CONFLICT
 ```
 
 ## CloseDocument success

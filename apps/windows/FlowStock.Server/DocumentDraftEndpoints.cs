@@ -14,6 +14,8 @@ public static class DocumentDraftEndpoints
     {
         app.MapPost("/api/docs", HandleCreateAsync);
         app.MapPost("/api/docs/{docUid}/lines", HandleAddLineAsync);
+        app.MapPost("/api/docs/{docUid}/lines/update", HandleUpdateLineAsync);
+        app.MapPost("/api/docs/{docUid}/lines/delete", HandleDeleteLineAsync);
     }
 
     public static async Task<IResult> HandleCreateAsync(
@@ -1457,9 +1459,10 @@ public static class DocumentDraftEndpoints
                 break;
         }
 
+        long newLineId;
         try
         {
-            docs.AddDocLine(
+            newLineId = docs.AddDocLine(
                 docInfo.DocId,
                 item.Id,
                 lineRequest.Qty,
@@ -1487,15 +1490,14 @@ public static class DocumentDraftEndpoints
         }
 
         var lastLine = store.GetDocLines(docInfo.DocId)
-            .Where(line => line.ItemId == item.Id)
-            .OrderByDescending(line => line.Id)
-            .FirstOrDefault();
+            .FirstOrDefault(line => line.Id == newLineId);
 
         var lineResponse = lastLine == null
             ? null
             : new DocLineReplayResponse
             {
                 Id = lastLine.Id,
+                ReplacesLineId = lastLine.ReplacesLineId,
                 ItemId = lastLine.ItemId,
                 Qty = lastLine.Qty,
                 UomCode = lastLine.UomCode,
@@ -1546,6 +1548,726 @@ public static class DocumentDraftEndpoints
             idempotentReplay: false,
             eventId: lineRequest.EventId,
             deviceId: lineRequest.DeviceId);
+    }
+
+    public static async Task<IResult> HandleUpdateLineAsync(
+        string docUid,
+        HttpRequest request,
+        IDataStore store,
+        DocumentService docs,
+        IApiDocStore apiStore,
+        ILoggerFactory loggerFactory)
+    {
+        var logger = loggerFactory.CreateLogger("FlowStock.Server.DocumentLifecycle");
+        var started = Stopwatch.StartNew();
+        var path = request.Path.Value ?? $"/api/docs/{docUid}/lines/update";
+
+        IResult LogUpdateAndReturn(
+            IResult result,
+            LogLevel level,
+            string outcome,
+            long? docId = null,
+            string? docRef = null,
+            string? docType = null,
+            string? docStatusBefore = null,
+            string? docStatusAfter = null,
+            int? lineCount = null,
+            long? lineId = null,
+            long? replacesLineId = null,
+            bool? apiEventWritten = null,
+            bool? appended = null,
+            bool? idempotentReplay = null,
+            IEnumerable<string>? errors = null,
+            string? eventId = null,
+            string? deviceId = null)
+        {
+            started.Stop();
+            ServerOperationLogging.LogDocumentLifecycleOperation(
+                logger,
+                level,
+                operation: "UpdateDocLine",
+                path: path,
+                result: outcome,
+                docUid: docUid,
+                docId: docId,
+                docRef: docRef,
+                docType: docType,
+                docStatusBefore: docStatusBefore,
+                docStatusAfter: docStatusAfter,
+                lineCount: lineCount,
+                lineId: lineId,
+                replacesLineId: replacesLineId,
+                ledgerRowsWritten: 0,
+                eventId: eventId,
+                deviceId: deviceId,
+                apiEventWritten: apiEventWritten,
+                appended: appended,
+                idempotentReplay: idempotentReplay,
+                elapsedMs: started.ElapsedMilliseconds,
+                errors: errors);
+            return result;
+        }
+
+        var rawJson = await ReadBody(request);
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, "EMPTY_BODY")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["EMPTY_BODY"]);
+        }
+
+        UpdateDocLineRequest? updateRequest;
+        try
+        {
+            updateRequest = JsonSerializer.Deserialize<UpdateDocLineRequest>(
+                rawJson,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
+        catch (JsonException)
+        {
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_JSON")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["INVALID_JSON"]);
+        }
+
+        if (updateRequest == null)
+        {
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_JSON")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["INVALID_JSON"]);
+        }
+
+        if (string.IsNullOrWhiteSpace(updateRequest.EventId))
+        {
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, "MISSING_EVENT_ID")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["MISSING_EVENT_ID"],
+                deviceId: updateRequest.DeviceId);
+        }
+
+        if (!updateRequest.LineId.HasValue || updateRequest.LineId.Value <= 0)
+        {
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, "MISSING_LINE_ID")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["MISSING_LINE_ID"],
+                eventId: updateRequest.EventId,
+                deviceId: updateRequest.DeviceId);
+        }
+
+        if (updateRequest.Qty <= 0)
+        {
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_QTY")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["INVALID_QTY"],
+                eventId: updateRequest.EventId,
+                deviceId: updateRequest.DeviceId);
+        }
+
+        var normalizedIncoming = NormalizeUpdatedLineReplayPayload(docUid, updateRequest);
+        var existingEvent = apiStore.GetEvent(updateRequest.EventId);
+        if (existingEvent != null)
+        {
+            if (string.Equals(existingEvent.EventType, "DOC_LINE_UPDATE", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(existingEvent.DocUid, docUid, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryReadStoredLineReplay(existingEvent.RawJson, out var storedReplay)
+                    || !IsEquivalentLineReplay(storedReplay.Normalized, normalizedIncoming))
+                {
+                    return LogUpdateAndReturn(
+                        Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT")),
+                        LogLevel.Warning,
+                        outcome: "EVENT_ID_CONFLICT",
+                        errors: ["EVENT_ID_CONFLICT"],
+                        eventId: updateRequest.EventId,
+                        deviceId: updateRequest.DeviceId);
+                }
+
+                var replayDocInfo = apiStore.GetApiDoc(docUid);
+                var replayDoc = replayDocInfo == null ? null : store.GetDoc(replayDocInfo.DocId);
+                var replayDocStatus = storedReplay.DocStatus ?? ResolveCurrentDocStatus(store, replayDocInfo);
+                return LogUpdateAndReturn(
+                    Results.Ok(new
+                    {
+                        ok = true,
+                        result = "IDEMPOTENT_REPLAY",
+                        doc_uid = docUid,
+                        doc_status = replayDocStatus,
+                        appended = false,
+                        idempotent_replay = true,
+                        line = storedReplay.Line
+                    }),
+                    LogLevel.Information,
+                    outcome: "IDEMPOTENT_REPLAY",
+                    docId: replayDocInfo?.DocId,
+                    docRef: replayDocInfo?.DocRef,
+                    docType: replayDocInfo?.DocType,
+                    docStatusBefore: replayDocStatus,
+                    docStatusAfter: replayDocStatus,
+                    lineCount: replayDoc?.LineCount,
+                    lineId: storedReplay.Line?.Id,
+                    replacesLineId: storedReplay.Line?.ReplacesLineId,
+                    apiEventWritten: false,
+                    appended: false,
+                    idempotentReplay: true,
+                    eventId: updateRequest.EventId,
+                    deviceId: updateRequest.DeviceId);
+            }
+
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT")),
+                LogLevel.Warning,
+                outcome: "EVENT_ID_CONFLICT",
+                errors: ["EVENT_ID_CONFLICT"],
+                eventId: updateRequest.EventId,
+                deviceId: updateRequest.DeviceId);
+        }
+
+        var docInfo = apiStore.GetApiDoc(docUid);
+        if (docInfo == null)
+        {
+            return LogUpdateAndReturn(
+                Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND")),
+                LogLevel.Warning,
+                outcome: "DOC_NOT_FOUND",
+                errors: ["DOC_NOT_FOUND"],
+                eventId: updateRequest.EventId,
+                deviceId: updateRequest.DeviceId);
+        }
+
+        var existingDoc = store.GetDoc(docInfo.DocId);
+        if (existingDoc == null)
+        {
+            return LogUpdateAndReturn(
+                Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND")),
+                LogLevel.Warning,
+                outcome: "DOC_NOT_FOUND",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docInfo.DocType,
+                docStatusBefore: docInfo.Status,
+                errors: ["DOC_NOT_FOUND"],
+                eventId: updateRequest.EventId,
+                deviceId: updateRequest.DeviceId);
+        }
+
+        if (!string.Equals(docInfo.Status, "DRAFT", StringComparison.OrdinalIgnoreCase) || existingDoc.Status != DocStatus.Draft)
+        {
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docInfo.DocType,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["DOC_NOT_DRAFT"],
+                eventId: updateRequest.EventId,
+                deviceId: updateRequest.DeviceId);
+        }
+
+        var docType = ParseDocType(docInfo.DocType);
+        if (docType == null)
+        {
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_TYPE")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docInfo.DocType,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["INVALID_TYPE"],
+                eventId: updateRequest.EventId,
+                deviceId: updateRequest.DeviceId);
+        }
+
+        var docTypeValue = DocTypeMapper.ToOpString(docType.Value);
+        var existingLine = store.GetDocLines(docInfo.DocId)
+            .FirstOrDefault(line => line.Id == updateRequest.LineId.Value);
+        if (existingLine == null)
+        {
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, "UNKNOWN_LINE")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docTypeValue,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["UNKNOWN_LINE"],
+                eventId: updateRequest.EventId,
+                deviceId: updateRequest.DeviceId);
+        }
+
+        if (!TryResolveUpdatedLineState(
+                store,
+                docType.Value,
+                docInfo,
+                existingLine,
+                updateRequest,
+                out var fromLocationId,
+                out var toLocationId,
+                out var fromHu,
+                out var toHu,
+                out var validationError))
+        {
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, validationError)),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docTypeValue,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: [validationError ?? "VALIDATION_FAILED"],
+                eventId: updateRequest.EventId,
+                deviceId: updateRequest.DeviceId);
+        }
+
+        long newLineId;
+        try
+        {
+            newLineId = docs.AddDocLine(
+                docInfo.DocId,
+                existingLine.ItemId,
+                updateRequest.Qty,
+                fromLocationId,
+                toLocationId,
+                existingLine.QtyInput,
+                updateRequest.UomCode,
+                fromHu,
+                toHu,
+                existingLine.OrderLineId,
+                existingLine.Id);
+        }
+        catch (Exception ex)
+        {
+            return LogUpdateAndReturn(
+                Results.BadRequest(new ApiResult(false, ex.Message)),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docTypeValue,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: [ex.Message],
+                eventId: updateRequest.EventId,
+                deviceId: updateRequest.DeviceId);
+        }
+
+        var updatedLine = store.GetDocLines(docInfo.DocId)
+            .FirstOrDefault(line => line.Id == newLineId);
+
+        var lineResponse = updatedLine == null
+            ? null
+            : new DocLineReplayResponse
+            {
+                Id = updatedLine.Id,
+                ReplacesLineId = updatedLine.ReplacesLineId,
+                ItemId = updatedLine.ItemId,
+                Qty = updatedLine.Qty,
+                UomCode = updatedLine.UomCode,
+                OrderLineId = updatedLine.OrderLineId,
+                FromLocationId = updatedLine.FromLocationId,
+                ToLocationId = updatedLine.ToLocationId,
+                FromHu = NormalizeHu(updatedLine.FromHu),
+                ToHu = NormalizeHu(updatedLine.ToHu)
+            };
+
+        var replayRecord = new StoredDocLineReplay
+        {
+            Normalized = normalizedIncoming,
+            DocStatus = "DRAFT",
+            Line = lineResponse
+        };
+
+        apiStore.RecordEvent(
+            updateRequest.EventId,
+            "DOC_LINE_UPDATE",
+            docUid,
+            updateRequest.DeviceId,
+            JsonSerializer.Serialize(replayRecord));
+
+        var updatedDoc = store.GetDoc(docInfo.DocId) ?? existingDoc;
+        return LogUpdateAndReturn(
+            Results.Ok(new
+            {
+                ok = true,
+                result = "UPDATED",
+                doc_uid = docUid,
+                doc_status = "DRAFT",
+                appended = true,
+                idempotent_replay = false,
+                line = lineResponse
+            }),
+            LogLevel.Information,
+            outcome: "UPDATED",
+            docId: docInfo.DocId,
+            docRef: docInfo.DocRef,
+            docType: docTypeValue,
+            docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+            docStatusAfter: DocTypeMapper.StatusToString(updatedDoc.Status),
+            lineCount: updatedDoc.LineCount,
+            lineId: lineResponse?.Id,
+            replacesLineId: existingLine.Id,
+            apiEventWritten: true,
+            appended: true,
+            idempotentReplay: false,
+            eventId: updateRequest.EventId,
+            deviceId: updateRequest.DeviceId);
+    }
+
+    public static async Task<IResult> HandleDeleteLineAsync(
+        string docUid,
+        HttpRequest request,
+        IDataStore store,
+        IApiDocStore apiStore,
+        ILoggerFactory loggerFactory)
+    {
+        var logger = loggerFactory.CreateLogger("FlowStock.Server.DocumentLifecycle");
+        var started = Stopwatch.StartNew();
+        var path = request.Path.Value ?? $"/api/docs/{docUid}/lines/delete";
+
+        IResult LogDeleteAndReturn(
+            IResult result,
+            LogLevel level,
+            string outcome,
+            long? docId = null,
+            string? docRef = null,
+            string? docType = null,
+            string? docStatusBefore = null,
+            string? docStatusAfter = null,
+            int? lineCount = null,
+            long? lineId = null,
+            long? replacesLineId = null,
+            bool? apiEventWritten = null,
+            bool? appended = null,
+            bool? idempotentReplay = null,
+            IEnumerable<string>? errors = null,
+            string? eventId = null,
+            string? deviceId = null)
+        {
+            started.Stop();
+            ServerOperationLogging.LogDocumentLifecycleOperation(
+                logger,
+                level,
+                operation: "DeleteDocLine",
+                path: path,
+                result: outcome,
+                docUid: docUid,
+                docId: docId,
+                docRef: docRef,
+                docType: docType,
+                docStatusBefore: docStatusBefore,
+                docStatusAfter: docStatusAfter,
+                lineCount: lineCount,
+                lineId: lineId,
+                replacesLineId: replacesLineId,
+                ledgerRowsWritten: 0,
+                eventId: eventId,
+                deviceId: deviceId,
+                apiEventWritten: apiEventWritten,
+                appended: appended,
+                idempotentReplay: idempotentReplay,
+                elapsedMs: started.ElapsedMilliseconds,
+                errors: errors);
+            return result;
+        }
+
+        var rawJson = await ReadBody(request);
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return LogDeleteAndReturn(
+                Results.BadRequest(new ApiResult(false, "EMPTY_BODY")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["EMPTY_BODY"]);
+        }
+
+        DeleteDocLineRequest? deleteRequest;
+        try
+        {
+            deleteRequest = JsonSerializer.Deserialize<DeleteDocLineRequest>(
+                rawJson,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
+        catch (JsonException)
+        {
+            return LogDeleteAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_JSON")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["INVALID_JSON"]);
+        }
+
+        if (deleteRequest == null)
+        {
+            return LogDeleteAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_JSON")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["INVALID_JSON"]);
+        }
+
+        if (string.IsNullOrWhiteSpace(deleteRequest.EventId))
+        {
+            return LogDeleteAndReturn(
+                Results.BadRequest(new ApiResult(false, "MISSING_EVENT_ID")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["MISSING_EVENT_ID"],
+                deviceId: deleteRequest.DeviceId);
+        }
+
+        if (!deleteRequest.LineId.HasValue || deleteRequest.LineId.Value <= 0)
+        {
+            return LogDeleteAndReturn(
+                Results.BadRequest(new ApiResult(false, "MISSING_LINE_ID")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                errors: ["MISSING_LINE_ID"],
+                eventId: deleteRequest.EventId,
+                deviceId: deleteRequest.DeviceId);
+        }
+
+        var normalizedIncoming = NormalizeDeletedLineReplayPayload(docUid, deleteRequest);
+        var existingEvent = apiStore.GetEvent(deleteRequest.EventId);
+        if (existingEvent != null)
+        {
+            if (string.Equals(existingEvent.EventType, "DOC_LINE_DELETE", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(existingEvent.DocUid, docUid, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryReadStoredLineReplay(existingEvent.RawJson, out var storedReplay)
+                    || !IsEquivalentLineReplay(storedReplay.Normalized, normalizedIncoming))
+                {
+                    return LogDeleteAndReturn(
+                        Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT")),
+                        LogLevel.Warning,
+                        outcome: "EVENT_ID_CONFLICT",
+                        errors: ["EVENT_ID_CONFLICT"],
+                        eventId: deleteRequest.EventId,
+                        deviceId: deleteRequest.DeviceId);
+                }
+
+                var replayDocInfo = apiStore.GetApiDoc(docUid);
+                var replayDoc = replayDocInfo == null ? null : store.GetDoc(replayDocInfo.DocId);
+                var replayDocStatus = storedReplay.DocStatus ?? ResolveCurrentDocStatus(store, replayDocInfo);
+                return LogDeleteAndReturn(
+                    Results.Ok(new
+                    {
+                        ok = true,
+                        result = "IDEMPOTENT_REPLAY",
+                        doc_uid = docUid,
+                        doc_status = replayDocStatus,
+                        appended = false,
+                        idempotent_replay = true,
+                        line = storedReplay.Line
+                    }),
+                    LogLevel.Information,
+                    outcome: "IDEMPOTENT_REPLAY",
+                    docId: replayDocInfo?.DocId,
+                    docRef: replayDocInfo?.DocRef,
+                    docType: replayDocInfo?.DocType,
+                    docStatusBefore: replayDocStatus,
+                    docStatusAfter: replayDocStatus,
+                    lineCount: replayDoc?.LineCount,
+                    lineId: storedReplay.Line?.Id,
+                    replacesLineId: storedReplay.Line?.ReplacesLineId,
+                    apiEventWritten: false,
+                    appended: false,
+                    idempotentReplay: true,
+                    eventId: deleteRequest.EventId,
+                    deviceId: deleteRequest.DeviceId);
+            }
+
+            return LogDeleteAndReturn(
+                Results.BadRequest(new ApiResult(false, "EVENT_ID_CONFLICT")),
+                LogLevel.Warning,
+                outcome: "EVENT_ID_CONFLICT",
+                errors: ["EVENT_ID_CONFLICT"],
+                eventId: deleteRequest.EventId,
+                deviceId: deleteRequest.DeviceId);
+        }
+
+        var docInfo = apiStore.GetApiDoc(docUid);
+        if (docInfo == null)
+        {
+            return LogDeleteAndReturn(
+                Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND")),
+                LogLevel.Warning,
+                outcome: "DOC_NOT_FOUND",
+                errors: ["DOC_NOT_FOUND"],
+                eventId: deleteRequest.EventId,
+                deviceId: deleteRequest.DeviceId);
+        }
+
+        var existingDoc = store.GetDoc(docInfo.DocId);
+        if (existingDoc == null)
+        {
+            return LogDeleteAndReturn(
+                Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND")),
+                LogLevel.Warning,
+                outcome: "DOC_NOT_FOUND",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docInfo.DocType,
+                docStatusBefore: docInfo.Status,
+                errors: ["DOC_NOT_FOUND"],
+                eventId: deleteRequest.EventId,
+                deviceId: deleteRequest.DeviceId);
+        }
+
+        if (!string.Equals(docInfo.Status, "DRAFT", StringComparison.OrdinalIgnoreCase) || existingDoc.Status != DocStatus.Draft)
+        {
+            return LogDeleteAndReturn(
+                Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docInfo.DocType,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["DOC_NOT_DRAFT"],
+                eventId: deleteRequest.EventId,
+                deviceId: deleteRequest.DeviceId);
+        }
+
+        var docType = ParseDocType(docInfo.DocType);
+        if (docType == null)
+        {
+            return LogDeleteAndReturn(
+                Results.BadRequest(new ApiResult(false, "INVALID_TYPE")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docInfo.DocType,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["INVALID_TYPE"],
+                eventId: deleteRequest.EventId,
+                deviceId: deleteRequest.DeviceId);
+        }
+
+        var docTypeValue = DocTypeMapper.ToOpString(docType.Value);
+        var existingLine = store.GetDocLines(docInfo.DocId)
+            .FirstOrDefault(line => line.Id == deleteRequest.LineId.Value);
+        if (existingLine == null)
+        {
+            return LogDeleteAndReturn(
+                Results.BadRequest(new ApiResult(false, "UNKNOWN_LINE")),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docTypeValue,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: ["UNKNOWN_LINE"],
+                eventId: deleteRequest.EventId,
+                deviceId: deleteRequest.DeviceId);
+        }
+
+        var tombstone = new DocLine
+        {
+            DocId = docInfo.DocId,
+            ReplacesLineId = existingLine.Id,
+            OrderLineId = existingLine.OrderLineId,
+            ItemId = existingLine.ItemId,
+            Qty = 0,
+            QtyInput = null,
+            UomCode = existingLine.UomCode,
+            FromLocationId = existingLine.FromLocationId,
+            ToLocationId = existingLine.ToLocationId,
+            FromHu = NormalizeHu(existingLine.FromHu),
+            ToHu = NormalizeHu(existingLine.ToHu)
+        };
+
+        long newLineId;
+        try
+        {
+            newLineId = store.AddDocLine(tombstone);
+        }
+        catch (Exception ex)
+        {
+            return LogDeleteAndReturn(
+                Results.BadRequest(new ApiResult(false, ex.Message)),
+                LogLevel.Warning,
+                outcome: "VALIDATION_FAILED",
+                docId: docInfo.DocId,
+                docRef: docInfo.DocRef,
+                docType: docTypeValue,
+                docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+                errors: [ex.Message],
+                eventId: deleteRequest.EventId,
+                deviceId: deleteRequest.DeviceId);
+        }
+
+        var lineResponse = new DocLineReplayResponse
+        {
+            Id = newLineId,
+            ReplacesLineId = existingLine.Id,
+            ItemId = existingLine.ItemId,
+            Qty = 0,
+            UomCode = existingLine.UomCode,
+            OrderLineId = existingLine.OrderLineId,
+            FromLocationId = existingLine.FromLocationId,
+            ToLocationId = existingLine.ToLocationId,
+            FromHu = NormalizeHu(existingLine.FromHu),
+            ToHu = NormalizeHu(existingLine.ToHu)
+        };
+
+        var replayRecord = new StoredDocLineReplay
+        {
+            Normalized = normalizedIncoming,
+            DocStatus = "DRAFT",
+            Line = lineResponse
+        };
+
+        apiStore.RecordEvent(
+            deleteRequest.EventId,
+            "DOC_LINE_DELETE",
+            docUid,
+            deleteRequest.DeviceId,
+            JsonSerializer.Serialize(replayRecord));
+
+        var updatedDoc = store.GetDoc(docInfo.DocId) ?? existingDoc;
+        return LogDeleteAndReturn(
+            Results.Ok(new
+            {
+                ok = true,
+                result = "DELETED",
+                doc_uid = docUid,
+                doc_status = "DRAFT",
+                appended = true,
+                idempotent_replay = false,
+                line = lineResponse
+            }),
+            LogLevel.Information,
+            outcome: "DELETED",
+            docId: docInfo.DocId,
+            docRef: docInfo.DocRef,
+            docType: docTypeValue,
+            docStatusBefore: DocTypeMapper.StatusToString(existingDoc.Status),
+            docStatusAfter: DocTypeMapper.StatusToString(updatedDoc.Status),
+            lineCount: updatedDoc.LineCount,
+            lineId: newLineId,
+            replacesLineId: existingLine.Id,
+            apiEventWritten: true,
+            appended: true,
+            idempotentReplay: false,
+            eventId: deleteRequest.EventId,
+            deviceId: deleteRequest.DeviceId);
     }
 
     private static async Task<string> ReadBody(HttpRequest request)
@@ -1676,6 +2398,7 @@ public static class DocumentDraftEndpoints
             DocUid = Normalize(docUid),
             EventId = Normalize(request.EventId),
             DeviceId = Normalize(request.DeviceId),
+            LineId = null,
             Barcode = Normalize(request.Barcode),
             ItemId = request.ItemId,
             OrderLineId = request.OrderLineId,
@@ -1685,6 +2408,35 @@ public static class DocumentDraftEndpoints
             ToLocationId = request.ToLocationId,
             FromHu = NormalizeHu(request.FromHu),
             ToHu = NormalizeHu(request.ToHu)
+        };
+    }
+
+    private static NormalizedLineReplayPayload NormalizeUpdatedLineReplayPayload(string docUid, UpdateDocLineRequest request)
+    {
+        return new NormalizedLineReplayPayload
+        {
+            DocUid = Normalize(docUid),
+            EventId = Normalize(request.EventId),
+            DeviceId = Normalize(request.DeviceId),
+            LineId = request.LineId,
+            Qty = request.Qty,
+            UomCode = Normalize(request.UomCode),
+            FromLocationId = request.FromLocationId,
+            ToLocationId = request.ToLocationId,
+            FromHu = NormalizeHu(request.FromHu),
+            ToHu = NormalizeHu(request.ToHu)
+        };
+    }
+
+    private static NormalizedLineReplayPayload NormalizeDeletedLineReplayPayload(string docUid, DeleteDocLineRequest request)
+    {
+        return new NormalizedLineReplayPayload
+        {
+            DocUid = Normalize(docUid),
+            EventId = Normalize(request.EventId),
+            DeviceId = Normalize(request.DeviceId),
+            LineId = request.LineId,
+            Qty = 0
         };
     }
 
@@ -1754,6 +2506,7 @@ public static class DocumentDraftEndpoints
         return string.Equals(existing.DocUid, incoming.DocUid, StringComparison.OrdinalIgnoreCase)
                && string.Equals(existing.EventId, incoming.EventId, StringComparison.OrdinalIgnoreCase)
                && string.Equals(existing.DeviceId, incoming.DeviceId, StringComparison.OrdinalIgnoreCase)
+               && existing.LineId == incoming.LineId
                && string.Equals(existing.Barcode, incoming.Barcode, StringComparison.OrdinalIgnoreCase)
                && existing.ItemId == incoming.ItemId
                && existing.OrderLineId == incoming.OrderLineId
@@ -1763,6 +2516,115 @@ public static class DocumentDraftEndpoints
                && existing.ToLocationId == incoming.ToLocationId
                && string.Equals(existing.FromHu, incoming.FromHu, StringComparison.OrdinalIgnoreCase)
                && string.Equals(existing.ToHu, incoming.ToHu, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryResolveUpdatedLineState(
+        IDataStore store,
+        DocType docType,
+        ApiDocInfo docInfo,
+        DocLine existingLine,
+        UpdateDocLineRequest request,
+        out long? fromLocationId,
+        out long? toLocationId,
+        out string? fromHu,
+        out string? toHu,
+        out string? validationError)
+    {
+        validationError = null;
+        fromLocationId = null;
+        toLocationId = null;
+        fromHu = null;
+        toHu = null;
+
+        if (request.FromLocationId.HasValue && store.FindLocationById(request.FromLocationId.Value) == null)
+        {
+            validationError = "UNKNOWN_LOCATION";
+            return false;
+        }
+
+        if (request.ToLocationId.HasValue && store.FindLocationById(request.ToLocationId.Value) == null)
+        {
+            validationError = "UNKNOWN_LOCATION";
+            return false;
+        }
+
+        var requestedFromHu = NormalizeHu(request.FromHu);
+        var requestedToHu = NormalizeHu(request.ToHu);
+        if (!string.IsNullOrWhiteSpace(requestedFromHu))
+        {
+            var record = store.GetHuByCode(requestedFromHu);
+            if (record == null || !IsHuAllowed(record))
+            {
+                validationError = "UNKNOWN_HU";
+                return false;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(requestedToHu))
+        {
+            var record = store.GetHuByCode(requestedToHu);
+            if (record == null || !IsHuAllowed(record))
+            {
+                validationError = "UNKNOWN_HU";
+                return false;
+            }
+        }
+
+        switch (docType)
+        {
+            case DocType.Inbound:
+            case DocType.ProductionReceipt:
+                toLocationId = request.ToLocationId ?? existingLine.ToLocationId ?? docInfo.ToLocationId;
+                toHu = !string.IsNullOrWhiteSpace(requestedToHu)
+                    ? requestedToHu
+                    : NormalizeHu(existingLine.ToHu) ?? NormalizeHu(docInfo.ToHu);
+                if (!toLocationId.HasValue)
+                {
+                    validationError = "MISSING_LOCATION";
+                    return false;
+                }
+                break;
+            case DocType.Outbound:
+            case DocType.WriteOff:
+                fromLocationId = request.FromLocationId ?? existingLine.FromLocationId ?? docInfo.FromLocationId;
+                fromHu = !string.IsNullOrWhiteSpace(requestedFromHu)
+                    ? requestedFromHu
+                    : NormalizeHu(existingLine.FromHu) ?? NormalizeHu(docInfo.FromHu);
+                if (!fromLocationId.HasValue)
+                {
+                    validationError = "MISSING_LOCATION";
+                    return false;
+                }
+                break;
+            case DocType.Move:
+                fromLocationId = request.FromLocationId ?? existingLine.FromLocationId ?? docInfo.FromLocationId;
+                toLocationId = request.ToLocationId ?? existingLine.ToLocationId ?? docInfo.ToLocationId;
+                fromHu = !string.IsNullOrWhiteSpace(requestedFromHu)
+                    ? requestedFromHu
+                    : NormalizeHu(existingLine.FromHu) ?? NormalizeHu(docInfo.FromHu);
+                toHu = !string.IsNullOrWhiteSpace(requestedToHu)
+                    ? requestedToHu
+                    : NormalizeHu(existingLine.ToHu) ?? NormalizeHu(docInfo.ToHu);
+                if (!fromLocationId.HasValue || !toLocationId.HasValue)
+                {
+                    validationError = "MISSING_LOCATION";
+                    return false;
+                }
+                break;
+            case DocType.Inventory:
+                toLocationId = request.ToLocationId ?? existingLine.ToLocationId ?? docInfo.ToLocationId;
+                toHu = !string.IsNullOrWhiteSpace(requestedToHu)
+                    ? requestedToHu
+                    : NormalizeHu(existingLine.ToHu) ?? NormalizeHu(docInfo.ToHu);
+                if (!toLocationId.HasValue)
+                {
+                    validationError = "MISSING_LOCATION";
+                    return false;
+                }
+                break;
+        }
+
+        return true;
     }
 
     private static string ResolveCurrentDocStatus(IDataStore store, ApiDocInfo? docInfo)
@@ -1801,6 +2663,7 @@ public static class DocumentDraftEndpoints
         public string? DocUid { get; init; }
         public string? EventId { get; init; }
         public string? DeviceId { get; init; }
+        public long? LineId { get; init; }
         public string? Barcode { get; init; }
         public long? ItemId { get; init; }
         public long? OrderLineId { get; init; }
@@ -1816,6 +2679,9 @@ public static class DocumentDraftEndpoints
     {
         [JsonPropertyName("id")]
         public long Id { get; init; }
+
+        [JsonPropertyName("replaces_line_id")]
+        public long? ReplacesLineId { get; init; }
 
         [JsonPropertyName("item_id")]
         public long ItemId { get; init; }

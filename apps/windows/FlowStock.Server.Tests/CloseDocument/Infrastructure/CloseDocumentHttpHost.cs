@@ -37,6 +37,10 @@ internal sealed class CloseDocumentHttpHost : IAsyncDisposable
         builder.Services.AddSingleton<DocumentService>();
 
         var app = builder.Build();
+        OrderCreateEndpoint.Map(app);
+        OrderUpdateEndpoint.Map(app);
+        OrderDeleteEndpoint.Map(app);
+        OrderStatusEndpoint.Map(app);
         DocumentDraftEndpoints.Map(app);
         CloseDocumentEndpoint.Map(app);
         OpsEndpoint.Map(app);

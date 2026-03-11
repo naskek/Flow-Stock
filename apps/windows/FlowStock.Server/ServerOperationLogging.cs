@@ -16,6 +16,7 @@ internal static class ServerOperationLogging
         string? docStatusAfter = null,
         int? lineCount = null,
         long? lineId = null,
+        long? replacesLineId = null,
         int? ledgerRowsWritten = null,
         string? eventId = null,
         string? deviceId = null,
@@ -29,7 +30,7 @@ internal static class ServerOperationLogging
         var errorText = JoinErrors(errors);
         logger.Log(
             level,
-            "doc_lifecycle operation={Operation} path={Path} result={Result} doc_uid={DocUid} doc_id={DocId} doc_ref={DocRef} doc_type={DocType} doc_status_before={DocStatusBefore} doc_status_after={DocStatusAfter} line_count={LineCount} line_id={LineId} ledger_rows_written={LedgerRowsWritten} event_id={EventId} device_id={DeviceId} api_event_written={ApiEventWritten} appended={Appended} idempotent_replay={IdempotentReplay} already_closed={AlreadyClosed} elapsed_ms={ElapsedMs} errors={Errors}",
+            "doc_lifecycle operation={Operation} path={Path} result={Result} doc_uid={DocUid} doc_id={DocId} doc_ref={DocRef} doc_type={DocType} doc_status_before={DocStatusBefore} doc_status_after={DocStatusAfter} line_count={LineCount} line_id={LineId} replaces_line_id={ReplacesLineId} ledger_rows_written={LedgerRowsWritten} event_id={EventId} device_id={DeviceId} api_event_written={ApiEventWritten} appended={Appended} idempotent_replay={IdempotentReplay} already_closed={AlreadyClosed} elapsed_ms={ElapsedMs} errors={Errors}",
             operation,
             path,
             result,
@@ -41,6 +42,7 @@ internal static class ServerOperationLogging
             docStatusAfter,
             lineCount,
             lineId,
+            replacesLineId,
             ledgerRowsWritten,
             eventId,
             deviceId,

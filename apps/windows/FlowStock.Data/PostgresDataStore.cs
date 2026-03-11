@@ -16,7 +16,7 @@ public sealed class PostgresDataStore : IDataStore
         "COALESCE(dl.line_count, 0) AS line_count, ad.device_id, ad.doc_uid, d.production_batch_no " +
         "FROM docs d " +
         "LEFT JOIN partners p ON p.id = d.partner_id " +
-        "LEFT JOIN (SELECT doc_id, COUNT(*) AS line_count FROM doc_lines GROUP BY doc_id) dl ON dl.doc_id = d.id " +
+        "LEFT JOIN (SELECT dl.doc_id, COUNT(*) AS line_count FROM doc_lines dl WHERE dl.qty > 0 AND NOT EXISTS (SELECT 1 FROM doc_lines newer WHERE newer.replaces_line_id = dl.id) GROUP BY dl.doc_id) dl ON dl.doc_id = d.id " +
         "LEFT JOIN (SELECT doc_id, MAX(device_id) AS device_id, MAX(doc_uid) AS doc_uid FROM api_docs GROUP BY doc_id) ad ON ad.doc_id = d.id";
     private const string OrderSelectBase = "SELECT o.id, o.order_ref, o.order_type, o.partner_id, o.due_date, o.status, o.comment, o.created_at, p.name, p.code FROM orders o LEFT JOIN partners p ON p.id = o.partner_id";
 
@@ -157,6 +157,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_docs_ref ON docs(doc_ref);
 CREATE TABLE IF NOT EXISTS doc_lines (
     id BIGSERIAL PRIMARY KEY,
     doc_id BIGINT NOT NULL,
+    replaces_line_id BIGINT,
     order_line_id BIGINT,
     item_id BIGINT NOT NULL,
     qty REAL NOT NULL,
@@ -317,6 +318,7 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
         EnsureColumn(connection, "docs", "comment", "TEXT");
         EnsureColumn(connection, "docs", "production_batch_no", "TEXT");
         EnsureColumn(connection, "doc_lines", "order_line_id", "BIGINT");
+        EnsureColumn(connection, "doc_lines", "replaces_line_id", "BIGINT");
         EnsureColumn(connection, "doc_lines", "qty_input", "REAL");
         EnsureColumn(connection, "doc_lines", "uom_code", "TEXT");
         EnsureColumn(connection, "doc_lines", "from_hu", "TEXT");
@@ -343,6 +345,7 @@ CREATE INDEX IF NOT EXISTS idx_km_code_order_id ON km_code(order_id);
         EnsureIndex(connection, "ix_item_requests_status", "item_requests(status)");
         EnsureIndex(connection, "ix_order_requests_status", "order_requests(status)");
         EnsureIndex(connection, "ix_doc_lines_order_line", "doc_lines(order_line_id)");
+        EnsureIndex(connection, "ix_doc_lines_replaces_line", "doc_lines(replaces_line_id)");
         EnsureIndex(connection, "ix_ledger_item_loc_hu", "ledger(item_id, location_id, hu)");
         EnsureIndex(connection, "ix_ledger_item_loc_hu_code", "ledger(item_id, location_id, hu_code)");
         EnsureIndex(connection, "idx_hus_status", "hus(status)");
@@ -1157,7 +1160,28 @@ RETURNING id;
     {
         return WithConnection(connection =>
         {
-            using var command = CreateCommand(connection, "SELECT id, doc_id, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu FROM doc_lines WHERE doc_id = @doc_id ORDER BY id");
+            using var command = CreateCommand(connection, @"
+SELECT dl.id,
+       dl.doc_id,
+       dl.replaces_line_id,
+       dl.order_line_id,
+       dl.item_id,
+       dl.qty,
+       dl.qty_input,
+       dl.uom_code,
+       dl.from_location_id,
+       dl.to_location_id,
+       dl.from_hu,
+       dl.to_hu
+FROM doc_lines dl
+WHERE dl.doc_id = @doc_id
+  AND dl.qty > 0
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  )
+ORDER BY dl.id");
             command.Parameters.AddWithValue("@doc_id", docId);
             using var reader = command.ExecuteReader();
             var lines = new List<DocLine>();
@@ -1194,6 +1218,12 @@ INNER JOIN items i ON i.id = dl.item_id
 LEFT JOIN locations lf ON lf.id = dl.from_location_id
 LEFT JOIN locations lt ON lt.id = dl.to_location_id
 WHERE dl.doc_id = @doc_id
+  AND dl.qty > 0
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  )
 ORDER BY dl.id;
 ");
             command.Parameters.AddWithValue("@doc_id", docId);
@@ -1228,11 +1258,12 @@ ORDER BY dl.id;
         return WithConnection(connection =>
         {
             using var command = CreateCommand(connection, @"
-INSERT INTO doc_lines(doc_id, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)
-VALUES(@doc_id, @order_line_id, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id, @from_hu, @to_hu)
+INSERT INTO doc_lines(doc_id, replaces_line_id, order_line_id, item_id, qty, qty_input, uom_code, from_location_id, to_location_id, from_hu, to_hu)
+VALUES(@doc_id, @replaces_line_id, @order_line_id, @item_id, @qty, @qty_input, @uom_code, @from_location_id, @to_location_id, @from_hu, @to_hu)
 RETURNING id;
 ");
             command.Parameters.AddWithValue("@doc_id", line.DocId);
+            command.Parameters.AddWithValue("@replaces_line_id", line.ReplacesLineId.HasValue ? line.ReplacesLineId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@order_line_id", line.OrderLineId.HasValue ? line.OrderLineId.Value : DBNull.Value);
             command.Parameters.AddWithValue("@item_id", line.ItemId);
             command.Parameters.AddWithValue("@qty", line.Qty);
@@ -1556,7 +1587,15 @@ LEFT JOIN (
     SELECT dl.order_line_id, SUM(dl.qty) AS sum_qty
     FROM doc_lines dl
     INNER JOIN docs d ON d.id = dl.doc_id
-    WHERE d.status = @status AND d.type = @doc_type AND dl.order_line_id IS NOT NULL
+    WHERE d.status = @status
+      AND d.type = @doc_type
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
     GROUP BY dl.order_line_id
 ) r ON r.order_line_id = ol.id
 WHERE ol.order_id = @order_id
@@ -1603,7 +1642,15 @@ LEFT JOIN (
     SELECT dl.order_line_id, SUM(dl.qty) AS sum_qty
     FROM doc_lines dl
     INNER JOIN docs d ON d.id = dl.doc_id
-    WHERE d.status = @status AND d.type = @doc_type AND dl.order_line_id IS NOT NULL
+    WHERE d.status = @status
+      AND d.type = @doc_type
+      AND dl.order_line_id IS NOT NULL
+      AND dl.qty > 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM doc_lines newer
+          WHERE newer.replaces_line_id = dl.id
+      )
     GROUP BY dl.order_line_id
 ) s ON s.order_line_id = ol.id
 WHERE ol.order_id = @order_id
@@ -1717,7 +1764,15 @@ RETURNING id;
 SELECT dl.item_id, COALESCE(SUM(dl.qty), 0)
 FROM docs d
 INNER JOIN doc_lines dl ON dl.doc_id = d.id
-WHERE d.type = @type AND d.status = @status AND d.order_id = @order_id
+WHERE d.type = @type
+  AND d.status = @status
+  AND d.order_id = @order_id
+  AND dl.qty > 0
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  )
 GROUP BY dl.item_id;
 ");
             command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(DocType.Outbound));
@@ -1746,6 +1801,12 @@ WHERE d.type = @type
   AND d.status = @status
   AND d.order_id = @order_id
   AND dl.order_line_id IS NOT NULL
+  AND dl.qty > 0
+  AND NOT EXISTS (
+      SELECT 1
+      FROM doc_lines newer
+      WHERE newer.replaces_line_id = dl.id
+  )
 GROUP BY dl.order_line_id;
 ");
             command.Parameters.AddWithValue("@type", DocTypeMapper.ToOpString(DocType.Outbound));
@@ -2559,15 +2620,16 @@ RETURNING id;
         {
             Id = reader.GetInt64(0),
             DocId = reader.GetInt64(1),
-            OrderLineId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
-            ItemId = reader.GetInt64(3),
-            Qty = reader.GetDouble(4),
-            QtyInput = reader.IsDBNull(5) ? null : reader.GetDouble(5),
-            UomCode = reader.IsDBNull(6) ? null : reader.GetString(6),
-            FromLocationId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
-            ToLocationId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
-            FromHu = reader.FieldCount > 9 && !reader.IsDBNull(9) ? reader.GetString(9) : null,
-            ToHu = reader.FieldCount > 10 && !reader.IsDBNull(10) ? reader.GetString(10) : null
+            ReplacesLineId = reader.IsDBNull(2) ? null : reader.GetInt64(2),
+            OrderLineId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
+            ItemId = reader.GetInt64(4),
+            Qty = reader.GetDouble(5),
+            QtyInput = reader.IsDBNull(6) ? null : reader.GetDouble(6),
+            UomCode = reader.IsDBNull(7) ? null : reader.GetString(7),
+            FromLocationId = reader.IsDBNull(8) ? null : reader.GetInt64(8),
+            ToLocationId = reader.IsDBNull(9) ? null : reader.GetInt64(9),
+            FromHu = reader.FieldCount > 10 && !reader.IsDBNull(10) ? reader.GetString(10) : null,
+            ToHu = reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetString(11) : null
         };
     }
 

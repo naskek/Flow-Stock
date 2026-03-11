@@ -153,12 +153,15 @@ public partial class OrderDetailsWindow : Window
 
     private bool TrySaveOrder(bool showFeedback)
     {
-        if (!TryGetHeaderValues(out var orderRef, out var type, out var partnerId, out var dueDate, out var status, out var comment))
+        var useServerSetOrderStatus = _orderId.HasValue && _services.WpfSetOrderStatuses.IsServerStatusChangeEnabled();
+        var useServerUpdateOrder = _orderId.HasValue && _services.WpfUpdateOrders.IsServerUpdateEnabled();
+        var useServerCreateOrder = !_orderId.HasValue && _services.WpfCreateOrders.IsServerCreateEnabled();
+        if (!TryGetHeaderValues(useServerCreateOrder || useServerUpdateOrder, out var orderRef, out var type, out var partnerId, out var dueDate, out var status, out var comment))
         {
             return false;
         }
 
-        if (!TryValidateOrderRefUnique(orderRef))
+        if (!useServerCreateOrder && !useServerUpdateOrder && !TryValidateOrderRefUnique(orderRef))
         {
             return false;
         }
@@ -167,7 +170,33 @@ public partial class OrderDetailsWindow : Window
         {
             if (_orderId.HasValue)
             {
+                if (CanUseDirectStatusChangeFlow(orderRef, type, partnerId, dueDate, status, comment))
+                {
+                    if (useServerSetOrderStatus)
+                    {
+                        return TrySetOrderStatusViaServer(_orderId.Value, status, showFeedback);
+                    }
+
+                    _services.Orders.ChangeOrderStatus(_orderId.Value, status);
+                    LoadOrder();
+                    if (showFeedback)
+                    {
+                        SaveStatusText.Text = "Сохранено";
+                    }
+
+                    return true;
+                }
+
+                if (useServerUpdateOrder)
+                {
+                    return TryUpdateOrderViaServer(_orderId.Value, orderRef, type, partnerId, dueDate, status, comment, showFeedback);
+                }
+
                 _services.Orders.UpdateOrder(_orderId.Value, orderRef, partnerId, dueDate, status, comment, _lines, type);
+            }
+            else if (useServerCreateOrder)
+            {
+                return TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, status, comment, showFeedback);
             }
             else
             {
@@ -192,6 +221,145 @@ public partial class OrderDetailsWindow : Window
             MessageBox.Show(ex.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
+    }
+
+    private bool TrySetOrderStatusViaServer(long orderId, OrderStatus status, bool showFeedback)
+    {
+        var result = _services.WpfSetOrderStatuses.SetStatusAsync(orderId, status)
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
+
+        if (!result.IsSuccess)
+        {
+            var icon = result.Kind is WpfSetOrderStatusResultKind.Timeout or WpfSetOrderStatusResultKind.ServerUnavailable
+                ? MessageBoxImage.Error
+                : MessageBoxImage.Warning;
+            MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
+            return false;
+        }
+
+        if (result.Response == null || result.Response.OrderId <= 0 || string.IsNullOrWhiteSpace(result.Response.Status))
+        {
+            MessageBox.Show("Сервер вернул неполный ответ при смене статуса заказа.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        LoadOrder();
+        if (showFeedback)
+        {
+            SaveStatusText.Text = "Сохранено";
+        }
+
+        return true;
+    }
+
+    private bool TryUpdateOrderViaServer(
+        long orderId,
+        string orderRef,
+        OrderType type,
+        long? partnerId,
+        DateTime? dueDate,
+        OrderStatus status,
+        string? comment,
+        bool showFeedback)
+    {
+        var result = _services.WpfUpdateOrders.UpdateOrderAsync(
+                new WpfUpdateOrderContext(
+                    orderId,
+                    string.IsNullOrWhiteSpace(orderRef) ? null : orderRef,
+                    type,
+                    partnerId,
+                    dueDate,
+                    status,
+                    comment,
+                    _lines.ToList()))
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
+
+        if (!result.IsSuccess)
+        {
+            var icon = result.Kind is WpfUpdateOrderResultKind.Timeout or WpfUpdateOrderResultKind.ServerUnavailable
+                ? MessageBoxImage.Error
+                : MessageBoxImage.Warning;
+            MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
+            return false;
+        }
+
+        if (result.Response == null || result.Response.OrderId <= 0)
+        {
+            MessageBox.Show("Сервер вернул неполный ответ при обновлении заказа.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        _orderId = result.Response.OrderId;
+        LoadOrder();
+
+        if (!string.IsNullOrWhiteSpace(result.Message))
+        {
+            MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        if (showFeedback)
+        {
+            SaveStatusText.Text = "Сохранено";
+        }
+
+        return true;
+    }
+
+    private bool TryCreateOrderViaServer(
+        string orderRef,
+        OrderType type,
+        long? partnerId,
+        DateTime? dueDate,
+        OrderStatus status,
+        string? comment,
+        bool showFeedback)
+    {
+        var result = _services.WpfCreateOrders.CreateOrderAsync(
+                new WpfCreateOrderContext(
+                    string.IsNullOrWhiteSpace(orderRef) ? null : orderRef,
+                    type,
+                    partnerId,
+                    dueDate,
+                    status,
+                    comment,
+                    _lines.ToList()))
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
+
+        if (!result.IsSuccess)
+        {
+            var icon = result.Kind is WpfCreateOrderResultKind.Timeout or WpfCreateOrderResultKind.ServerUnavailable
+                ? MessageBoxImage.Error
+                : MessageBoxImage.Warning;
+            MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
+            return false;
+        }
+
+        if (result.Response == null || result.Response.OrderId <= 0)
+        {
+            MessageBox.Show("Сервер вернул неполный ответ при создании заказа.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        _orderId = result.Response.OrderId;
+        LoadOrder();
+
+        if (!string.IsNullOrWhiteSpace(result.Message))
+        {
+            MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        if (showFeedback)
+        {
+            SaveStatusText.Text = "Сохранено";
+        }
+
+        return true;
     }
 
     private void AddLine_Click(object sender, RoutedEventArgs e)
@@ -472,7 +640,7 @@ public partial class OrderDetailsWindow : Window
         SaveStatusText.Text = string.Empty;
     }
 
-    private bool TryGetHeaderValues(out string orderRef, out OrderType type, out long? partnerId, out DateTime? dueDate, out OrderStatus status, out string? comment)
+    private bool TryGetHeaderValues(bool allowBlankOrderRef, out string orderRef, out OrderType type, out long? partnerId, out DateTime? dueDate, out OrderStatus status, out string? comment)
     {
         orderRef = OrderRefBox.Text ?? string.Empty;
         type = GetSelectedOrderType();
@@ -481,7 +649,7 @@ public partial class OrderDetailsWindow : Window
         comment = CommentBox.Text;
         status = OrderStatus.Draft;
 
-        if (string.IsNullOrWhiteSpace(orderRef))
+        if (!allowBlankOrderRef && string.IsNullOrWhiteSpace(orderRef))
         {
             MessageBox.Show("Введите номер заказа.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
@@ -625,6 +793,108 @@ public partial class OrderDetailsWindow : Window
         }
 
         return true;
+    }
+
+    private bool CanUseDirectStatusChangeFlow(
+        string orderRef,
+        OrderType type,
+        long? partnerId,
+        DateTime? dueDate,
+        OrderStatus status,
+        string? comment)
+    {
+        if (!_orderId.HasValue || _order == null)
+        {
+            return false;
+        }
+
+        if (status == _order.Status)
+        {
+            return false;
+        }
+
+        if (!string.Equals(orderRef.Trim(), _order.OrderRef, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (type != _order.Type)
+        {
+            return false;
+        }
+
+        if (partnerId != _order.PartnerId)
+        {
+            return false;
+        }
+
+        if (dueDate?.Date != _order.DueDate?.Date)
+        {
+            return false;
+        }
+
+        if (!string.Equals(NormalizeOptional(comment), NormalizeOptional(_order.Comment), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var persistedLines = _services.Orders.GetOrderLineViews(_orderId.Value);
+        return HaveEquivalentLineSnapshot(_lines, persistedLines);
+    }
+
+    private static bool HaveEquivalentLineSnapshot(
+        IReadOnlyCollection<OrderLineView> current,
+        IReadOnlyCollection<OrderLineView> persisted)
+    {
+        var currentMap = NormalizeLineSnapshot(current);
+        var persistedMap = NormalizeLineSnapshot(persisted);
+        if (currentMap.Count != persistedMap.Count)
+        {
+            return false;
+        }
+
+        foreach (var pair in currentMap)
+        {
+            if (!persistedMap.TryGetValue(pair.Key, out var persistedQty))
+            {
+                return false;
+            }
+
+            if (Math.Abs(pair.Value - persistedQty) > 0.000001)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static Dictionary<long, double> NormalizeLineSnapshot(IEnumerable<OrderLineView> lines)
+    {
+        var map = new Dictionary<long, double>();
+        foreach (var line in lines)
+        {
+            if (line.ItemId <= 0)
+            {
+                continue;
+            }
+
+            if (map.TryGetValue(line.ItemId, out var qty))
+            {
+                map[line.ItemId] = qty + line.QtyOrdered;
+            }
+            else
+            {
+                map[line.ItemId] = line.QtyOrdered;
+            }
+        }
+
+        return map;
+    }
+
+    private static string? NormalizeOptional(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     private static string ResolveDefaultUomCode(Item item, IReadOnlyList<ItemPackaging> packagings)
