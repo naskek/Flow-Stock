@@ -51,7 +51,7 @@ public partial class MainWindow : Window
     private Item? _selectedItem;
     private Location? _selectedLocation;
     private Partner? _selectedPartner;
-    private bool _adminDeleteModeEnabled;
+    private bool _adminDeleteModeEnabled = false;
     private const int TabStatusIndex = 0;
     private const int TabDocsIndex = 1;
     private const int TabOrdersIndex = 2;
@@ -1807,31 +1807,8 @@ public partial class MainWindow : Window
 
     private void OpenAdmin_Click(object sender, RoutedEventArgs e)
     {
-        if (!_services.AdminAuth.EnsureAdminPasswordExists())
-        {
-            var setWindow = new SetAdminPasswordWindow(_services.AdminAuth);
-            setWindow.Owner = this;
-            if (setWindow.ShowDialog() != true)
-            {
-                return;
-            }
-        }
-
-        var prompt = new PasswordPromptWindow(_services.AdminAuth);
-        prompt.Owner = this;
-        if (prompt.ShowDialog() != true)
-        {
-            return;
-        }
-
         var window = new AdminWindow(
             _services,
-            _adminDeleteModeEnabled,
-            isEnabled =>
-            {
-                _adminDeleteModeEnabled = isEnabled;
-                ApplyDeleteMode();
-            },
             () =>
             {
                 LoadDocs();

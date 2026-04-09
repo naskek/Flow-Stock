@@ -67,8 +67,10 @@
 - Orders: list + details (see spec_orders.md).
 - Incoming requests: single WPF inbox window (from bell/menu) for item requests and order web requests, with processing actions in one place.
   - For order requests, WPF provides a details modal with full order payload before approval.
-- Admin: no direct table reset/edit from WPF; only backup and temporary admin unlock for row deletion in tabs.
-- Row deletion in tabs (orders/items/locations/partners) is blocked by default and allowed only after admin unlock.
+- WPF data grids use shared adaptive sizing rules: short columns fit header/content, long text columns are capped and trimmed, and visible columns redistribute width when the window is resized.
+- WPF dialog windows auto-grow to content within screen bounds; if the content still does not fit, the dialog becomes scrollable so footer actions remain reachable.
+- Admin: no direct table reset/edit from WPF; admin window currently exposes only global web block access and a test cleanup action.
+- Row deletion in tabs (orders/items/locations/partners) remains blocked in the current WPF UI.
 - Admin includes a dedicated "clear operations" action for test cleanup (docs/doc_lines/ledger/orders/order_lines/import events/errors). Dictionaries stay intact.
 - Admin includes a dedicated section for global web block access:
   - PC blocks: `Остатки`, `Каталог`, `Заказы`.

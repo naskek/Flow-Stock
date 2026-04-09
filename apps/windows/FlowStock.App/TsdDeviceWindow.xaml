@@ -9,12 +9,17 @@
             <ColumnDefinition Width="2*" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
-        <StackPanel Grid.Column="0">
-            <TextBlock Text="Аккаунты" FontWeight="SemiBold" />
+        <Grid Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Аккаунты" FontWeight="SemiBold" />
             <DataGrid x:Name="DevicesGrid"
+                      Grid.Row="1"
                       AutoGenerateColumns="False"
                       IsReadOnly="True"
-                      Height="420"
                       Margin="0,6,0,8"
                       SelectionChanged="DevicesGrid_SelectionChanged">
                 <DataGrid.Columns>
@@ -24,26 +29,32 @@
                     <DataGridCheckBoxColumn Header="Активен" Binding="{Binding IsActive}" Width="90" />
                 </DataGrid.Columns>
             </DataGrid>
-            <StackPanel Orientation="Horizontal">
+            <StackPanel Grid.Row="2" Orientation="Horizontal">
                 <Button Content="Обновить" Width="120" Click="Refresh_Click" />
                 <Button Content="Новый" Width="120" Margin="8,0,0,0" Click="New_Click" />
             </StackPanel>
-        </StackPanel>
+        </Grid>
         <GroupBox Grid.Column="1" Header="Данные аккаунта" Margin="12,0,0,0">
-            <StackPanel Margin="8">
-                <TextBlock Text="Логин" />
-                <TextBox x:Name="LoginBox" Margin="0,2,0,8" />
-                <TextBlock Text="Пароль" />
-                <TextBox x:Name="PasswordBox" Margin="0,2,0,8" />
-                <CheckBox x:Name="IsActiveCheck" Content="Активен" Margin="0,0,0,8" />
-                <TextBlock Text="Платформа" />
-                <ComboBox x:Name="PlatformBox" Margin="0,2,0,8">
-                    <ComboBoxItem Content="ТСД" Tag="TSD" />
-                    <ComboBoxItem Content="ПК" Tag="PC" />
-                    <ComboBoxItem Content="ПК + ТСД" Tag="BOTH" />
-                </ComboBox>
-                <Button Content="Сохранить" Width="140" Click="Save_Click" />
-            </StackPanel>
+            <DockPanel Margin="8" LastChildFill="True">
+                <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                    <Button Content="Сохранить" Width="140" Click="Save_Click" />
+                </StackPanel>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="Логин" />
+                        <TextBox x:Name="LoginBox" Margin="0,2,0,8" />
+                        <TextBlock Text="Пароль" />
+                        <TextBox x:Name="PasswordBox" Margin="0,2,0,8" />
+                        <CheckBox x:Name="IsActiveCheck" Content="Активен" Margin="0,0,0,8" />
+                        <TextBlock Text="Платформа" />
+                        <ComboBox x:Name="PlatformBox" Margin="0,2,0,8">
+                            <ComboBoxItem Content="ТСД" Tag="TSD" />
+                            <ComboBoxItem Content="ПК" Tag="PC" />
+                            <ComboBoxItem Content="ПК + ТСД" Tag="BOTH" />
+                        </ComboBox>
+                    </StackPanel>
+                </ScrollViewer>
+            </DockPanel>
         </GroupBox>
     </Grid>
 </Window>
