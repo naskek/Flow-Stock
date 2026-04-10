@@ -2,6 +2,7 @@
 
 ## Overview
 - Production deploy is driven by `deploy/docker-compose.yml`.
+- The compose project name is fixed to `flowstock` so manual compose commands do not create a parallel `deploy-*` stack.
 - PostgreSQL init scripts in `deploy/postgres/init/` are bootstrap-only for a brand new empty data directory.
 - All schema updates after that go through versioned SQL migrations from `deploy/postgres/migrations/`.
 - The server is expected to keep a normal git clone of the repository.
@@ -111,7 +112,7 @@ bash deploy/scripts/deploy_update.sh
 ```
 6. Verify health:
 ```bash
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
+docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml ps
 curl -fsS http://127.0.0.1:${FLOWSTOCK_PORT:-8080}/health/ready
 ```
 
@@ -123,7 +124,7 @@ bash deploy/scripts/release_status.sh
 ### Optional One-Time Clean Bootstrap Check
 Use this only on a known-empty server or a disposable test project:
 ```bash
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml down -v
+docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml down -v
 bash deploy/scripts/deploy_update.sh
 ```
 
@@ -183,7 +184,7 @@ Quick post-deploy verification:
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/release_status.sh
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
+docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml ps
 curl -fsS http://127.0.0.1:${FLOWSTOCK_PORT:-8080}/health/ready
 ```
 
@@ -208,7 +209,7 @@ bash deploy/scripts/migrate.sh
 
 Check applied migrations:
 ```bash
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml exec -T postgres \
+docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml exec -T postgres \
   sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT version, filename, applied_at FROM schema_migrations ORDER BY version;"'
 ```
 
@@ -248,8 +249,8 @@ The script prints:
 If an update fails after backup or after app recreation:
 1. Inspect status and logs:
 ```bash
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs --tail=100 migrator flowstock nginx postgres
+docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml ps
+docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml logs --tail=100 migrator flowstock nginx postgres
 ```
 2. If the issue is schema/app incompatibility, return to the previous app revision:
 ```bash
@@ -261,7 +262,7 @@ bash deploy/scripts/restore_dump.sh /opt/FlowStock/deploy/runtime/backups/FlowSt
 ```
 4. Start the previous-good application revision:
 ```bash
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build flowstock nginx pgbackup
+docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml up -d --build flowstock nginx pgbackup
 ```
 
 For the common case there is also a dedicated rollback helper:
@@ -303,14 +304,14 @@ Force reissue the server certificate from the local CA:
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/renew_server_cert.sh --force
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml restart nginx
+docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml restart nginx
 ```
 
 Issue the current server certificate immediately:
 ```bash
 cd /opt/FlowStock
 bash deploy/scripts/issue_server_cert.sh
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml restart nginx
+docker compose --project-name flowstock --env-file deploy/.env -f deploy/docker-compose.yml restart nginx
 ```
 
 ## Notes
