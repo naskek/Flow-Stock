@@ -4,7 +4,7 @@ set -eu
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 migrations_dir="${MIGRATIONS_DIR:-/migrations}"
 
-"${script_dir}/wait_for_postgres.sh"
+sh "${script_dir}/wait_for_postgres.sh"
 
 if [ ! -d "$migrations_dir" ]; then
     echo "[migrator] migrations directory not found: $migrations_dir" >&2
