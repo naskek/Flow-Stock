@@ -11,7 +11,7 @@ ensure_docker
 ensure_compose_config
 ensure_postgres_healthy
 
-pre_restore_backup="$(resolve_backup_path "${FLOWSTOCK_BACKUP_OUTPUT_DIR}/pre_restore/")"
+pre_restore_backup="$(resolve_backup_path "${FLOWSTOCK_PRE_RESTORE_BACKUP_PATH_OVERRIDE:-${FLOWSTOCK_BACKUP_OUTPUT_DIR}/pre_restore/}")"
 create_backup "$pre_restore_backup"
 
 log "stopping application containers before restore"

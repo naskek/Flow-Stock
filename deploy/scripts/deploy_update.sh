@@ -22,7 +22,7 @@ ensure_docker
 ensure_compose_config
 ensure_postgres_healthy
 
-backup_path="$(resolve_backup_path)"
+backup_path="$(resolve_backup_path "${FLOWSTOCK_BACKUP_PATH_OVERRIDE:-}")"
 create_backup "$backup_path"
 
 log "pulling base images"

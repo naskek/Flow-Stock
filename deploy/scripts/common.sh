@@ -2,13 +2,18 @@
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+FLOWSTOCK_REPO_DIR="${FLOWSTOCK_REPO_DIR:-$(cd -- "${DEPLOY_DIR}/.." && pwd)}"
 FLOWSTOCK_COMPOSE_FILE="${FLOWSTOCK_COMPOSE_FILE:-${DEPLOY_DIR}/docker-compose.yml}"
 FLOWSTOCK_ENV_FILE="${FLOWSTOCK_ENV_FILE:-${DEPLOY_DIR}/.env}"
 FLOWSTOCK_PROJECT_NAME="${FLOWSTOCK_PROJECT_NAME:-flowstock}"
 FLOWSTOCK_RUNTIME_DIR="${FLOWSTOCK_RUNTIME_DIR:-${DEPLOY_DIR}/runtime}"
 FLOWSTOCK_BACKUP_OUTPUT_DIR="${FLOWSTOCK_BACKUP_OUTPUT_DIR:-${FLOWSTOCK_RUNTIME_DIR}/backups}"
+FLOWSTOCK_RELEASES_DIR="${FLOWSTOCK_RELEASES_DIR:-${FLOWSTOCK_RUNTIME_DIR}/releases}"
 FLOWSTOCK_HEALTH_TIMEOUT_SECONDS="${FLOWSTOCK_HEALTH_TIMEOUT_SECONDS:-120}"
 POSTGRES_WAIT_TIMEOUT_SECONDS="${POSTGRES_WAIT_TIMEOUT_SECONDS:-120}"
+FLOWSTOCK_GIT_REMOTE="${FLOWSTOCK_GIT_REMOTE:-origin}"
+FLOWSTOCK_GIT_BRANCH="${FLOWSTOCK_GIT_BRANCH:-main}"
+FLOWSTOCK_DEFAULT_DEPLOY_REF="${FLOWSTOCK_DEFAULT_DEPLOY_REF:-${FLOWSTOCK_GIT_REMOTE}/${FLOWSTOCK_GIT_BRANCH}}"
 
 log() {
     printf '[flowstock] %s\n' "$*"
@@ -24,11 +29,31 @@ require_file() {
     [[ -f "$path" ]] || fail "required file not found: $path"
 }
 
+ensure_runtime_dirs() {
+    mkdir -p "$FLOWSTOCK_RUNTIME_DIR" "$FLOWSTOCK_BACKUP_OUTPUT_DIR" "$FLOWSTOCK_RELEASES_DIR"
+}
+
 ensure_docker() {
     command -v docker >/dev/null 2>&1 || fail "docker is not installed"
     docker compose version >/dev/null 2>&1 || fail "docker compose is not available"
     require_file "$FLOWSTOCK_COMPOSE_FILE"
     require_file "$FLOWSTOCK_ENV_FILE"
+    ensure_runtime_dirs
+}
+
+git_in_repo() {
+    git -C "$FLOWSTOCK_REPO_DIR" "$@"
+}
+
+ensure_git_repo() {
+    git_in_repo rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "git repository not found at $FLOWSTOCK_REPO_DIR"
+}
+
+ensure_git_clean_worktree() {
+    if ! git_in_repo diff --quiet --ignore-submodules -- || ! git_in_repo diff --cached --quiet --ignore-submodules --; then
+        git_in_repo status --short >&2 || true
+        fail "git worktree has uncommitted tracked changes; commit or revert them before deploy"
+    fi
 }
 
 compose() {
@@ -135,4 +160,30 @@ run_migrator() {
 
 wait_for_flowstock_ready() {
     wait_for_service_status flowstock healthy "$FLOWSTOCK_HEALTH_TIMEOUT_SECONDS"
+}
+
+release_state_file() {
+    local name="$1"
+    ensure_runtime_dirs
+    printf '%s/%s.env\n' "$FLOWSTOCK_RELEASES_DIR" "$name"
+}
+
+release_history_file() {
+    local stamp="$1"
+    ensure_runtime_dirs
+    mkdir -p "$FLOWSTOCK_RELEASES_DIR/history"
+    printf '%s/history/%s.env\n' "$FLOWSTOCK_RELEASES_DIR" "$stamp"
+}
+
+write_release_state() {
+    local path="$1"
+    shift
+
+    mkdir -p "$(dirname "$path")"
+    : >"$path"
+    for pair in "$@"; do
+        local key="${pair%%=*}"
+        local value="${pair#*=}"
+        printf '%s=%q\n' "$key" "$value" >>"$path"
+    done
 }
