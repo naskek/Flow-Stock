@@ -38,6 +38,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        FLOWSTOCK_DOTNET_SDK_IMAGE: ${FLOWSTOCK_DOTNET_SDK_IMAGE:-mcr.microsoft.com/dotnet/sdk:8.0}
+        FLOWSTOCK_DOTNET_ASPNET_IMAGE: ${FLOWSTOCK_DOTNET_ASPNET_IMAGE:-mcr.microsoft.com/dotnet/aspnet:8.0}
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
 

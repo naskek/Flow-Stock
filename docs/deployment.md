@@ -26,6 +26,18 @@
 - `deploy/runtime/`
   - created automatically by scripts for manual backups and operator artifacts
 
+## Base Image Source
+- By default the server image is built from:
+  - `mcr.microsoft.com/dotnet/sdk:8.0`
+  - `mcr.microsoft.com/dotnet/aspnet:8.0`
+- If the server has poor connectivity to `mcr.microsoft.com`, override them in `deploy/.env`:
+```bash
+FLOWSTOCK_DOTNET_SDK_IMAGE=registry.example.com/mirror/dotnet/sdk:8.0
+FLOWSTOCK_DOTNET_ASPNET_IMAGE=registry.example.com/mirror/dotnet/aspnet:8.0
+```
+- This keeps the deploy workflow unchanged: `deploy_from_git.sh` and `deploy_update.sh` will use the override automatically.
+- The project intentionally does not hardcode a non-official fallback registry. Use your own mirror, registry cache, or preloaded internal registry if `mcr.microsoft.com` is slow from the production server.
+
 ## Services
 - `postgres`
   - primary database
@@ -111,6 +123,26 @@ What `deploy_update.sh` does:
 - runs the `migrator`
 - recreates `flowstock`, `nginx`, and `pgbackup`
 - waits for healthy `flowstock`
+
+## Server Verification For Git-Driven Deploy
+Run this once after the server clone is prepared:
+```bash
+cd /opt/FlowStock
+git checkout main
+git pull --ff-only origin main
+bash deploy/scripts/release_status.sh
+bash deploy/scripts/deploy_from_git.sh
+```
+
+If the server uses a mirror for base images, set `FLOWSTOCK_DOTNET_SDK_IMAGE` and `FLOWSTOCK_DOTNET_ASPNET_IMAGE` in `deploy/.env` before the first run.
+
+Quick post-deploy verification:
+```bash
+cd /opt/FlowStock
+bash deploy/scripts/release_status.sh
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
+curl -fsS http://127.0.0.1:${FLOWSTOCK_PORT:-8080}/health/ready
+```
 
 ## Manual Backup
 Create a manual dump:
