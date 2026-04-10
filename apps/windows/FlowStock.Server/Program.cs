@@ -60,10 +60,6 @@ FROM schema_migrations;";
     }
 });
 
-app.UseWhen(
-    context => !context.Request.Path.StartsWithSegments("/health"),
-    branch => branch.UseHttpsRedirection());
-
 LogDbInfo(app.Logger, postgresConnectionString);
 
 app.Use(async (context, next) =>
@@ -86,27 +82,23 @@ app.Use(async (context, next) =>
         sw.ElapsedMilliseconds);
 });
 
-var tsdRoot = ServerPaths.TsdRoot;
-var tsdIndexPath = Path.Combine(tsdRoot, "index.html");
-var pcRoot = ServerPaths.PcRoot;
-var pcIndexPath = Path.Combine(pcRoot, "index.html");
-var pcPort = ResolvePcPort(builder.Configuration);
-
 app.Use(async (context, next) =>
 {
-    if (context.Connection.LocalPort != pcPort
-        && context.Request.Path.StartsWithSegments("/pc", out var remaining))
+    var rejection = TryCreateClientBlockRejection(context);
+    if (rejection != null)
     {
-        var host = context.Request.Host.Host;
-        var path = remaining.HasValue ? remaining.Value : "/";
-        var query = context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty;
-        var target = $"{context.Request.Scheme}://{host}:{pcPort}{path}{query}";
-        context.Response.Redirect(target, false);
+        await rejection.ExecuteAsync(context);
         return;
     }
 
     await next();
 });
+
+var tsdRoot = ServerPaths.TsdRoot;
+var tsdIndexPath = Path.Combine(tsdRoot, "index.html");
+var pcRoot = ServerPaths.PcRoot;
+var pcIndexPath = Path.Combine(pcRoot, "index.html");
+var pcPort = ResolvePcPort(builder.Configuration);
 
 if (Directory.Exists(pcRoot) && File.Exists(pcIndexPath))
 {
@@ -115,7 +107,7 @@ if (Directory.Exists(pcRoot) && File.Exists(pcIndexPath))
     pcContentTypes.Mappings[".webmanifest"] = "application/manifest+json";
 
     app.UseWhen(
-        context => context.Connection.LocalPort == pcPort
+        context => IsPcRequest(context, pcPort)
                    && !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase),
         pcApp =>
         {
@@ -147,7 +139,7 @@ if (Directory.Exists(tsdRoot) && File.Exists(tsdIndexPath))
     tsdContentTypes.Mappings[".webmanifest"] = "application/manifest+json";
 
     app.UseWhen(
-        context => context.Connection.LocalPort != pcPort
+        context => !IsPcRequest(context, pcPort)
                    && !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase),
         tsdApp =>
         {
@@ -1182,6 +1174,25 @@ static int ResolvePcPort(IConfiguration configuration)
     return 7154;
 }
 
+static bool IsPcRequest(HttpContext context, int pcPort)
+{
+    if (context.Connection.LocalPort == pcPort)
+    {
+        return true;
+    }
+
+    if (!context.Request.Headers.TryGetValue("X-Forwarded-Proto", out var forwardedProto))
+    {
+        return false;
+    }
+
+    var proto = forwardedProto.ToString()
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .FirstOrDefault();
+
+    return string.Equals(proto, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+}
+
 static void LogDbInfo(ILogger logger, string? postgresConnectionString)
 {
     var info = BuildPostgresInfo(postgresConnectionString);
@@ -1309,6 +1320,104 @@ static string NormalizeDevicePlatform(string? value)
 static IReadOnlyDictionary<string, bool> BuildClientBlockStates(IReadOnlyList<ClientBlockSetting> settings)
 {
     return ClientBlockCatalog.MergeWithDefaults(settings);
+}
+
+static IResult? TryCreateClientBlockRejection(HttpContext context)
+{
+    if (!context.Request.Path.StartsWithSegments("/api"))
+    {
+        return null;
+    }
+
+    if (IsClientBlockBypassPath(context.Request.Path))
+    {
+        return null;
+    }
+
+    if (!TryGetRequestedClientBlockKey(context.Request, out var blockKey))
+    {
+        return null;
+    }
+
+    var store = context.RequestServices.GetRequiredService<IDataStore>();
+    var states = BuildClientBlockStates(store.GetClientBlockSettings());
+    foreach (var requiredKey in EnumerateRequiredClientBlockKeys(blockKey))
+    {
+        if (!states.TryGetValue(requiredKey, out var isEnabled) || isEnabled)
+        {
+            continue;
+        }
+
+        return Results.Json(
+            new
+            {
+                ok = false,
+                error = "BLOCK_DISABLED",
+                block_key = requiredKey,
+                requested_block_key = blockKey
+            },
+            statusCode: StatusCodes.Status403Forbidden);
+    }
+
+    return null;
+}
+
+static bool IsClientBlockBypassPath(PathString path)
+{
+    if (path.StartsWithSegments("/api/client-blocks")
+        || path.StartsWithSegments("/api/tsd/login")
+        || path.StartsWithSegments("/api/ping"))
+    {
+        return true;
+    }
+
+    return path.StartsWithSegments("/api/diag");
+}
+
+static bool TryGetRequestedClientBlockKey(HttpRequest request, out string blockKey)
+{
+    blockKey = string.Empty;
+    if (!request.Headers.TryGetValue("X-FlowStock-Block-Key", out var values))
+    {
+        return false;
+    }
+
+    var raw = values.ToString();
+    if (string.IsNullOrWhiteSpace(raw))
+    {
+        return false;
+    }
+
+    var normalized = raw
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .FirstOrDefault();
+    if (string.IsNullOrWhiteSpace(normalized) || !ClientBlockCatalog.IsKnownKey(normalized))
+    {
+        return false;
+    }
+
+    blockKey = normalized;
+    return true;
+}
+
+static IEnumerable<string> EnumerateRequiredClientBlockKeys(string blockKey)
+{
+    if (string.IsNullOrWhiteSpace(blockKey))
+    {
+        yield break;
+    }
+
+    if (string.Equals(blockKey, ClientBlockCatalog.TsdInbound, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(blockKey, ClientBlockCatalog.TsdProductionReceipt, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(blockKey, ClientBlockCatalog.TsdOutbound, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(blockKey, ClientBlockCatalog.TsdMove, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(blockKey, ClientBlockCatalog.TsdWriteOff, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(blockKey, ClientBlockCatalog.TsdInventory, StringComparison.OrdinalIgnoreCase))
+    {
+        yield return ClientBlockCatalog.TsdOperations;
+    }
+
+    yield return blockKey;
 }
 
 static Item? FindItemByBarcodeVariant(IDataStore store, string barcode)

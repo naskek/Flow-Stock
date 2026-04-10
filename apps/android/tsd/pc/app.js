@@ -15,9 +15,8 @@
   var cachedHuRows = [];
   var cachedCombinedRows = [];
   var clientBlocks = getDefaultClientBlocks();
-  var clientBlocksPollTimer = 0;
   var clientBlocksRefreshInFlight = false;
-  var CLIENT_BLOCKS_REFRESH_MS = 5000;
+  var CLIENT_BLOCK_HEADER = "X-FlowStock-Block-Key";
 
   function getDefaultClientBlocks() {
     return {
@@ -102,28 +101,6 @@
     });
   }
 
-  function stopClientBlocksPolling() {
-    if (clientBlocksPollTimer) {
-      clearInterval(clientBlocksPollTimer);
-      clientBlocksPollTimer = 0;
-    }
-  }
-
-  function pollClientBlocks() {
-    if (clientBlocksRefreshInFlight || document.hidden || !hasPcAccess(loadAccount())) {
-      return;
-    }
-    clientBlocksRefreshInFlight = true;
-    refreshClientBlocksIfChanged().finally(function () {
-      clientBlocksRefreshInFlight = false;
-    });
-  }
-
-  function startClientBlocksPolling() {
-    stopClientBlocksPolling();
-    clientBlocksPollTimer = window.setInterval(pollClientBlocks, CLIENT_BLOCKS_REFRESH_MS);
-  }
-
   function normalizePlatform(value) {
     var normalized = String(value || "").trim().toUpperCase();
     if (normalized === "PC") {
@@ -191,6 +168,49 @@
     document.body.classList.toggle("needs-login", !isLoggedIn);
   }
 
+  function getBlockKeyForView(view) {
+    if (view === "catalog") {
+      return "pc_catalog";
+    }
+    if (view === "orders") {
+      return "pc_orders";
+    }
+    if (view === "stock") {
+      return "pc_stock";
+    }
+    return "";
+  }
+
+  function shouldAttachBlockHeader(url) {
+    return url !== "/api/client-blocks" && url !== "/api/tsd/login";
+  }
+
+  function createRequestHeaders(source, url) {
+    var headers = new Headers(source || {});
+    var blockKey = shouldAttachBlockHeader(url) ? getBlockKeyForView(currentView) : "";
+    if (blockKey && !headers.has(CLIENT_BLOCK_HEADER)) {
+      headers.set(CLIENT_BLOCK_HEADER, blockKey);
+    }
+    return headers;
+  }
+
+  function handleBlockedClientRequest() {
+    if (clientBlocksRefreshInFlight || !hasPcAccess(loadAccount())) {
+      return;
+    }
+
+    clientBlocksRefreshInFlight = true;
+    loadClientBlocks()
+      .then(function () {
+        syncTabsVisibility();
+        currentView = resolveAllowedView(currentView) || "stock";
+        renderView(currentView);
+      })
+      .finally(function () {
+        clientBlocksRefreshInFlight = false;
+      });
+  }
+
   function fetchJson(url, options) {
     var controller = null;
     var timer = null;
@@ -201,6 +221,7 @@
     if (controller) {
       opts.signal = controller.signal;
     }
+    opts.headers = createRequestHeaders(opts.headers, url);
     timer = window.setTimeout(function () {
       if (controller) {
         controller.abort();
@@ -216,6 +237,9 @@
           .then(function (payload) {
             if (!response.ok) {
               var message = payload && payload.error ? payload.error : "SERVER_ERROR";
+              if (message === "BLOCK_DISABLED" && url !== "/api/client-blocks") {
+                handleBlockedClientRequest();
+              }
               throw new Error(message);
             }
             return payload;
@@ -420,7 +444,6 @@
           setLoginState(true);
           currentView = resolveAllowedView(currentView) || "stock";
           syncTabsVisibility();
-          startClientBlocksPolling();
           renderView(currentView);
         })
         .catch(function (error) {
@@ -2009,7 +2032,6 @@
     if (!hasPcAccess(account)) {
       applyClientBlocks(null);
       syncTabsVisibility();
-      stopClientBlocksPolling();
       setLoginState(false);
       setAccountLabel(null);
       if (app) {
@@ -2022,7 +2044,6 @@
     setLoginState(true);
     setAccountLabel(account);
     syncTabsVisibility();
-    startClientBlocksPolling();
     if (app) {
       app.innerHTML = '<section class="pc-card"><div class="pc-status">Загрузка...</div></section>';
     }
@@ -2048,7 +2069,6 @@
       clearAccount();
       applyClientBlocks(null);
       syncTabsVisibility();
-      stopClientBlocksPolling();
       setAccountLabel(null);
       setLoginState(false);
       if (app) {

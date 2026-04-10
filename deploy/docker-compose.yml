@@ -48,6 +48,8 @@ services:
       FLOWSTOCK_PG_PASSWORD: ${POSTGRES_PASSWORD}
 
       FLOWSTOCK_TSD_ROOT: /app/tsd
+      FLOWSTOCK_PC_ROOT: /app/tsd/pc
+      FLOWSTOCK_PC_PORT: ${FLOWSTOCK_HTTPS_PORT:-7154}
     depends_on:
       postgres:
         condition: service_healthy

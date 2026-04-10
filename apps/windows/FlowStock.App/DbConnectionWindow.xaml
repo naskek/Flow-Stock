@@ -79,6 +79,9 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Margin="0,0,0,10">
@@ -110,17 +113,30 @@
                                        Visibility="Collapsed" />
                         </StackPanel>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Base URL" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Server API URL" VerticalAlignment="Center" />
                         <TextBox x:Name="ServerBaseUrlBox" Grid.Row="1" Grid.Column="1" Margin="8,0,0,6" />
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Device ID" VerticalAlignment="Center" />
-                        <TextBox x:Name="ServerDeviceIdBox" Grid.Row="2" Grid.Column="1" Margin="8,0,0,6" />
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="PC URL" VerticalAlignment="Center" />
+                        <TextBox x:Name="PcClientUrlBox" Grid.Row="2" Grid.Column="1" Margin="8,0,0,6" />
 
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Timeout (sec)" VerticalAlignment="Center" />
-                        <TextBox x:Name="ServerTimeoutBox" Grid.Row="3" Grid.Column="1" Margin="8,0,0,6" />
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="TSD URL" VerticalAlignment="Center" />
+                        <TextBox x:Name="TsdClientUrlBox" Grid.Row="3" Grid.Column="1" Margin="8,0,0,6" />
 
-                        <TextBlock Grid.Row="4" Grid.Column="0" Text="TLS" VerticalAlignment="Top" />
-                        <StackPanel Grid.Row="4" Grid.Column="1" Margin="8,0,0,6">
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Device ID" VerticalAlignment="Center" />
+                        <TextBox x:Name="ServerDeviceIdBox" Grid.Row="4" Grid.Column="1" Margin="8,0,0,6" />
+
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Timeout (sec)" VerticalAlignment="Center" />
+                        <TextBox x:Name="ServerTimeoutBox" Grid.Row="5" Grid.Column="1" Margin="8,0,0,6" />
+
+                        <TextBlock Grid.Row="6"
+                                   Grid.Column="1"
+                                   Margin="8,0,0,8"
+                                   Foreground="Gray"
+                                   Text="Для production используйте только root-адреса без /pc, /tsd и других path-prefix."
+                                   TextWrapping="Wrap" />
+
+                        <TextBlock Grid.Row="7" Grid.Column="0" Text="TLS" VerticalAlignment="Top" />
+                        <StackPanel Grid.Row="7" Grid.Column="1" Margin="8,0,0,6">
                             <CheckBox x:Name="AllowInvalidTlsCheckBox"
                                       Content="Allow invalid TLS (dev-only / unsafe)" />
                             <TextBlock Margin="0,4,0,0"
@@ -129,88 +145,88 @@
                                        TextWrapping="Wrap" />
                         </StackPanel>
 
-                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Draft create" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="8" Grid.Column="0" Text="Draft create" VerticalAlignment="Center" />
                         <CheckBox x:Name="UseServerCreateDraftCheckBox"
-                                  Grid.Row="5"
+                                  Grid.Row="8"
                                   Grid.Column="1"
                                   Margin="8,0,0,6"
                                   Content="Use Server API for new draft creation"
                                   Checked="UseServerCreateDraftCheckBox_Changed"
                                   Unchecked="UseServerCreateDraftCheckBox_Changed" />
 
-                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Order create" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="9" Grid.Column="0" Text="Order create" VerticalAlignment="Center" />
                         <CheckBox x:Name="UseServerCreateOrderCheckBox"
-                                  Grid.Row="6"
+                                  Grid.Row="9"
                                   Grid.Column="1"
                                   Margin="8,0,0,6"
                                   Content="Use Server API for order creation"
                                   Checked="UseServerCreateOrderCheckBox_Changed"
                                   Unchecked="UseServerCreateOrderCheckBox_Changed" />
 
-                        <TextBlock Grid.Row="7" Grid.Column="0" Text="Order update" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="10" Grid.Column="0" Text="Order update" VerticalAlignment="Center" />
                         <CheckBox x:Name="UseServerUpdateOrderCheckBox"
-                                  Grid.Row="7"
+                                  Grid.Row="10"
                                   Grid.Column="1"
                                   Margin="8,0,0,6"
                                   Content="Use Server API for order updates"
                                   Checked="UseServerUpdateOrderCheckBox_Changed"
                                   Unchecked="UseServerUpdateOrderCheckBox_Changed" />
 
-                        <TextBlock Grid.Row="8" Grid.Column="0" Text="Order status" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="11" Grid.Column="0" Text="Order status" VerticalAlignment="Center" />
                         <CheckBox x:Name="UseServerSetOrderStatusCheckBox"
-                                  Grid.Row="8"
+                                  Grid.Row="11"
                                   Grid.Column="1"
                                   Margin="8,0,0,6"
                                   Content="Use Server API for manual order status changes"
                                   Checked="UseServerSetOrderStatusCheckBox_Changed"
                                   Unchecked="UseServerSetOrderStatusCheckBox_Changed" />
 
-                        <TextBlock Grid.Row="9" Grid.Column="0" Text="Incoming requests" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="12" Grid.Column="0" Text="Incoming requests" VerticalAlignment="Center" />
                         <CheckBox x:Name="UseServerIncomingOrderApprovalCheckBox"
-                                  Grid.Row="9"
+                                  Grid.Row="12"
                                   Grid.Column="1"
                                   Margin="8,0,0,6"
                                   Content="Use Server API for order approvals in incoming requests"
                                   Checked="UseServerIncomingOrderApprovalCheckBox_Changed"
                                   Unchecked="UseServerIncomingOrderApprovalCheckBox_Changed" />
 
-                        <TextBlock Grid.Row="10" Grid.Column="0" Text="AddLine / batch" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="13" Grid.Column="0" Text="AddLine / batch" VerticalAlignment="Center" />
                         <CheckBox x:Name="UseServerAddLineCheckBox"
-                                  Grid.Row="10"
+                                  Grid.Row="13"
                                   Grid.Column="1"
                                   Margin="8,0,0,6"
                                   Content="Use Server API for '+ Товар' and batch line fills"
                                   Checked="UseServerAddLineCheckBox_Changed"
                                   Unchecked="UseServerAddLineCheckBox_Changed" />
 
-                        <TextBlock Grid.Row="11" Grid.Column="0" Text="Order delete" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="14" Grid.Column="0" Text="Order delete" VerticalAlignment="Center" />
                         <CheckBox x:Name="UseServerDeleteOrderCheckBox"
-                                  Grid.Row="11"
+                                  Grid.Row="14"
                                   Grid.Column="1"
                                   Margin="8,0,0,6"
                                   Content="Use Server API for order deletion"
                                   Checked="UseServerDeleteOrderCheckBox_Changed"
                                   Unchecked="UseServerDeleteOrderCheckBox_Changed" />
 
-                        <TextBlock Grid.Row="12" Grid.Column="0" Text="Line update" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="15" Grid.Column="0" Text="Line update" VerticalAlignment="Center" />
                         <CheckBox x:Name="UseServerUpdateLineCheckBox"
-                                  Grid.Row="12"
+                                  Grid.Row="15"
                                   Grid.Column="1"
                                   Margin="8,0,0,6"
                                   Content="Use Server API for quantity edits of existing lines"
                                   Checked="UseServerUpdateLineCheckBox_Changed"
                                   Unchecked="UseServerUpdateLineCheckBox_Changed" />
 
-                        <TextBlock Grid.Row="13" Grid.Column="0" Text="Line delete" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="16" Grid.Column="0" Text="Line delete" VerticalAlignment="Center" />
                         <CheckBox x:Name="UseServerDeleteLineCheckBox"
-                                  Grid.Row="13"
+                                  Grid.Row="16"
                                   Grid.Column="1"
                                   Margin="8,0,0,6"
                                   Content="Use Server API for deleting existing lines"
                                   Checked="UseServerDeleteLineCheckBox_Changed"
                                   Unchecked="UseServerDeleteLineCheckBox_Changed" />
 
-                        <StackPanel Grid.Row="14"
+                        <StackPanel Grid.Row="17"
                                     Grid.ColumnSpan="2"
                                     Orientation="Horizontal"
                                     HorizontalAlignment="Right"
@@ -222,6 +238,14 @@
                                     Width="110"
                                     Margin="8,0,0,0"
                                     Click="CheckServer_Click" />
+                            <Button Content="Открыть ПК"
+                                    Width="110"
+                                    Margin="8,0,0,0"
+                                    Click="OpenPcClient_Click" />
+                            <Button Content="Открыть ТСД"
+                                    Width="110"
+                                    Margin="8,0,0,0"
+                                    Click="OpenTsdClient_Click" />
                             <Button Content="Save"
                                     Width="100"
                                     Margin="8,0,0,0"
@@ -229,7 +253,7 @@
                         </StackPanel>
 
                         <TextBlock x:Name="ServerStatusText"
-                                   Grid.Row="15"
+                                   Grid.Row="18"
                                    Grid.ColumnSpan="2"
                                    Margin="0,10,0,0"
                                    TextWrapping="Wrap" />

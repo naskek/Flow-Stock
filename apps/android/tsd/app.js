@@ -47,8 +47,11 @@
   };
 
   var NAV_ORIGIN_KEY = "tsdNavOrigin";
+  var CLIENT_BLOCK_CONTEXT_KEY = "flowstock_block_context";
+  var CLIENT_BLOCK_HEADER = "X-FlowStock-Block-Key";
   var clientBlocks = getDefaultClientBlocks();
   var clientBlocksLoadPromise = null;
+  var currentClientBlockContext = "";
 
   function getDefaultClientBlocks() {
     return {
@@ -103,6 +106,59 @@
       clientBlocksLoadPromise = fetchClientBlocks();
     }
     return clientBlocksLoadPromise;
+  }
+
+  function getOperationBlockKey(op) {
+    var normalized = String(op || "").trim().toUpperCase();
+    return OP_BLOCK_KEYS[normalized] || "";
+  }
+
+  function resolveRouteBlockContext(route) {
+    if (!route) {
+      return "";
+    }
+
+    if (route.name === "operations") {
+      return "tsd_operations";
+    }
+    if (route.name === "docs" || route.name === "new") {
+      return getOperationBlockKey(route.op) || "tsd_operations";
+    }
+    if (route.name === "stock") {
+      return "tsd_stock";
+    }
+    if (route.name === "items") {
+      return "tsd_catalog";
+    }
+    if (route.name === "orders" || route.name === "order") {
+      return "tsd_orders";
+    }
+    if (route.name === "doc") {
+      return currentClientBlockContext || "";
+    }
+    return "";
+  }
+
+  function setCurrentClientBlockContext(value) {
+    currentClientBlockContext = String(value || "").trim();
+    try {
+      if (currentClientBlockContext) {
+        sessionStorage.setItem(CLIENT_BLOCK_CONTEXT_KEY, currentClientBlockContext);
+      } else {
+        sessionStorage.removeItem(CLIENT_BLOCK_CONTEXT_KEY);
+      }
+    } catch (error) {
+      // ignore storage failures
+    }
+  }
+
+  function createBlockHeaders(source, blockKey) {
+    var headers = new Headers(source || {});
+    var normalized = String(blockKey || "").trim();
+    if (normalized && !headers.has(CLIENT_BLOCK_HEADER)) {
+      headers.set(CLIENT_BLOCK_HEADER, normalized);
+    }
+    return headers;
   }
 
   function normalizeScannerMode(value) {
@@ -895,6 +951,28 @@
     return getEnabledOperations().length > 0;
   }
 
+  function isBlockContextEnabled(blockKey) {
+    var normalized = String(blockKey || "").trim().toLowerCase();
+    if (!normalized) {
+      return true;
+    }
+    if (normalized === "tsd_operations") {
+      return hasOperationsMenu();
+    }
+    if (normalized === "tsd_stock" || normalized === "tsd_catalog" || normalized === "tsd_orders") {
+      return isClientBlockEnabled(normalized);
+    }
+
+    var op = Object.keys(OP_BLOCK_KEYS).find(function (entry) {
+      return OP_BLOCK_KEYS[entry] === normalized;
+    });
+    if (op) {
+      return isOperationEnabled(op);
+    }
+
+    return true;
+  }
+
   function isRouteAllowed(route) {
     if (!route) {
       return true;
@@ -908,6 +986,9 @@
     }
     if (route.name === "docs") {
       return !!route.op && isOperationEnabled(route.op);
+    }
+    if (route.name === "doc") {
+      return isBlockContextEnabled(currentClientBlockContext);
     }
     if (route.name === "stock") {
       return isClientBlockEnabled("tsd_stock");
@@ -1241,6 +1322,7 @@
     }
     var route = getRoute();
     currentRoute = route;
+    setCurrentClientBlockContext(resolveRouteBlockContext(route));
 
     if (!app) {
       return;
@@ -1301,6 +1383,7 @@
         navigate("/home");
         return;
       }
+      setCurrentClientBlockContext(getOperationBlockKey(route.op) || "tsd_operations");
       app.innerHTML = renderLoading();
       Promise.all([
         TsdStorage.apiGetDocs(route.op).catch(function () {
@@ -1370,6 +1453,7 @@
               navigate("/home");
               return;
             }
+            setCurrentClientBlockContext(getOperationBlockKey(doc.op) || currentClientBlockContext);
             return TsdStorage.apiGetDocLines(route.id)
               .then(function (lines) {
                 if (doc.status === "DRAFT" && doc.doc_uid) {
@@ -1401,6 +1485,7 @@
               navigate("/home");
               return;
             }
+            setCurrentClientBlockContext(getOperationBlockKey(doc.op) || currentClientBlockContext);
             app.innerHTML = renderDoc(doc);
             wireDoc(doc);
             applySoftKeyboardSetting(app);
@@ -7444,8 +7529,13 @@
             if (!pcPort) {
               pcPort = "7154";
             }
-            window.location.href =
-              window.location.protocol + "//" + window.location.hostname + ":" + pcPort + "/";
+            var targetUrl = new URL(window.location.href);
+            targetUrl.protocol = "https:";
+            targetUrl.port = pcPort;
+            targetUrl.pathname = "/";
+            targetUrl.search = "";
+            targetUrl.hash = "";
+            window.location.href = targetUrl.toString();
             return null;
           }
           return TsdStorage.setSetting("device_id", deviceId);
@@ -7752,6 +7842,9 @@
       if (!code) {
         return "Ошибка сервера";
       }
+      if (code === "BLOCK_DISABLED") {
+        return "Блок временно отключен оператором.";
+      }
       if (code === "MISSING_PARTNER") {
         return "Укажите контрагента.";
       }
@@ -7786,9 +7879,10 @@
     }
 
     function postJson(url, payload) {
+      var blockKey = getOperationBlockKey(doc.op) || currentClientBlockContext;
       return fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: createBlockHeaders({ "Content-Type": "application/json" }, blockKey),
         body: JSON.stringify(payload),
       })
         .then(function (response) {
@@ -8658,6 +8752,15 @@
           if (canRefreshClientBlocksForCurrentRoute()) {
             renderRoute();
           }
+        });
+        window.addEventListener("flowstock:block-disabled", function () {
+          ensureClientBlocksLoaded(true)
+            .catch(function () {
+              return null;
+            })
+            .finally(function () {
+              renderRoute();
+            });
         });
 
         if (backBtn) {

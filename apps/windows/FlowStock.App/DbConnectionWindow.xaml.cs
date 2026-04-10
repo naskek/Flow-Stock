@@ -138,7 +138,9 @@ public partial class DbConnectionWindow : Window
             UseServerAddDocLine = server.UseServerAddDocLine,
             UseServerUpdateDocLine = server.UseServerUpdateDocLine,
             UseServerDeleteDocLine = server.UseServerDeleteDocLine,
-            BaseUrl = server.BaseUrl ?? WpfCloseDocumentService.DefaultServerBaseUrl,
+            ServerBaseUrl = server.GetServerBaseUrlOrDefault(),
+            PcClientUrl = server.GetPcClientUrlOrDefault(),
+            TsdClientUrl = server.GetTsdClientUrlOrDefault(),
             DeviceId = server.DeviceId ?? WpfCloseDocumentService.BuildDefaultDeviceId(),
             CloseTimeoutSeconds = server.CloseTimeoutSeconds < 1
                 ? WpfCloseDocumentService.DefaultCloseTimeoutSeconds
@@ -161,7 +163,9 @@ public partial class DbConnectionWindow : Window
         UseServerAddLineCheckBox.IsChecked = server.UseServerAddDocLine;
         UseServerUpdateLineCheckBox.IsChecked = server.UseServerUpdateDocLine;
         UseServerDeleteLineCheckBox.IsChecked = server.UseServerDeleteDocLine;
-        ServerBaseUrlBox.Text = server.BaseUrl ?? WpfCloseDocumentService.DefaultServerBaseUrl;
+        ServerBaseUrlBox.Text = server.GetServerBaseUrlOrDefault();
+        PcClientUrlBox.Text = server.GetPcClientUrlOrDefault();
+        TsdClientUrlBox.Text = server.GetTsdClientUrlOrDefault();
         ServerDeviceIdBox.Text = server.DeviceId ?? WpfCloseDocumentService.BuildDefaultDeviceId();
         ServerTimeoutBox.Text = server.CloseTimeoutSeconds.ToString(CultureInfo.InvariantCulture);
         AllowInvalidTlsCheckBox.IsChecked = server.AllowInvalidTls;
@@ -297,7 +301,7 @@ public partial class DbConnectionWindow : Window
         var result = await _closeDocumentApiClient.PingAsync(
             new ServerCloseClientOptions
             {
-                BaseUrl = serverSettings.BaseUrl ?? WpfCloseDocumentService.DefaultServerBaseUrl,
+                BaseUrl = serverSettings.GetServerBaseUrlOrDefault(),
                 AllowInvalidTls = serverSettings.AllowInvalidTls
             },
             serverSettings.CloseTimeoutSeconds);
@@ -331,13 +335,24 @@ public partial class DbConnectionWindow : Window
     {
         serverSettings = new ServerSettings();
 
-        var baseUrl = ServerBaseUrlBox.Text?.Trim() ?? string.Empty;
+        var serverBaseUrlInput = ServerBaseUrlBox.Text?.Trim() ?? string.Empty;
+        var pcClientUrlInput = PcClientUrlBox.Text?.Trim() ?? string.Empty;
+        var tsdClientUrlInput = TsdClientUrlBox.Text?.Trim() ?? string.Empty;
         var deviceId = ServerDeviceIdBox.Text?.Trim();
         var timeoutText = ServerTimeoutBox.Text?.Trim() ?? string.Empty;
 
-        if (string.IsNullOrWhiteSpace(baseUrl))
+        if (!TryNormalizeRootUrl(serverBaseUrlInput, Uri.UriSchemeHttps, "Адрес сервера", out var serverBaseUrl))
         {
-            MessageBox.Show("Base URL is required.", "Server API settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        if (!TryNormalizeRootUrl(pcClientUrlInput, Uri.UriSchemeHttps, "Адрес ПК-интерфейса", out var pcClientUrl))
+        {
+            return false;
+        }
+
+        if (!TryNormalizeRootUrl(tsdClientUrlInput, Uri.UriSchemeHttp, "Адрес ТСД-интерфейса", out var tsdClientUrl))
+        {
             return false;
         }
 
@@ -359,13 +374,25 @@ public partial class DbConnectionWindow : Window
             UseServerAddDocLine = UseServerAddLineCheckBox.IsChecked == true,
             UseServerUpdateDocLine = UseServerUpdateLineCheckBox.IsChecked == true,
             UseServerDeleteDocLine = UseServerDeleteLineCheckBox.IsChecked == true,
-            BaseUrl = NormalizeServerBaseUrl(baseUrl),
+            ServerBaseUrl = serverBaseUrl,
+            PcClientUrl = pcClientUrl,
+            TsdClientUrl = tsdClientUrl,
             DeviceId = string.IsNullOrWhiteSpace(deviceId) ? WpfCloseDocumentService.BuildDefaultDeviceId() : deviceId,
             CloseTimeoutSeconds = timeoutSeconds,
             AllowInvalidTls = AllowInvalidTlsCheckBox.IsChecked == true
         }.Normalize();
 
         return true;
+    }
+
+    private void OpenPcClient_Click(object sender, RoutedEventArgs e)
+    {
+        OpenConfiguredUrl(PcClientUrlBox.Text, Uri.UriSchemeHttps, "PC URL");
+    }
+
+    private void OpenTsdClient_Click(object sender, RoutedEventArgs e)
+    {
+        OpenConfiguredUrl(TsdClientUrlBox.Text, Uri.UriSchemeHttp, "TSD URL");
     }
 
     private void SetServerStatus(string message, System.Windows.Media.Brush brush)
@@ -526,15 +553,29 @@ public partial class DbConnectionWindow : Window
             : host;
     }
 
-    private static string NormalizeServerBaseUrl(string baseUrl)
+    private void OpenConfiguredUrl(string? rawUrl, string defaultScheme, string fieldName)
     {
-        var normalized = baseUrl.Trim();
-        if (!normalized.Contains("://", StringComparison.Ordinal))
+        if (!TryNormalizeRootUrl(rawUrl, defaultScheme, fieldName, out var normalized))
         {
-            normalized = "https://" + normalized;
+            return;
         }
 
-        return normalized.TrimEnd('/');
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = normalized,
+            UseShellExecute = true
+        });
+    }
+
+    private static bool TryNormalizeRootUrl(string? rawUrl, string defaultScheme, string fieldName, out string normalized)
+    {
+        if (FlowStockUrlHelper.TryNormalizeRootUrl(rawUrl, defaultScheme, out normalized, out var error))
+        {
+            return true;
+        }
+
+        MessageBox.Show($"{fieldName}: {error}", "Server API settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return false;
     }
 
     private static string FormatCloseMode(bool useServerCloseDocument)

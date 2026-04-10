@@ -10,6 +10,12 @@
   3. recreate application containers
   4. verify health
 
+## URL Scheme
+- Production keeps web clients on separate root URLs with no `/pc` or `/tsd` prefix.
+- `https://SERVER_IP:7154/` serves the PC web client.
+- `http://SERVER_IP:7153/` serves the TSD web client.
+- `deploy/.env.example` uses `7153` / `7154` as the default external ports for this scheme.
+
 ## Required Files And Directories
 - `deploy/.env`
   - create it from `deploy/.env.example`

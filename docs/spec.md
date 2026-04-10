@@ -18,6 +18,12 @@
   - Request submission is allowed only for active accounts with PC access (`tsd_devices.platform=PC` or `BOTH`).
   - Provides three operator screens on port `7154`: `Остатки`, `Каталог`, and `Заказы`.
 - WPF admin stores global web block switches in PostgreSQL. If a block is disabled, it is hidden for all users of the corresponding web client and direct navigation to it is blocked after page reload.
+- Web clients do not poll block settings continuously. They refresh block configuration on startup and on `focus` / `visibilitychange`; server API requests from a disabled block context are rejected with `403 BLOCK_DISABLED`, after which the client reloads block configuration and rerenders the UI.
+
+## Web URL scheme
+- Production uses separate root URLs without `/pc` or `/tsd` path prefixes.
+- `https://SERVER_IP:7154/` serves the PC web client.
+- `http://SERVER_IP:7153/` serves the TSD web client.
 
 ## Data model (server DB)
 - items(id, name, barcode, gtin, base_uom, default_packaging_id, brand, volume, shelf_life_months, max_qty_per_hu, tara_id, is_marked)

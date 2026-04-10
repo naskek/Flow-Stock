@@ -6,6 +6,8 @@
   var PING_TIMEOUT_MS = 4000;
   var API_TIMEOUT_MS = 10000;
   var BASE_URL_SETTING = "base_url";
+  var CLIENT_BLOCK_CONTEXT_KEY = "flowstock_block_context";
+  var CLIENT_BLOCK_HEADER = "X-FlowStock-Block-Key";
   var baseUrlCache = null;
   var lastPingAt = 0;
   var lastPingOk = false;
@@ -112,16 +114,18 @@
           controller.abort();
         }, timeoutMs || API_TIMEOUT_MS)
       : null;
+    var requestOptions = Object.assign(
+      {
+        cache: "no-store",
+        signal: controller ? controller.signal : undefined,
+      },
+      options || {}
+    );
+    requestOptions.headers = createRequestHeaders(requestOptions.headers, url);
 
     return fetch(
       url,
-      Object.assign(
-        {
-          cache: "no-store",
-          signal: controller ? controller.signal : undefined,
-        },
-        options || {}
-      )
+      requestOptions
     )
       .then(function (response) {
         return response
@@ -132,6 +136,9 @@
           .then(function (payload) {
             if (!response.ok) {
               var message = (payload && payload.error) || "SERVER_ERROR";
+              if (message === "BLOCK_DISABLED") {
+                notifyBlockDisabled(url, payload);
+              }
               throw new Error(message);
             }
             if (!payload && response.status !== 204) {
@@ -145,6 +152,54 @@
           clearTimeout(timer);
         }
       });
+  }
+
+  function getClientBlockContext() {
+    try {
+      var value = sessionStorage.getItem(CLIENT_BLOCK_CONTEXT_KEY);
+      return value ? String(value).trim() : "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function shouldAttachBlockHeader(url) {
+    return (
+      url.indexOf("/api/client-blocks") === -1 &&
+      url.indexOf("/api/tsd/login") === -1 &&
+      url.indexOf("/api/ping") === -1
+    );
+  }
+
+  function createRequestHeaders(source, url) {
+    var headers = new Headers(source || {});
+    var blockKey = shouldAttachBlockHeader(url) ? getClientBlockContext() : "";
+    if (blockKey && !headers.has(CLIENT_BLOCK_HEADER)) {
+      headers.set(CLIENT_BLOCK_HEADER, blockKey);
+    }
+    return headers;
+  }
+
+  function notifyBlockDisabled(url, payload) {
+    if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
+      return;
+    }
+
+    var detail = {
+      url: url,
+      error: payload && payload.error ? payload.error : "BLOCK_DISABLED",
+      blockKey: payload && payload.block_key ? String(payload.block_key) : "",
+      requestedBlockKey: payload && payload.requested_block_key ? String(payload.requested_block_key) : "",
+    };
+
+    if (typeof window.CustomEvent === "function") {
+      window.dispatchEvent(new CustomEvent("flowstock:block-disabled", { detail: detail }));
+      return;
+    }
+
+    var event = document.createEvent("CustomEvent");
+    event.initCustomEvent("flowstock:block-disabled", false, false, detail);
+    window.dispatchEvent(event);
   }
 
   function normalizeApiItem(item) {
