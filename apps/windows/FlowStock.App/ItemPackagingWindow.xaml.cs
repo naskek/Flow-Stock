@@ -26,7 +26,8 @@ public partial class ItemPackagingWindow : Window
 
     private void LoadItem()
     {
-        _item = _services.DataStore.FindItemById(_itemId);
+        _item = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : _services.Catalog.GetItems(null))
+            .FirstOrDefault(item => item.Id == _itemId);
         var title = _item == null ? "Товар не найден" : $"Товар: {_item.Name} (база: {_item.BaseUom})";
         ItemTitleText.Text = title;
         PackagingFactorLabel.Text = _item == null
@@ -37,7 +38,10 @@ public partial class ItemPackagingWindow : Window
     private void LoadPackagings()
     {
         _packagings.Clear();
-        foreach (var packaging in _services.Packagings.GetPackagings(_itemId, includeInactive: true))
+        var packagings = _services.WpfPackagingApi.TryGetPackagings(_itemId, includeInactive: true, out var apiPackagings)
+            ? apiPackagings
+            : _services.Packagings.GetPackagings(_itemId, includeInactive: true);
+        foreach (var packaging in packagings)
         {
             _packagings.Add(packaging);
         }
@@ -65,7 +69,7 @@ public partial class ItemPackagingWindow : Window
         UpdateButtons();
     }
 
-    private void AddPackaging_Click(object sender, RoutedEventArgs e)
+    private async void AddPackaging_Click(object sender, RoutedEventArgs e)
     {
         if (!TryReadForm(out var code, out var name, out var factor, out var sortOrder))
         {
@@ -74,7 +78,18 @@ public partial class ItemPackagingWindow : Window
 
         try
         {
-            _services.Packagings.CreatePackaging(_itemId, code, name, factor, sortOrder);
+            var result = await _services.WpfPackagingApi
+                .TryCreatePackagingAsync(_itemId, code, name, factor, sortOrder)
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                if (!string.IsNullOrWhiteSpace(result.Error))
+                {
+                    throw new InvalidOperationException(result.Error);
+                }
+
+                _services.Packagings.CreatePackaging(_itemId, code, name, factor, sortOrder);
+            }
             LoadPackagings();
         }
         catch (Exception ex)
@@ -83,7 +98,7 @@ public partial class ItemPackagingWindow : Window
         }
     }
 
-    private void SavePackaging_Click(object sender, RoutedEventArgs e)
+    private async void SavePackaging_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedPackaging == null)
         {
@@ -99,7 +114,18 @@ public partial class ItemPackagingWindow : Window
         try
         {
             var isActive = PackagingActiveCheck.IsChecked == true;
-            _services.Packagings.UpdatePackaging(_selectedPackaging.Id, _itemId, code, name, factor, sortOrder, isActive);
+            var result = await _services.WpfPackagingApi
+                .TryUpdatePackagingAsync(_selectedPackaging.Id, _itemId, code, name, factor, sortOrder, isActive)
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                if (!string.IsNullOrWhiteSpace(result.Error))
+                {
+                    throw new InvalidOperationException(result.Error);
+                }
+
+                _services.Packagings.UpdatePackaging(_selectedPackaging.Id, _itemId, code, name, factor, sortOrder, isActive);
+            }
             LoadPackagings();
         }
         catch (Exception ex)
@@ -108,7 +134,7 @@ public partial class ItemPackagingWindow : Window
         }
     }
 
-    private void DeletePackaging_Click(object sender, RoutedEventArgs e)
+    private async void DeletePackaging_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedPackaging == null)
         {
@@ -124,7 +150,18 @@ public partial class ItemPackagingWindow : Window
 
         try
         {
-            _services.Packagings.DeactivatePackaging(_selectedPackaging.Id);
+            var result = await _services.WpfPackagingApi
+                .TryDeletePackagingAsync(_selectedPackaging.Id)
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                if (!string.IsNullOrWhiteSpace(result.Error))
+                {
+                    throw new InvalidOperationException(result.Error);
+                }
+
+                _services.Packagings.DeactivatePackaging(_selectedPackaging.Id);
+            }
             LoadPackagings();
         }
         catch (Exception ex)
@@ -133,7 +170,7 @@ public partial class ItemPackagingWindow : Window
         }
     }
 
-    private void SetDefault_Click(object sender, RoutedEventArgs e)
+    private async void SetDefault_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedPackaging == null)
         {
@@ -143,7 +180,18 @@ public partial class ItemPackagingWindow : Window
 
         try
         {
-            _services.Packagings.SetDefaultPackaging(_itemId, _selectedPackaging.Id);
+            var result = await _services.WpfPackagingApi
+                .TrySetDefaultPackagingAsync(_itemId, _selectedPackaging.Id)
+                .ConfigureAwait(true);
+            if (!result.IsSuccess)
+            {
+                if (!string.IsNullOrWhiteSpace(result.Error))
+                {
+                    throw new InvalidOperationException(result.Error);
+                }
+
+                _services.Packagings.SetDefaultPackaging(_itemId, _selectedPackaging.Id);
+            }
             MessageBox.Show("Упаковка по умолчанию установлена.", "Упаковки", MessageBoxButton.OK, MessageBoxImage.Information);
             LoadItem();
         }

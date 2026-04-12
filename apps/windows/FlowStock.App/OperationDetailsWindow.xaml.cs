@@ -600,7 +600,9 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var packagings = _services.Packagings.GetPackagings(item.Id);
+        var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
+            ? apiPackagings
+            : _services.Packagings.GetPackagings(item.Id);
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
         var (availableQty, showAvailableLabel) = GetAvailableQtyForDialog(item.Id);
         var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode, availableQty, showAvailableLabel)
@@ -924,7 +926,9 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var packagings = _services.Packagings.GetPackagings(item.Id);
+        var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
+            ? apiPackagings
+            : _services.Packagings.GetPackagings(item.Id);
         var defaultQty = _selectedDocLine.QtyInput ?? _selectedDocLine.QtyBase;
         var defaultUom = string.IsNullOrWhiteSpace(_selectedDocLine.UomCode) ? "BASE" : _selectedDocLine.UomCode;
         var (availableQty, showAvailableLabel) = GetAvailableQtyForDialog(item.Id);
@@ -3003,7 +3007,9 @@ public partial class OperationDetailsWindow : Window
             return cached;
         }
 
-        var packagings = _services.Packagings.GetPackagings(itemId, includeInactive: true);
+        var packagings = _services.WpfPackagingApi.TryGetPackagings(itemId, includeInactive: true, out var apiPackagings)
+            ? apiPackagings
+            : _services.Packagings.GetPackagings(itemId, includeInactive: true);
         lookup[itemId] = packagings;
         return packagings;
     }

@@ -70,6 +70,7 @@
 - Status: stock list + search.
 - Documents: list + details + close action.
 - Items: list with ID + modal create/edit (name, barcode/SKU, gtin, brand, volume, shelf life months, max qty per HU, tara, uom, is_marked) + Excel import with preview and column mapping.
+- Item packagings: item card packaging editor and shared packaging manager should use server API first for list/create/update/deactivate/set-default; direct DB access is kept only as compatibility fallback.
 - Tara: dictionary editor in “Справочники”.
 - Locations: list with ID + modal create/edit (code, name).
 - When FlowStock Server is configured, simple dictionary CRUD for `items`, `locations`, `uoms`, and `taras` should use server API first; direct DB access is kept only as compatibility fallback.
@@ -79,6 +80,7 @@
 - Incoming requests: single WPF inbox window (from bell/menu) for item requests and order web requests, with processing actions in one place.
   - When FlowStock Server is configured, the inbox list, pending badge, and request resolve/reject actions should go through server API first; direct DB access is kept only as compatibility fallback.
   - For order requests, WPF provides a details modal with full order payload before approval.
+- Import error handling in WPF should use server API first for reading and reapplying `import_errors`; item lookup/creation during import cleanup should use the same server-first catalog/read paths as the rest of WPF, with direct DB access kept only as compatibility fallback.
 - WPF data grids use shared adaptive sizing rules: short columns fit header/content, long text columns are capped and trimmed, and visible columns redistribute width when the window is resized.
 - WPF dialog windows auto-grow to content within screen bounds; if the content still does not fit, the dialog becomes scrollable so footer actions remain reachable.
 - Admin: no direct table reset/edit from WPF; admin window exposes DB connection setup, web login account management, global web block access, and a test cleanup action.

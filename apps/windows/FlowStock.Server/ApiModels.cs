@@ -524,6 +524,33 @@ public sealed class CreateNamedEntityRequest
     public string? Name { get; set; }
 }
 
+public sealed class UpsertPackagingRequest
+{
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
+
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("factor_to_base")]
+    public double FactorToBase { get; set; }
+
+    [JsonPropertyName("sort_order")]
+    public int SortOrder { get; set; }
+
+    [JsonPropertyName("is_active")]
+    public bool? IsActive { get; set; }
+}
+
+public sealed class SetDefaultPackagingRequest
+{
+    [JsonPropertyName("packaging_id")]
+    public long? PackagingId { get; set; }
+}
+
 public sealed class UpsertPartnerRequest
 {
     [JsonPropertyName("name")]

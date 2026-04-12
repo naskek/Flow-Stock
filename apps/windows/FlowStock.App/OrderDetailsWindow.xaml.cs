@@ -365,7 +365,9 @@ public partial class OrderDetailsWindow : Window
 
     private void AddOrderLine(Item item, Window owner)
     {
-        var packagings = _services.Packagings.GetPackagings(item.Id);
+        var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
+            ? apiPackagings
+            : _services.Packagings.GetPackagings(item.Id);
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
         var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode)
         {
@@ -409,14 +411,17 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var item = _services.DataStore.FindItemById(_selectedLine.ItemId);
+        var item = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : _services.Catalog.GetItems(null))
+            .FirstOrDefault(candidate => candidate.Id == _selectedLine.ItemId);
         if (item == null)
         {
             MessageBox.Show("Товар не найден.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
-        var packagings = _services.Packagings.GetPackagings(item.Id);
+        var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
+            ? apiPackagings
+            : _services.Packagings.GetPackagings(item.Id);
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
         var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, _selectedLine.QtyOrdered, defaultUomCode)
         {

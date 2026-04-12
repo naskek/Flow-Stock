@@ -28,6 +28,8 @@ builder.Services.AddSingleton<FlowStock.Core.Abstractions.IDataStore>(sp => sp.G
 builder.Services.AddSingleton<IApiDocStore>(new PostgresApiDocStore(postgresConnectionString));
 builder.Services.AddSingleton<DocumentService>();
 builder.Services.AddSingleton<CatalogService>();
+builder.Services.AddSingleton<ImportService>();
+builder.Services.AddSingleton<ItemPackagingService>();
 
 var app = builder.Build();
 
@@ -218,6 +220,29 @@ app.MapPost("/api/client-blocks", async (HttpRequest request, IDataStore store) 
 
     store.SaveClientBlockSettings(normalized);
     return Results.Ok(new ApiResult(true));
+});
+
+app.MapGet("/api/import-errors", (HttpRequest request, ImportService importService) =>
+{
+    var reason = request.Query["reason"].ToString();
+    var normalized = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+    var errors = importService.GetImportErrors(normalized)
+        .Select(MapImportErrorView)
+        .ToList();
+    return Results.Ok(errors);
+});
+
+app.MapPost("/api/import-errors/{errorId:long}/reapply", (long errorId, ImportService importService) =>
+{
+    if (errorId <= 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_IMPORT_ERROR_ID"));
+    }
+
+    var applied = importService.ReapplyError(errorId);
+    return applied
+        ? Results.Ok(new ApiResult(true))
+        : Results.Ok(new ApiResult(false, "REAPPLY_FAILED"));
 });
 
 app.MapGet("/api/admin/tsd-devices", () =>
@@ -766,6 +791,120 @@ app.MapDelete("/api/items/{itemId:long}", (long itemId, CatalogService catalog) 
     try
     {
         catalog.DeleteItem(itemId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapGet("/api/packagings", (HttpRequest request, IDataStore store) =>
+{
+    var includeInactive = ParseIncludeInactive(request.Query["include_inactive"].ToString());
+    var itemIdText = request.Query["item_id"].ToString();
+    var itemIdFilter = long.TryParse(itemIdText, out var parsedItemId) && parsedItemId > 0
+        ? parsedItemId
+        : (long?)null;
+
+    var items = itemIdFilter.HasValue
+        ? new[] { itemIdFilter.Value }
+        : store.GetItems(null).Select(item => item.Id).ToArray();
+
+    var list = new List<object>();
+    foreach (var itemId in items)
+    {
+        foreach (var packaging in store.GetItemPackagings(itemId, includeInactive))
+        {
+            list.Add(MapItemPackaging(packaging));
+        }
+    }
+
+    return Results.Ok(list);
+});
+
+app.MapPost("/api/packagings", async (HttpRequest request, ItemPackagingService packagings) =>
+{
+    var parsed = await ParseJsonBody<UpsertPackagingRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        var packagingId = packagings.CreatePackaging(
+            parsed.Value!.ItemId,
+            parsed.Value.Code ?? string.Empty,
+            parsed.Value.Name ?? string.Empty,
+            parsed.Value.FactorToBase,
+            parsed.Value.SortOrder);
+        return Results.Ok(new { ok = true, packaging_id = packagingId });
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapPost("/api/packagings/{packagingId:long}", async (long packagingId, HttpRequest request, ItemPackagingService packagings) =>
+{
+    var parsed = await ParseJsonBody<UpsertPackagingRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        packagings.UpdatePackaging(
+            packagingId,
+            parsed.Value!.ItemId,
+            parsed.Value.Code ?? string.Empty,
+            parsed.Value.Name ?? string.Empty,
+            parsed.Value.FactorToBase,
+            parsed.Value.SortOrder,
+            parsed.Value.IsActive ?? true);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapDelete("/api/packagings/{packagingId:long}", (long packagingId, ItemPackagingService packagings) =>
+{
+    try
+    {
+        packagings.DeactivatePackaging(packagingId);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapPost("/api/items/{itemId:long}/default-packaging", async (long itemId, HttpRequest request, ItemPackagingService packagings) =>
+{
+    var parsed = await ParseJsonBody<SetDefaultPackagingRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    try
+    {
+        packagings.SetDefaultPackaging(itemId, parsed.Value!.PackagingId);
         return Results.Ok(new ApiResult(true));
     }
     catch (InvalidOperationException ex)
@@ -2486,6 +2625,33 @@ static object MapHuLedgerRow(HuLedgerRow row)
     };
 }
 
+static object MapImportErrorView(ImportErrorView error)
+{
+    return new
+    {
+        id = error.Id,
+        event_id = error.EventId,
+        reason = error.Reason,
+        raw_json = error.RawJson,
+        created_at = error.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+        barcode = error.Barcode
+    };
+}
+
+static object MapItemPackaging(ItemPackaging packaging)
+{
+    return new
+    {
+        id = packaging.Id,
+        item_id = packaging.ItemId,
+        code = packaging.Code,
+        name = packaging.Name,
+        factor_to_base = packaging.FactorToBase,
+        is_active = packaging.IsActive,
+        sort_order = packaging.SortOrder
+    };
+}
+
 static async Task<string> ReadBody(HttpRequest request)
 {
     using var reader = new StreamReader(request.Body);
@@ -2519,6 +2685,23 @@ static async Task<(bool IsSuccess, T? Value, IResult? Error)> ParseJsonBody<T>(H
 }
 
 static bool ParseIncludeResolved(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return false;
+    }
+
+    return value.Trim().ToLowerInvariant() switch
+    {
+        "1" => true,
+        "true" => true,
+        "yes" => true,
+        "on" => true,
+        _ => false
+    };
+}
+
+static bool ParseIncludeInactive(string? value)
 {
     if (string.IsNullOrWhiteSpace(value))
     {

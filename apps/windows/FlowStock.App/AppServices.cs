@@ -26,6 +26,8 @@ public sealed class AppServices
     public WpfCatalogApiService WpfCatalogApi { get; }
     public WpfPartnerApiService WpfPartnerApi { get; }
     public WpfHuApiService WpfHuApi { get; }
+    public WpfImportApiService WpfImportApi { get; }
+    public WpfPackagingApiService WpfPackagingApi { get; }
     public WpfReadApiService WpfReadApi { get; }
     public WpfIncomingRequestsApiService WpfIncomingRequestsApi { get; }
     public WpfCreateOrderService WpfCreateOrders { get; }
@@ -87,6 +89,8 @@ public sealed class AppServices
         WpfCatalogApi = new WpfCatalogApiService(Settings, appLogger);
         WpfPartnerApi = new WpfPartnerApiService(Settings, appLogger);
         WpfHuApi = new WpfHuApiService(Settings, appLogger);
+        WpfImportApi = new WpfImportApiService(Settings, appLogger);
+        WpfPackagingApi = new WpfPackagingApiService(Settings, appLogger);
         WpfReadApi = new WpfReadApiService(Settings, appLogger);
         WpfIncomingRequestsApi = new WpfIncomingRequestsApiService(Settings, appLogger);
         WpfCreateOrders = new WpfCreateOrderService(Settings, appLogger);
