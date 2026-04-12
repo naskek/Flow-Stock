@@ -75,6 +75,7 @@
 - Partners: list with ID + modal create/edit.
 - Orders: list + details (see spec_orders.md).
 - Incoming requests: single WPF inbox window (from bell/menu) for item requests and order web requests, with processing actions in one place.
+  - When FlowStock Server is configured, the inbox list, pending badge, and request resolve/reject actions should go through server API first; direct DB access is kept only as compatibility fallback.
   - For order requests, WPF provides a details modal with full order payload before approval.
 - WPF data grids use shared adaptive sizing rules: short columns fit header/content, long text columns are capped and trimmed, and visible columns redistribute width when the window is resized.
 - WPF dialog windows auto-grow to content within screen bounds; if the content still does not fit, the dialog becomes scrollable so footer actions remain reachable.

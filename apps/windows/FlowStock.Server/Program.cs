@@ -428,6 +428,32 @@ app.MapPost("/api/item-requests", async (HttpRequest request, IDataStore store) 
     return Results.Ok(new ApiResult(true));
 });
 
+app.MapGet("/api/item-requests", (HttpRequest request, IDataStore store) =>
+{
+    var includeResolved = ParseIncludeResolved(request.Query["include_resolved"]);
+    var list = store.GetItemRequests(includeResolved)
+        .Select(MapItemRequest)
+        .ToList();
+    return Results.Ok(list);
+});
+
+app.MapPost("/api/item-requests/{requestId:long}/resolve", (long requestId, IDataStore store) =>
+{
+    var existing = store.GetItemRequests(true)
+        .FirstOrDefault(itemRequest => itemRequest.Id == requestId);
+    if (existing == null)
+    {
+        return Results.NotFound(new ApiResult(false, "ITEM_REQUEST_NOT_FOUND"));
+    }
+
+    if (!string.Equals(existing.Status, "RESOLVED", StringComparison.OrdinalIgnoreCase))
+    {
+        store.MarkItemRequestResolved(requestId);
+    }
+
+    return Results.Ok(new ApiResult(true));
+});
+
 app.MapGet("/api/partners", (HttpRequest request, IDataStore store) =>
 {
     var role = request.Query["role"].ToString();
@@ -842,6 +868,82 @@ app.MapPost("/api/orders/requests/status", async (HttpRequest request, IDataStor
         request_id = requestId,
         status = OrderRequestStatus.Pending
     });
+});
+
+app.MapGet("/api/orders/requests", (HttpRequest request, IDataStore store) =>
+{
+    var includeResolved = ParseIncludeResolved(request.Query["include_resolved"]);
+    var list = store.GetOrderRequests(includeResolved)
+        .Select(MapOrderRequest)
+        .ToList();
+    return Results.Ok(list);
+});
+
+app.MapGet("/api/requests/summary", (IDataStore store) =>
+{
+    var itemCount = store.GetItemRequests(false).Count;
+    var orderCount = store.GetOrderRequests(false).Count;
+    return Results.Ok(new
+    {
+        item_requests_pending = itemCount,
+        order_requests_pending = orderCount,
+        total_pending = itemCount + orderCount
+    });
+});
+
+app.MapPost("/api/orders/requests/{requestId:long}/resolve", async (long requestId, HttpRequest request, IDataStore store) =>
+{
+    var rawJson = await ReadBody(request);
+    if (string.IsNullOrWhiteSpace(rawJson))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_BODY"));
+    }
+
+    ResolveOrderRequestRequest? resolveRequest;
+    try
+    {
+        resolveRequest = JsonSerializer.Deserialize<ResolveOrderRequestRequest>(
+            rawJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    if (resolveRequest == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_JSON"));
+    }
+
+    var existing = store.GetOrderRequests(true)
+        .FirstOrDefault(orderRequest => orderRequest.Id == requestId);
+    if (existing == null)
+    {
+        return Results.NotFound(new ApiResult(false, "ORDER_REQUEST_NOT_FOUND"));
+    }
+
+    var status = NormalizeOrderRequestResolutionStatus(resolveRequest.Status);
+    if (status == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_STATUS"));
+    }
+
+    var resolvedBy = string.IsNullOrWhiteSpace(resolveRequest.ResolvedBy)
+        ? "WPF"
+        : resolveRequest.ResolvedBy.Trim();
+    var note = string.IsNullOrWhiteSpace(resolveRequest.Note)
+        ? null
+        : resolveRequest.Note.Trim();
+
+    store.ResolveOrderRequest(
+        requestId,
+        status,
+        resolvedBy,
+        note,
+        resolveRequest.AppliedOrderId);
+
+    return Results.Ok(new ApiResult(true));
 });
 
 app.MapGet("/api/stock", () =>
@@ -1529,6 +1631,39 @@ static object MapItem(Item item)
     };
 }
 
+static object MapItemRequest(ItemRequest request)
+{
+    return new
+    {
+        id = request.Id,
+        barcode = request.Barcode,
+        comment = request.Comment,
+        device_id = request.DeviceId,
+        login = request.Login,
+        created_at = request.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+        status = request.Status,
+        resolved_at = request.ResolvedAt?.ToString("O", CultureInfo.InvariantCulture)
+    };
+}
+
+static object MapOrderRequest(OrderRequest request)
+{
+    return new
+    {
+        id = request.Id,
+        request_type = request.RequestType,
+        payload_json = request.PayloadJson,
+        status = request.Status,
+        created_at = request.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
+        created_by_login = request.CreatedByLogin,
+        created_by_device_id = request.CreatedByDeviceId,
+        resolved_at = request.ResolvedAt?.ToString("O", CultureInfo.InvariantCulture),
+        resolved_by = request.ResolvedBy,
+        resolution_note = request.ResolutionNote,
+        applied_order_id = request.AppliedOrderId
+    };
+}
+
 static string GenerateNextOrderRef(IDataStore store)
 {
     long max = 0;
@@ -1660,6 +1795,38 @@ static async Task<string> ReadBody(HttpRequest request)
 {
     using var reader = new StreamReader(request.Body);
     return await reader.ReadToEndAsync();
+}
+
+static bool ParseIncludeResolved(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return false;
+    }
+
+    return value.Trim().ToLowerInvariant() switch
+    {
+        "1" => true,
+        "true" => true,
+        "yes" => true,
+        "on" => true,
+        _ => false
+    };
+}
+
+static string? NormalizeOrderRequestResolutionStatus(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return null;
+    }
+
+    return value.Trim().ToUpperInvariant() switch
+    {
+        OrderRequestStatus.Approved => OrderRequestStatus.Approved,
+        OrderRequestStatus.Rejected => OrderRequestStatus.Rejected,
+        _ => null
+    };
 }
 
 static bool TryParseManualOrderStatus(string? value, out OrderStatus status)

@@ -30,7 +30,10 @@ public partial class IncomingRequestsWindow : Window
         var includeResolved = ShowResolvedCheck?.IsChecked == true;
 
         var merged = new List<IncomingRequestRow>();
-        foreach (var itemRequest in _services.DataStore.GetItemRequests(includeResolved))
+        var itemRequests = _services.WpfIncomingRequestsApi.TryGetItemRequests(includeResolved, out var apiItemRequests)
+            ? apiItemRequests
+            : _services.DataStore.GetItemRequests(includeResolved);
+        foreach (var itemRequest in itemRequests)
         {
             merged.Add(new IncomingRequestRow
             {
@@ -50,7 +53,10 @@ public partial class IncomingRequestsWindow : Window
             });
         }
 
-        foreach (var orderRequest in _services.DataStore.GetOrderRequests(includeResolved))
+        var orderRequests = _services.WpfIncomingRequestsApi.TryGetOrderRequests(includeResolved, out var apiOrderRequests)
+            ? apiOrderRequests
+            : _services.DataStore.GetOrderRequests(includeResolved);
+        foreach (var orderRequest in orderRequests)
         {
             var isPending = string.Equals(orderRequest.Status, OrderRequestStatus.Pending, StringComparison.OrdinalIgnoreCase);
             merged.Add(new IncomingRequestRow
@@ -137,7 +143,13 @@ public partial class IncomingRequestsWindow : Window
             {
                 if (row.ItemRequest != null)
                 {
-                    _services.DataStore.MarkItemRequestResolved(row.ItemRequest.Id);
+                    if (!await _services.WpfIncomingRequestsApi
+                            .TryResolveItemRequestAsync(row.ItemRequest.Id)
+                            .ConfigureAwait(true))
+                    {
+                        _services.DataStore.MarkItemRequestResolved(row.ItemRequest.Id);
+                    }
+
                     processedItems++;
                     continue;
                 }
@@ -188,7 +200,7 @@ public partial class IncomingRequestsWindow : Window
             MessageBoxImage.Information);
     }
 
-    private void Reject_Click(object sender, RoutedEventArgs e)
+    private async void Reject_Click(object sender, RoutedEventArgs e)
     {
         var selected = GetSelectedForReject();
         if (selected.Count == 0)
@@ -211,12 +223,25 @@ public partial class IncomingRequestsWindow : Window
         var resolvedBy = Environment.UserName;
         foreach (var row in selected)
         {
-            _services.DataStore.ResolveOrderRequest(
-                row.OrderRequest!.Id,
-                OrderRequestStatus.Rejected,
-                resolvedBy,
-                "Отклонено оператором WPF.",
-                null);
+            var orderRequest = row.OrderRequest!;
+            var resolved = await _services.WpfIncomingRequestsApi
+                .TryResolveOrderRequestAsync(
+                    orderRequest.Id,
+                    OrderRequestStatus.Rejected,
+                    resolvedBy,
+                    "Отклонено оператором WPF.",
+                    null)
+                .ConfigureAwait(true);
+
+            if (!resolved)
+            {
+                _services.DataStore.ResolveOrderRequest(
+                    orderRequest.Id,
+                    OrderRequestStatus.Rejected,
+                    resolvedBy,
+                    "Отклонено оператором WPF.",
+                    null);
+            }
         }
 
         LoadRequests();

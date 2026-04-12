@@ -413,6 +413,21 @@ public sealed class OrderStatusChangeRequestCreateRequest
     public string? Login { get; set; }
 }
 
+public sealed class ResolveOrderRequestRequest
+{
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    [JsonPropertyName("resolved_by")]
+    public string? ResolvedBy { get; set; }
+
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+
+    [JsonPropertyName("applied_order_id")]
+    public long? AppliedOrderId { get; set; }
+}
+
 public sealed class ApiResult
 {
     public ApiResult(bool ok, string? error = null)

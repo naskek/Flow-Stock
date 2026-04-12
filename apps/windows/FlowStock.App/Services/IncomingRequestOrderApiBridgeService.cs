@@ -12,14 +12,20 @@ public sealed class IncomingRequestOrderApiBridgeService
     private readonly SettingsService _settings;
     private readonly FileLogger _logger;
     private readonly IDataStore _dataStore;
+    private readonly WpfIncomingRequestsApiService _incomingRequestsApi;
     private readonly CreateOrderApiClient _createOrderApiClient = new();
     private readonly SetOrderStatusApiClient _setOrderStatusApiClient = new();
 
-    public IncomingRequestOrderApiBridgeService(SettingsService settings, FileLogger logger, IDataStore dataStore)
+    public IncomingRequestOrderApiBridgeService(
+        SettingsService settings,
+        FileLogger logger,
+        IDataStore dataStore,
+        WpfIncomingRequestsApiService incomingRequestsApi)
     {
         _settings = settings;
         _logger = logger;
         _dataStore = dataStore;
+        _incomingRequestsApi = incomingRequestsApi;
     }
 
     public IncomingRequestOrderApiBridgeConfiguration GetEffectiveConfiguration()
@@ -162,12 +168,8 @@ public sealed class IncomingRequestOrderApiBridgeService
         }
 
         var note = $"Создан заказ ID={apiCall.Response.OrderId}.";
-        _dataStore.ResolveOrderRequest(
-            request.Id,
-            OrderRequestStatus.Approved,
-            resolvedBy,
-            note,
-            apiCall.Response.OrderId);
+        await MarkRequestApprovedAsync(request.Id, resolvedBy, note, apiCall.Response.OrderId, cancellationToken)
+            .ConfigureAwait(false);
 
         return IncomingRequestOrderApprovalResult.Success(apiCall.Response.OrderId, note);
     }
@@ -269,14 +271,38 @@ public sealed class IncomingRequestOrderApiBridgeService
             ? OrderStatusMapper.StatusToDisplayName(parsed)
             : apiCall.Response.Status;
         var note = $"Статус изменен на \"{displayStatus}\".";
+        await MarkRequestApprovedAsync(request.Id, resolvedBy, note, payload.OrderId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return IncomingRequestOrderApprovalResult.Success(payload.OrderId, note);
+    }
+
+    private async Task MarkRequestApprovedAsync(
+        long requestId,
+        string resolvedBy,
+        string note,
+        long appliedOrderId,
+        CancellationToken cancellationToken)
+    {
+        if (await _incomingRequestsApi
+                .TryResolveOrderRequestAsync(
+                    requestId,
+                    OrderRequestStatus.Approved,
+                    resolvedBy,
+                    note,
+                    appliedOrderId,
+                    cancellationToken)
+                .ConfigureAwait(false))
+        {
+            return;
+        }
+
         _dataStore.ResolveOrderRequest(
-            request.Id,
+            requestId,
             OrderRequestStatus.Approved,
             resolvedBy,
             note,
-            payload.OrderId);
-
-        return IncomingRequestOrderApprovalResult.Success(payload.OrderId, note);
+            appliedOrderId);
     }
 
     private static IncomingRequestOrderApprovalResult MapCreateHttpError(CreateOrderApiCallResult apiCall)

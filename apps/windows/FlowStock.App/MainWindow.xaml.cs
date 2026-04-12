@@ -1852,8 +1852,14 @@ public partial class MainWindow : Window
 
         try
         {
-            var itemCount = _services.DataStore.GetItemRequests(false).Count;
-            var orderCount = _services.DataStore.GetOrderRequests(false).Count;
+            var summary = _services.WpfIncomingRequestsApi.TryGetSummary(out var apiSummary)
+                ? apiSummary
+                : new IncomingRequestsSummary(
+                    _services.DataStore.GetItemRequests(false).Count,
+                    _services.DataStore.GetOrderRequests(false).Count);
+
+            var itemCount = summary.ItemRequestsPending;
+            var orderCount = summary.OrderRequestsPending;
             var count = itemCount + orderCount;
             ItemRequestsCountText.Text = count.ToString();
             ItemRequestsBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;

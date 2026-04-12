@@ -23,6 +23,7 @@ public sealed class AppServices
     public AdminService Admin { get; }
     public PartnerStatusService PartnerStatuses { get; }
     public WpfReadApiService WpfReadApi { get; }
+    public WpfIncomingRequestsApiService WpfIncomingRequestsApi { get; }
     public WpfCreateOrderService WpfCreateOrders { get; }
     public WpfUpdateOrderService WpfUpdateOrders { get; }
     public WpfDeleteOrderService WpfDeleteOrders { get; }
@@ -79,11 +80,12 @@ public sealed class AppServices
         Admin = new AdminService(connectionString, dataStore, Backups, adminLogger);
         PartnerStatuses = new PartnerStatusService(partnerStatusPath);
         WpfReadApi = new WpfReadApiService(Settings, appLogger);
+        WpfIncomingRequestsApi = new WpfIncomingRequestsApiService(Settings, appLogger);
         WpfCreateOrders = new WpfCreateOrderService(Settings, appLogger);
         WpfUpdateOrders = new WpfUpdateOrderService(Settings, appLogger);
         WpfDeleteOrders = new WpfDeleteOrderService(Settings, appLogger);
         WpfSetOrderStatuses = new WpfSetOrderStatusService(Settings, appLogger);
-        IncomingRequestOrderApprovals = new IncomingRequestOrderApiBridgeService(Settings, appLogger, dataStore);
+        IncomingRequestOrderApprovals = new IncomingRequestOrderApiBridgeService(Settings, appLogger, dataStore, WpfIncomingRequestsApi);
         WpfCreateDocDrafts = new WpfCreateDocDraftService(Settings, appLogger);
         WpfCloseDocuments = new WpfCloseDocumentService(connectionString, Settings, appLogger);
         WpfAddDocLines = new WpfAddDocLineService(connectionString, Settings, appLogger);
