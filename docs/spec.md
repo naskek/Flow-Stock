@@ -15,7 +15,7 @@
   - If PostgreSQL is not configured or unavailable at app startup, WPF opens the DB connection window first and does not open the main operator UI until the connection is configured successfully.
   - DB connection setup defaults to local/LAN autodiscovery of PostgreSQL host:port candidates; manual host/port input remains available as a fallback.
   - In DB connection settings, the FlowStock Server section configures API endpoints and diagnostics only. For migrated WPF write-paths (orders, incoming web approvals, document draft/create-close, document line add/update/delete), legacy per-operation toggles are removed and the server path is always used.
-  - WPF read-path migration is incremental: main list loads for items/docs/orders/stock/locations/partners and document ref generation may read through FlowStock.Server when it is configured and reachable; otherwise WPF temporarily falls back to direct PostgreSQL reads.
+  - WPF read-path migration is incremental: main list loads for items/docs/orders/stock/locations/partners, order/doc detail loads, order/doc line loads, order remaining snapshots, and document/order ref generation may read through FlowStock.Server when it is configured and reachable; otherwise WPF temporarily falls back to direct PostgreSQL reads.
 - TSD PWA: online data capture via API (no direct DB access).
 - PC web client: stock is read-only; order create/status changes are submitted as requests and applied only after WPF confirmation.
   - Request submission is allowed only for active accounts with PC access (`tsd_devices.platform=PC` or `BOTH`).

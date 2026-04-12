@@ -159,7 +159,9 @@ public partial class OperationDetailsWindow : Window
 
     private void LoadDoc()
     {
-        _doc = _services.Documents.GetDoc(_docId);
+        _doc = _services.WpfReadApi.TryGetDoc(_docId, out var apiDoc)
+            ? apiDoc
+            : _services.Documents.GetDoc(_docId);
         if (_doc == null)
         {
             MessageBox.Show("Операция не найдена.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -179,10 +181,14 @@ public partial class OperationDetailsWindow : Window
             .GroupBy(location => location.Code)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         var packagingLookup = new Dictionary<long, IReadOnlyList<ItemPackaging>>();
-        var itemsById = _services.Catalog.GetItems(null)
+        var itemsById = (_services.WpfReadApi.TryGetItems(null, out var apiItems)
+                ? apiItems
+                : _services.Catalog.GetItems(null))
             .ToDictionary(item => item.Id, item => item);
 
-        var lines = _services.Documents.GetDocLines(_docId);
+        var lines = _services.WpfReadApi.TryGetDocLines(_docId, out var apiLines)
+            ? apiLines
+            : _services.Documents.GetDocLines(_docId);
         var isOutbound = _doc?.Type == DocType.Outbound;
         var isInventory = _doc?.Type == DocType.Inventory;
         var isProductionReceipt = _doc?.Type == DocType.ProductionReceipt;
@@ -190,12 +196,15 @@ public partial class OperationDetailsWindow : Window
         var receiptRemaining = new Dictionary<long, double>();
         if (isProductionReceipt && _doc?.OrderId.HasValue == true)
         {
-            receiptRemaining = _services.Documents.GetOrderReceiptRemaining(_doc.OrderId.Value)
+            receiptRemaining = GetOrderReceiptRemaining(_doc.OrderId.Value)
                 .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining);
         }
         var availableByItem = isOutbound
-            ? _services.Orders.GetItemAvailability()
+            ? GetItemAvailability()
             : new Dictionary<long, double>();
+        var stockRows = isInventory && _services.WpfReadApi.TryGetStockRows(null, out var apiStockRows)
+            ? apiStockRows
+            : Array.Empty<StockRow>();
         var requiredByItem = isOutbound
             ? lines.Where(line => line.Qty > 0)
                 .GroupBy(line => line.ItemId)
@@ -235,7 +244,19 @@ public partial class OperationDetailsWindow : Window
                 if (locationId.HasValue)
                 {
                     var huCode = NormalizeHuValue(line.ToHu);
-                    inventoryDbQty = _services.DataStore.GetAvailableQty(line.ItemId, locationId.Value, huCode);
+                    var locationCode = locationLookup.Values.FirstOrDefault(location => location.Id == locationId.Value)?.Code;
+                    if (!string.IsNullOrWhiteSpace(locationCode) && stockRows.Count > 0)
+                    {
+                        inventoryDbQty = stockRows
+                            .Where(row => row.ItemId == line.ItemId
+                                          && string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)
+                                          && string.Equals(NormalizeHuValue(row.Hu), huCode, StringComparison.OrdinalIgnoreCase))
+                            .Sum(row => row.Qty);
+                    }
+                    else
+                    {
+                        inventoryDbQty = _services.DataStore.GetAvailableQty(line.ItemId, locationId.Value, huCode);
+                    }
                     inventoryDiffQty = line.Qty - inventoryDbQty.Value;
                     hasInventoryDiff = Math.Abs(inventoryDiffQty.Value) > 0.000001;
                 }
@@ -279,6 +300,10 @@ public partial class OperationDetailsWindow : Window
                 KmDisplay = kmDisplay,
                 KmDistributeEnabled = kmEnabled,
                 HuDisplay = huDisplay,
+                FromLocationId = ResolveLocationId(line.FromLocation, locationLookup),
+                ToLocationId = ResolveLocationId(line.ToLocation, locationLookup),
+                FromHu = NormalizeHuValue(line.FromHu),
+                ToHu = NormalizeHuValue(line.ToHu),
                 FromLocation = FormatLocationDisplay(line.FromLocation, locationLookup),
                 ToLocation = FormatLocationDisplay(line.ToLocation, locationLookup)
             });
@@ -455,7 +480,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (_services.Documents.GetDocLines(doc.Id).Count == 0)
+        if (_docLines.Count == 0)
         {
             MessageBox.Show(
                 "Добавьте хотя бы один товар в документ перед проведением.",
@@ -542,7 +567,7 @@ public partial class OperationDetailsWindow : Window
             }
 
             var selectedFromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
-            filteredItems = _services.DataStore.GetItemsByLocationAndHu(selectedFromLocation.Id, NormalizeHuValue(selectedFromHu));
+            filteredItems = GetAvailableItemsByLocationAndHu(selectedFromLocation.Id, selectedFromHu);
             if (!filteredItems.Any())
             {
                 MessageBox.Show("Нет доступных товаров для выбранного места хранения и HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -558,7 +583,7 @@ public partial class OperationDetailsWindow : Window
             }
 
             var selectedHu = GetSelectedHuCode(DocHuCombo);
-            filteredItems = _services.DataStore.GetItemsByLocationAndHu(selectedFromLocation.Id, NormalizeHuValue(selectedHu));
+            filteredItems = GetAvailableItemsByLocationAndHu(selectedFromLocation.Id, selectedHu);
             if (!filteredItems.Any())
             {
                 MessageBox.Show("Нет доступных товаров для выбранной локации и HU.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -721,14 +746,14 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var line = _services.DataStore.GetDocLines(_doc.Id).FirstOrDefault(l => l.Id == _selectedDocLine.Id);
+        var line = FindCurrentDocLine(_selectedDocLine.Id);
         if (line == null)
         {
             MessageBox.Show("Строка не найдена.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var item = _services.DataStore.FindItemById(line.ItemId);
+        var item = FindItem(line.ItemId);
         if (item == null || !item.IsMarked)
         {
             MessageBox.Show("Товар не маркируемый.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -785,14 +810,14 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var line = _services.DataStore.GetDocLines(_doc.Id).FirstOrDefault(l => l.Id == lineDisplay.Id);
+        var line = FindCurrentDocLine(lineDisplay.Id);
         if (line == null)
         {
             MessageBox.Show("Строка не найдена.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var item = _services.DataStore.FindItemById(line.ItemId);
+        var item = FindItem(line.ItemId);
         if (item == null || !item.IsMarked)
         {
             MessageBox.Show("Товар не маркируемый.", "Маркировка", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -892,7 +917,7 @@ public partial class OperationDetailsWindow : Window
             }
         }
 
-        var item = _services.DataStore.FindItemById(_selectedDocLine.ItemId);
+        var item = FindItem(_selectedDocLine.ItemId);
         if (item == null)
         {
             MessageBox.Show("Товар не найден.", "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -931,8 +956,14 @@ public partial class OperationDetailsWindow : Window
             }
         }
 
-        var currentLine = _services.DataStore.GetDocLines(_doc!.Id)
-            .FirstOrDefault(entry => entry.Id == _selectedDocLine.Id);
+        var doc = _doc;
+        if (doc == null)
+        {
+            MessageBox.Show("Операция не выбрана.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var currentLine = FindCurrentDocLine(_selectedDocLine.Id);
         if (currentLine == null)
         {
             MessageBox.Show("Строка не найдена.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -940,7 +971,7 @@ public partial class OperationDetailsWindow : Window
         }
 
         var result = await _services.WpfUpdateDocLines.UpdateLineAsync(
-            _doc,
+            doc,
             new WpfUpdateDocLineContext(
                 currentLine.Id,
                 qtyDialog.QtyBase,
@@ -1014,7 +1045,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var line = _services.DataStore.GetDocLines(_doc.Id).FirstOrDefault(entry => entry.Id == _selectedDocLine.Id);
+        var line = FindCurrentDocLine(_selectedDocLine.Id);
         if (line == null)
         {
             MessageBox.Show("Строка не найдена.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1033,7 +1064,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var item = _services.DataStore.FindItemById(line.ItemId);
+        var item = FindItem(line.ItemId);
         if (_doc.Type == DocType.ProductionReceipt
             && item?.MaxQtyPerHu is double maxQtyPerHu
             && maxQtyPerHu > 0)
@@ -1158,7 +1189,7 @@ public partial class OperationDetailsWindow : Window
         var huCodes = new List<string> { selectedHu };
         if (requiredHuCount > 1)
         {
-            var totalsByHu = _services.DataStore.GetLedgerTotalsByHu();
+            var totalsByHu = GetHuTotals();
             foreach (var freeCode in GetFreeHuCodes(totalsByHu))
             {
                 if (string.Equals(freeCode, selectedHu, StringComparison.OrdinalIgnoreCase))
@@ -1226,7 +1257,7 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        var remaining = _services.Documents.GetOrderReceiptRemaining(_doc.OrderId.Value)
+        var remaining = GetOrderReceiptRemaining(_doc.OrderId.Value)
             .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining);
         if (!remaining.TryGetValue(lineDisplay.OrderLineId.Value, out var limit))
         {
@@ -1234,9 +1265,9 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        var total = _services.DataStore.GetDocLines(_doc.Id)
+        var total = _docLines
             .Where(line => line.OrderLineId == lineDisplay.OrderLineId)
-            .Sum(line => line.Id == lineDisplay.Id ? newQty : line.Qty);
+            .Sum(line => line.Id == lineDisplay.Id ? newQty : line.QtyBase);
         if (total > limit + 0.000001)
         {
             MessageBox.Show($"Количество превышает остаток по заказу: доступно {FormatQty(limit)}.", "Операция", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1317,7 +1348,15 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var lines = _services.DataStore.GetDocLines(_doc.Id);
+        var lines = _docLines
+            .Select(line => new DocLine
+            {
+                Id = line.Id,
+                DocId = _doc.Id,
+                FromLocationId = line.FromLocationId,
+                ToLocationId = line.ToLocationId
+            })
+            .ToList();
         if (lines.Count == 0)
         {
             return;
@@ -1879,19 +1918,24 @@ public partial class OperationDetailsWindow : Window
         OutboundHuPanel.Visibility = Visibility.Visible;
 
         var locationsById = _locations.ToDictionary(location => location.Id, location => location);
-        var rows = _services.DataStore.GetHuStockRows()
-            .Where(row => row.ItemId == _selectedDocLine.ItemId && row.Qty > 0)
+        var rows = GetStockRows()
+            .Where(row => row.ItemId == _selectedDocLine.ItemId
+                          && row.Qty > 0
+                          && !string.IsNullOrWhiteSpace(row.Hu))
+            .Select(row => new
+            {
+                HuCode = NormalizeHuValue(row.Hu)!,
+                LocationId = _locations.FirstOrDefault(location =>
+                    string.Equals(location.Code, row.LocationCode, StringComparison.OrdinalIgnoreCase))?.Id ?? 0,
+                row.Qty
+            })
+            .Where(row => row.LocationId > 0)
             .OrderBy(row => row.HuCode, StringComparer.OrdinalIgnoreCase)
             .ThenBy(row => row.LocationId)
             .ToList();
 
         foreach (var row in rows)
         {
-            if (string.IsNullOrWhiteSpace(row.HuCode))
-            {
-                continue;
-            }
-
             var locationLabel = locationsById.TryGetValue(row.LocationId, out var location)
                 ? location.DisplayName
                 : row.LocationId.ToString(CultureInfo.InvariantCulture);
@@ -1923,8 +1967,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var line = _services.DataStore.GetDocLines(_doc.Id)
-            .FirstOrDefault(l => l.Id == _selectedDocLine.Id);
+        var line = FindCurrentDocLine(_selectedDocLine.Id);
         if (line == null)
         {
             MessageBox.Show("Строка не найдена.", "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -2207,7 +2250,7 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        var existingLineIds = _services.DataStore.GetDocLines(_doc.Id)
+        var existingLineIds = _docLines
             .Select(line => line.Id)
             .ToList();
         LogOutboundOrderBoundInfo($"fill from order server branch delete phase prepared: order_id={selected.Id}; active_line_count={existingLineIds.Count}");
@@ -2264,7 +2307,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var existingLines = _services.DataStore.GetDocLines(_doc.Id);
+        var existingLines = _docLines;
         if (existingLines.Count > 0)
         {
             LoadDoc();
@@ -2307,7 +2350,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var existingLines = _services.DataStore.GetDocLines(_doc.Id);
+        var existingLines = _docLines;
         var replaceLines = false;
         if (existingLines.Count > 0)
         {
@@ -2355,7 +2398,7 @@ public partial class OperationDetailsWindow : Window
 
             if (replaceLines)
             {
-                var existingLineIds = _services.DataStore.GetDocLines(_doc.Id)
+                var existingLineIds = _docLines
                     .Select(line => line.Id)
                     .ToList();
                 _services.AppLogger.Info($"wpf_batch_rebuild doc_id={_doc.Id} doc_type=ProductionReceipt delete_phase mode=server active_line_count={existingLineIds.Count}");
@@ -2393,7 +2436,7 @@ public partial class OperationDetailsWindow : Window
 
     private IReadOnlyList<WpfAddDocLineContext> BuildOutboundOrderBatchContexts(long orderId, long? fromLocationId, string? fromHu)
     {
-        return _services.Documents.GetOrderShipmentRemaining(orderId)
+        return GetOrderShipmentRemaining(orderId)
             .Where(line => line.QtyRemaining > 0)
             .Select(line => new WpfAddDocLineContext(
                 line.ItemId,
@@ -2411,7 +2454,7 @@ public partial class OperationDetailsWindow : Window
 
     private IReadOnlyList<WpfAddDocLineContext> BuildProductionReceiptBatchContexts(long orderId, long? toLocationId, string? toHu)
     {
-        return _services.Documents.GetOrderReceiptRemaining(orderId)
+        return GetOrderReceiptRemaining(orderId)
             .Where(line => line.QtyRemaining > 0)
             .Select(line => new WpfAddDocLineContext(
                 line.ItemId,
@@ -2685,7 +2728,7 @@ public partial class OperationDetailsWindow : Window
     private void LoadOrderQuantities(long orderId)
     {
         _orderedQtyByOrderLine.Clear();
-        foreach (var line in _services.Documents.GetOrderShipmentRemaining(orderId))
+        foreach (var line in GetOrderShipmentRemaining(orderId))
         {
             if (line.QtyRemaining <= 0)
             {
@@ -2694,6 +2737,115 @@ public partial class OperationDetailsWindow : Window
 
             _orderedQtyByOrderLine[line.OrderLineId] = line.QtyRemaining;
         }
+    }
+
+    private IReadOnlyDictionary<long, double> GetItemAvailability()
+    {
+        return _services.WpfReadApi.TryGetItemAvailability(out var availability)
+            ? availability
+            : _services.Orders.GetItemAvailability();
+    }
+
+    private IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId)
+    {
+        return _services.WpfReadApi.TryGetOrderShipmentRemaining(orderId, out var lines)
+            ? lines
+            : _services.Documents.GetOrderShipmentRemaining(orderId);
+    }
+
+    private IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId)
+    {
+        return _services.WpfReadApi.TryGetOrderReceiptRemaining(orderId, out var lines)
+            ? lines
+            : _services.Documents.GetOrderReceiptRemaining(orderId);
+    }
+
+    private Item? FindItem(long itemId)
+    {
+        var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : _services.Catalog.GetItems(null);
+        return items.FirstOrDefault(item => item.Id == itemId);
+    }
+
+    private string? GetLocationCode(long locationId)
+    {
+        return _locations.FirstOrDefault(location => location.Id == locationId)?.Code;
+    }
+
+    private IReadOnlyList<StockRow> GetStockRows()
+    {
+        return _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
+            ? apiRows
+            : _services.Documents.GetStock(null);
+    }
+
+    private double GetAvailableQty(long itemId, long locationId, string? huCode)
+    {
+        var locationCode = GetLocationCode(locationId);
+        var normalizedHu = NormalizeHuValue(huCode);
+        if (!string.IsNullOrWhiteSpace(locationCode))
+        {
+            var rows = GetStockRows();
+            if (rows.Count > 0)
+            {
+                return rows
+                    .Where(row => row.ItemId == itemId
+                                  && string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)
+                                  && string.Equals(NormalizeHuValue(row.Hu), normalizedHu, StringComparison.OrdinalIgnoreCase))
+                    .Sum(row => row.Qty);
+            }
+        }
+
+        return _services.DataStore.GetAvailableQty(itemId, locationId, normalizedHu);
+    }
+
+    private IReadOnlyList<Item> GetAvailableItemsByLocationAndHu(long locationId, string? huCode)
+    {
+        var locationCode = GetLocationCode(locationId);
+        if (!string.IsNullOrWhiteSpace(locationCode))
+        {
+            var rows = GetStockRows()
+                .Where(row => string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)
+                              && string.Equals(NormalizeHuValue(row.Hu), NormalizeHuValue(huCode), StringComparison.OrdinalIgnoreCase)
+                              && row.Qty > 0)
+                .ToList();
+            if (rows.Count > 0)
+            {
+                var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+                    ? apiItems
+                    : _services.Catalog.GetItems(null);
+                var itemIds = rows.Select(row => row.ItemId).Distinct().ToHashSet();
+                return items.Where(item => itemIds.Contains(item.Id)).ToList();
+            }
+        }
+
+        return _services.DataStore.GetItemsByLocationAndHu(locationId, NormalizeHuValue(huCode)).ToList();
+    }
+
+    private DocLine? FindCurrentDocLine(long lineId)
+    {
+        var line = _docLines.FirstOrDefault(entry => entry.Id == lineId);
+        if (line == null || _doc == null)
+        {
+            return null;
+        }
+
+        return new DocLine
+        {
+            Id = line.Id,
+            DocId = _doc.Id,
+            OrderLineId = line.OrderLineId,
+            ItemId = line.ItemId,
+            Qty = line.QtyBase,
+            QtyInput = line.QtyInput,
+            UomCode = line.UomCode,
+            FromLocationId = line.FromLocationId,
+            ToLocationId = line.ToLocationId,
+            FromHu = line.FromHu,
+            ToHu = line.ToHu,
+            PackSingleHu = line.PackSingleHu
+        };
     }
 
     private void UpdatePartialUi()
@@ -2747,7 +2899,7 @@ public partial class OperationDetailsWindow : Window
                 if (DocFromCombo.SelectedItem is Location fromLocation)
                 {
                     var fromHu = (DocHuFromCombo.SelectedItem as HuOption)?.Code;
-                    return (_services.DataStore.GetAvailableQty(itemId, fromLocation.Id, NormalizeHuValue(fromHu)), true);
+                    return (GetAvailableQty(itemId, fromLocation.Id, fromHu), true);
                 }
 
                 return (null, true);
@@ -2759,16 +2911,18 @@ public partial class OperationDetailsWindow : Window
         if (DocFromCombo.SelectedItem is Location outboundFrom)
         {
             var outboundFromHu = GetSelectedHuCode(DocHuCombo);
-            return (_services.DataStore.GetAvailableQty(itemId, outboundFrom.Id, NormalizeHuValue(outboundFromHu)), true);
+            return (GetAvailableQty(itemId, outboundFrom.Id, outboundFromHu), true);
         }
 
-        var availableByItem = _services.Orders.GetItemAvailability();
+        var availableByItem = GetItemAvailability();
         return (availableByItem.TryGetValue(itemId, out var qty) ? qty : 0, true);
     }
 
     private bool TryValidateOutboundStock(long docId)
     {
-        var lines = _services.Documents.GetDocLines(docId);
+        var lines = _services.WpfReadApi.TryGetDocLines(docId, out var apiLines)
+            ? apiLines
+            : _services.Documents.GetDocLines(docId);
         var requiredByItem = lines
             .Where(line => line.Qty > 0)
             .GroupBy(line => line.ItemId)
@@ -2778,7 +2932,7 @@ public partial class OperationDetailsWindow : Window
             return true;
         }
 
-        var availableByItem = _services.Orders.GetItemAvailability();
+        var availableByItem = GetItemAvailability();
         var namesByItem = lines
             .GroupBy(line => line.ItemId)
             .ToDictionary(group => group.Key, group => group.First().ItemName);
@@ -2919,14 +3073,14 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var totalsByHuAll = _services.DataStore.GetLedgerTotalsByHu();
+        var totalsByHuAll = GetHuTotals();
 
         if (_doc.Type == DocType.Move)
         {
             var fromLocation = DocFromCombo.SelectedItem as Location;
             if (fromLocation != null)
             {
-                var codes = _services.DataStore.GetHuCodesByLocation(fromLocation.Id);
+                var codes = GetHuCodesByLocation(fromLocation.Id);
                 if (codes.Any(code => code == null))
                 {
                     _huFromOptions.Add(new HuOption(null, "—"));
@@ -2991,6 +3145,29 @@ public partial class OperationDetailsWindow : Window
     private IReadOnlyDictionary<string, double> GetHuTotalsByLocation(long locationId)
     {
         var totals = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var locationCode = GetLocationCode(locationId);
+        if (!string.IsNullOrWhiteSpace(locationCode))
+        {
+            foreach (var row in GetStockRows())
+            {
+                var huCode = NormalizeHuValue(row.Hu);
+                if (!string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)
+                    || string.IsNullOrWhiteSpace(huCode))
+                {
+                    continue;
+                }
+
+                totals[huCode] = totals.TryGetValue(huCode, out var current)
+                    ? current + row.Qty
+                    : row.Qty;
+            }
+
+            if (totals.Count > 0)
+            {
+                return totals;
+            }
+        }
+
         foreach (var row in _services.DataStore.GetHuStockRows())
         {
             if (row.LocationId != locationId || string.IsNullOrWhiteSpace(row.HuCode))
@@ -3004,6 +3181,45 @@ public partial class OperationDetailsWindow : Window
         }
 
         return totals;
+    }
+
+    private IReadOnlyDictionary<string, double> GetHuTotals()
+    {
+        var totals = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in GetStockRows())
+        {
+            var huCode = NormalizeHuValue(row.Hu);
+            if (string.IsNullOrWhiteSpace(huCode))
+            {
+                continue;
+            }
+
+            totals[huCode] = totals.TryGetValue(huCode, out var current)
+                ? current + row.Qty
+                : row.Qty;
+        }
+
+        return totals.Count > 0 ? totals : _services.DataStore.GetLedgerTotalsByHu();
+    }
+
+    private IReadOnlyList<string?> GetHuCodesByLocation(long locationId)
+    {
+        var locationCode = GetLocationCode(locationId);
+        if (!string.IsNullOrWhiteSpace(locationCode))
+        {
+            var codes = GetStockRows()
+                .Where(row => string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase))
+                .Select(row => NormalizeHuValue(row.Hu))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Cast<string?>()
+                .ToList();
+            if (codes.Count > 0)
+            {
+                return codes;
+            }
+        }
+
+        return _services.DataStore.GetHuCodesByLocation(locationId).ToList();
     }
 
     private IEnumerable<string> GetFreeHuCodes(IReadOnlyDictionary<string, double> totalsByHu)
@@ -3113,7 +3329,9 @@ public partial class OperationDetailsWindow : Window
 
     private string? ResolveHeaderHuFromLines(Doc doc)
     {
-        var lines = _services.DataStore.GetDocLines(doc.Id);
+        var lines = _docLines
+            .Where(line => line.Id > 0)
+            .ToList();
         if (lines.Count == 0)
         {
             return null;
@@ -3509,6 +3727,10 @@ public partial class OperationDetailsWindow : Window
         public bool PackSingleHu { get; init; }
         public string KmDisplay { get; init; } = string.Empty;
         public bool KmDistributeEnabled { get; init; }
+        public long? FromLocationId { get; init; }
+        public long? ToLocationId { get; init; }
+        public string? FromHu { get; init; }
+        public string? ToHu { get; init; }
         public string? HuDisplay { get; init; }
         public string? FromLocation { get; init; }
         public string? ToLocation { get; init; }

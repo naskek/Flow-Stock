@@ -596,10 +596,45 @@ app.MapGet("/api/orders/{orderId:long}/lines", (long orderId, IDataStore store) 
             qty_ordered = line.QtyOrdered,
             qty_shipped = line.QtyShipped,
             qty_produced = line.QtyProduced,
-            qty_left = line.QtyRemaining
+            qty_left = line.QtyRemaining,
+            qty_available = line.QtyAvailable,
+            can_ship_now = line.CanShipNow,
+            shortage = line.Shortage
         })
         .ToList();
 
+    return Results.Ok(lines);
+});
+
+app.MapGet("/api/orders/{orderId:long}/shipment-remaining", (long orderId, IDataStore store) =>
+{
+    var orderService = new OrderService(store);
+    var order = orderService.GetOrder(orderId);
+    if (order == null)
+    {
+        return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
+    }
+
+    var documentService = new DocumentService(store);
+    var lines = documentService.GetOrderShipmentRemaining(orderId)
+        .Select(MapOrderShipmentRemaining)
+        .ToList();
+    return Results.Ok(lines);
+});
+
+app.MapGet("/api/orders/{orderId:long}/receipt-remaining", (long orderId, IDataStore store) =>
+{
+    var orderService = new OrderService(store);
+    var order = orderService.GetOrder(orderId);
+    if (order == null)
+    {
+        return Results.NotFound(new ApiResult(false, "ORDER_NOT_FOUND"));
+    }
+
+    var documentService = new DocumentService(store);
+    var lines = documentService.GetOrderReceiptRemaining(orderId)
+        .Select(MapOrderReceiptRemaining)
+        .ToList();
     return Results.Ok(lines);
 });
 
@@ -1467,6 +1502,7 @@ static object MapOrder(Order order)
         partner_code = order.PartnerCode,
         due_date = order.DueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
         status = OrderStatusMapper.StatusToDisplayName(order.Status, order.Type),
+        comment = order.Comment,
         created_at = order.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
         shipped_at = order.ShippedAt?.ToString("O", CultureInfo.InvariantCulture)
     };
@@ -1551,6 +1587,7 @@ static object MapDoc(Doc doc)
         shipping_ref = doc.ShippingRef,
         reason_code = doc.ReasonCode,
         comment = doc.Comment,
+        production_batch_no = doc.ProductionBatchNo,
         source_device_id = doc.SourceDeviceId,
         line_count = doc.LineCount
     };
@@ -1572,7 +1609,36 @@ static object MapDocLine(DocLineView line)
         from_location = line.FromLocation,
         to_location = line.ToLocation,
         from_hu = line.FromHu,
-        to_hu = line.ToHu
+        to_hu = line.ToHu,
+        pack_single_hu = line.PackSingleHu
+    };
+}
+
+static object MapOrderShipmentRemaining(OrderShipmentLine line)
+{
+    return new
+    {
+        order_line_id = line.OrderLineId,
+        order_id = line.OrderId,
+        item_id = line.ItemId,
+        item_name = line.ItemName,
+        qty_ordered = line.QtyOrdered,
+        qty_shipped = line.QtyShipped,
+        qty_remaining = line.QtyRemaining
+    };
+}
+
+static object MapOrderReceiptRemaining(OrderReceiptLine line)
+{
+    return new
+    {
+        order_line_id = line.OrderLineId,
+        order_id = line.OrderId,
+        item_id = line.ItemId,
+        item_name = line.ItemName,
+        qty_ordered = line.QtyOrdered,
+        qty_received = line.QtyReceived,
+        qty_remaining = line.QtyRemaining
     };
 }
 

@@ -133,6 +133,58 @@ public sealed class WpfReadApiService
             out orders);
     }
 
+    public bool TryGetOrder(long orderId, out Order? order)
+    {
+        order = null;
+        return TryRead(
+            $"/api/orders/{orderId}",
+            MapOrder,
+            "order-detail",
+            out order);
+    }
+
+    public bool TryGetOrderLines(long orderId, out IReadOnlyList<OrderLineView> lines)
+    {
+        lines = Array.Empty<OrderLineView>();
+        return TryRead(
+            $"/api/orders/{orderId}/lines",
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(MapOrderLineView)
+                    .ToList()
+                : new List<OrderLineView>(),
+            "order-lines",
+            out lines);
+    }
+
+    public bool TryGetOrderShipmentRemaining(long orderId, out IReadOnlyList<OrderShipmentLine> lines)
+    {
+        lines = Array.Empty<OrderShipmentLine>();
+        return TryRead(
+            $"/api/orders/{orderId}/shipment-remaining",
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(MapOrderShipmentLine)
+                    .ToList()
+                : new List<OrderShipmentLine>(),
+            "order-shipment-remaining",
+            out lines);
+    }
+
+    public bool TryGetOrderReceiptRemaining(long orderId, out IReadOnlyList<OrderReceiptLine> lines)
+    {
+        lines = Array.Empty<OrderReceiptLine>();
+        return TryRead(
+            $"/api/orders/{orderId}/receipt-remaining",
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(MapOrderReceiptLine)
+                    .ToList()
+                : new List<OrderReceiptLine>(),
+            "order-receipt-remaining",
+            out lines);
+    }
+
     public bool TryGetStockRows(string? search, out IReadOnlyList<StockRow> rows)
     {
         rows = Array.Empty<StockRow>();
@@ -153,6 +205,44 @@ public sealed class WpfReadApiService
             out rows);
     }
 
+    public bool TryGetItemAvailability(out IReadOnlyDictionary<long, double> availability)
+    {
+        availability = new Dictionary<long, double>();
+        if (!TryGetStockRows(null, out var rows))
+        {
+            return false;
+        }
+
+        availability = rows
+            .GroupBy(row => row.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(row => row.Qty));
+        return true;
+    }
+
+    public bool TryGetDoc(long docId, out Doc? doc)
+    {
+        doc = null;
+        return TryRead(
+            $"/api/docs/{docId}",
+            MapDoc,
+            "doc-detail",
+            out doc);
+    }
+
+    public bool TryGetDocLines(long docId, out IReadOnlyList<DocLineView> lines)
+    {
+        lines = Array.Empty<DocLineView>();
+        return TryRead(
+            $"/api/docs/{docId}/lines",
+            root => root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray()
+                    .Select(MapDocLineView)
+                    .ToList()
+                : new List<DocLineView>(),
+            "doc-lines",
+            out lines);
+    }
+
     public bool TryGenerateNextDocRef(DocType type, out string docRef)
     {
         docRef = string.Empty;
@@ -165,6 +255,19 @@ public sealed class WpfReadApiService
             "docs-next-ref",
             out docRef)
             && !string.IsNullOrWhiteSpace(docRef);
+    }
+
+    public bool TryGenerateNextOrderRef(out string orderRef)
+    {
+        orderRef = string.Empty;
+        return TryRead(
+            "/api/orders/next-ref",
+            root => root.TryGetProperty("order_ref", out var orderRefElement)
+                ? (orderRefElement.GetString() ?? string.Empty)
+                : string.Empty,
+            "orders-next-ref",
+            out orderRef)
+            && !string.IsNullOrWhiteSpace(orderRef);
     }
 
     private bool TryRead<T>(
@@ -360,6 +463,7 @@ public sealed class WpfReadApiService
             ShippingRef = ReadString(element, "shipping_ref"),
             ReasonCode = ReadString(element, "reason_code"),
             Comment = ReadString(element, "comment"),
+            ProductionBatchNo = ReadString(element, "production_batch_no"),
             SourceDeviceId = ReadString(element, "source_device_id"),
             LineCount = ReadInt32(element, "line_count")
         };
@@ -380,8 +484,27 @@ public sealed class WpfReadApiService
             PartnerCode = ReadString(element, "partner_code"),
             DueDate = ReadDateOnly(element, "due_date"),
             Status = status,
+            Comment = ReadString(element, "comment"),
             CreatedAt = ReadDateTime(element, "created_at") ?? DateTime.MinValue,
             ShippedAt = ReadDateTime(element, "shipped_at")
+        };
+    }
+
+    private static OrderLineView MapOrderLineView(JsonElement element)
+    {
+        return new OrderLineView
+        {
+            Id = ReadInt64(element, "id"),
+            OrderId = ReadInt64(element, "order_id"),
+            ItemId = ReadInt64(element, "item_id"),
+            ItemName = ReadString(element, "item_name") ?? string.Empty,
+            QtyOrdered = ReadDouble(element, "qty_ordered"),
+            QtyShipped = ReadDouble(element, "qty_shipped"),
+            QtyProduced = ReadDouble(element, "qty_produced"),
+            QtyRemaining = ReadDouble(element, "qty_left"),
+            QtyAvailable = ReadDouble(element, "qty_available"),
+            CanShipNow = ReadDouble(element, "can_ship_now"),
+            Shortage = ReadDouble(element, "shortage")
         };
     }
 
@@ -416,6 +539,55 @@ public sealed class WpfReadApiService
             Hu = ReadString(element, "hu"),
             Qty = ReadDouble(element, "qty"),
             BaseUom = ReadString(element, "base_uom") ?? "шт"
+        };
+    }
+
+    private static DocLineView MapDocLineView(JsonElement element)
+    {
+        return new DocLineView
+        {
+            Id = ReadInt64(element, "id"),
+            OrderLineId = ReadNullableInt64(element, "order_line_id"),
+            ItemId = ReadInt64(element, "item_id"),
+            ItemName = ReadString(element, "item_name") ?? string.Empty,
+            Barcode = ReadString(element, "barcode"),
+            Qty = ReadDouble(element, "qty"),
+            QtyInput = ReadNullableDouble(element, "qty_input"),
+            UomCode = ReadString(element, "uom_code"),
+            BaseUom = ReadString(element, "base_uom") ?? "шт",
+            FromLocation = ReadString(element, "from_location"),
+            ToLocation = ReadString(element, "to_location"),
+            FromHu = ReadString(element, "from_hu"),
+            ToHu = ReadString(element, "to_hu"),
+            PackSingleHu = ReadBool(element, "pack_single_hu")
+        };
+    }
+
+    private static OrderShipmentLine MapOrderShipmentLine(JsonElement element)
+    {
+        return new OrderShipmentLine
+        {
+            OrderLineId = ReadInt64(element, "order_line_id"),
+            OrderId = ReadInt64(element, "order_id"),
+            ItemId = ReadInt64(element, "item_id"),
+            ItemName = ReadString(element, "item_name") ?? string.Empty,
+            QtyOrdered = ReadDouble(element, "qty_ordered"),
+            QtyShipped = ReadDouble(element, "qty_shipped"),
+            QtyRemaining = ReadDouble(element, "qty_remaining")
+        };
+    }
+
+    private static OrderReceiptLine MapOrderReceiptLine(JsonElement element)
+    {
+        return new OrderReceiptLine
+        {
+            OrderLineId = ReadInt64(element, "order_line_id"),
+            OrderId = ReadInt64(element, "order_id"),
+            ItemId = ReadInt64(element, "item_id"),
+            ItemName = ReadString(element, "item_name") ?? string.Empty,
+            QtyOrdered = ReadDouble(element, "qty_ordered"),
+            QtyReceived = ReadDouble(element, "qty_received"),
+            QtyRemaining = ReadDouble(element, "qty_remaining")
         };
     }
 

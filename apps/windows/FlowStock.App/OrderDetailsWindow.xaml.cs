@@ -83,7 +83,9 @@ public partial class OrderDetailsWindow : Window
         Title = "Новый заказ";
         _order = null;
         _orderId = null;
-        OrderRefBox.Text = GenerateNextOrderRef();
+        OrderRefBox.Text = _services.WpfReadApi.TryGenerateNextOrderRef(out var orderRef)
+            ? orderRef
+            : GenerateNextOrderRef();
         TypeCombo.SelectedItem = _typeOptions.First(option => option.Type == OrderType.Customer);
         PartnerCombo.SelectedItem = null;
         DueDatePicker.SelectedDate = null;
@@ -106,7 +108,9 @@ public partial class OrderDetailsWindow : Window
         }
 
         BeginLoad();
-        _order = _services.Orders.GetOrder(_orderId.Value);
+        _order = _services.WpfReadApi.TryGetOrder(_orderId.Value, out var apiOrder)
+            ? apiOrder
+            : _services.Orders.GetOrder(_orderId.Value);
         if (_order == null)
         {
             MessageBox.Show("Заказ не найден.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -131,7 +135,10 @@ public partial class OrderDetailsWindow : Window
             .FirstOrDefault(option => option.Status == _order.Status);
 
         _lines.Clear();
-        foreach (var line in _services.Orders.GetOrderLineViews(_order.Id))
+        var lines = _services.WpfReadApi.TryGetOrderLines(_order.Id, out var apiLines)
+            ? apiLines
+            : _services.Orders.GetOrderLineViews(_order.Id);
+        foreach (var line in lines)
         {
             _lines.Add(line);
         }
@@ -440,20 +447,36 @@ public partial class OrderDetailsWindow : Window
     private void RefreshLineMetrics()
     {
         var type = GetSelectedOrderType();
-        var availableByItem = _services.Orders.GetItemAvailability();
+        if (_orderId.HasValue && !_hasUnsavedChanges && TryRefreshPersistedOrderLineMetricsFromApi(type))
+        {
+            return;
+        }
+
+        var availableByItem = _services.WpfReadApi.TryGetItemAvailability(out var apiAvailability)
+            ? apiAvailability
+            : _services.Orders.GetItemAvailability();
         var processedByLine = new Dictionary<long, double>();
 
         if (_orderId.HasValue)
         {
             if (type == OrderType.Internal)
             {
-                processedByLine = _services.Documents.GetOrderReceiptRemaining(_orderId.Value)
-                    .ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
+                var receiptRemaining = _services.WpfReadApi.TryGetOrderReceiptRemaining(_orderId.Value, out var apiReceipt)
+                    ? apiReceipt
+                    : _services.Documents.GetOrderReceiptRemaining(_orderId.Value);
+                processedByLine = receiptRemaining.ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
             }
             else
             {
-                processedByLine = _services.Orders.GetShippedTotals(_orderId.Value)
-                    .ToDictionary(entry => entry.Key, entry => entry.Value);
+                if (_services.WpfReadApi.TryGetOrderLines(_orderId.Value, out var apiLines))
+                {
+                    processedByLine = apiLines.ToDictionary(line => line.Id, line => line.QtyShipped);
+                }
+                else
+                {
+                    processedByLine = _services.Orders.GetShippedTotals(_orderId.Value)
+                        .ToDictionary(entry => entry.Key, entry => entry.Value);
+                }
             }
         }
 
@@ -482,6 +505,34 @@ public partial class OrderDetailsWindow : Window
 
         UpdateEmptyState();
         OrderLinesGrid.Items.Refresh();
+    }
+
+    private bool TryRefreshPersistedOrderLineMetricsFromApi(OrderType type)
+    {
+        if (!_orderId.HasValue || !_services.WpfReadApi.TryGetOrderLines(_orderId.Value, out var apiLines))
+        {
+            return false;
+        }
+
+        var metricsByLine = apiLines.ToDictionary(line => line.Id, line => line);
+        foreach (var line in _lines)
+        {
+            if (!metricsByLine.TryGetValue(line.Id, out var persisted))
+            {
+                return false;
+            }
+
+            line.QtyAvailable = persisted.QtyAvailable;
+            line.QtyProduced = persisted.QtyProduced;
+            line.QtyShipped = persisted.QtyShipped;
+            line.QtyRemaining = persisted.QtyRemaining;
+            line.CanShipNow = type == OrderType.Internal ? 0 : persisted.CanShipNow;
+            line.Shortage = type == OrderType.Internal ? 0 : persisted.Shortage;
+        }
+
+        UpdateEmptyState();
+        OrderLinesGrid.Items.Refresh();
+        return true;
     }
 
     private void UpdateEmptyState()
@@ -664,7 +715,10 @@ public partial class OrderDetailsWindow : Window
     private bool TryValidateOrderRefUnique(string orderRef)
     {
         var normalized = orderRef.Trim();
-        var duplicate = _services.Orders.GetOrders()
+        var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
+            ? apiOrders
+            : _services.Orders.GetOrders();
+        var duplicate = orders
             .FirstOrDefault(order => string.Equals(order.OrderRef, normalized, StringComparison.OrdinalIgnoreCase)
                                      && (!_orderId.HasValue || order.Id != _orderId.Value));
         if (duplicate == null)
@@ -724,7 +778,10 @@ public partial class OrderDetailsWindow : Window
     private string GenerateNextOrderRef()
     {
         var max = 0L;
-        foreach (var order in _services.Orders.GetOrders())
+        var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
+            ? apiOrders
+            : _services.Orders.GetOrders();
+        foreach (var order in orders)
         {
             var orderRef = order.OrderRef?.Trim();
             if (string.IsNullOrWhiteSpace(orderRef) || !IsDigitsOnly(orderRef))
@@ -802,7 +859,9 @@ public partial class OrderDetailsWindow : Window
             return false;
         }
 
-        var persistedLines = _services.Orders.GetOrderLineViews(_orderId.Value);
+        var persistedLines = _services.WpfReadApi.TryGetOrderLines(_orderId.Value, out var apiLines)
+            ? apiLines
+            : _services.Orders.GetOrderLineViews(_orderId.Value);
         return HaveEquivalentLineSnapshot(_lines, persistedLines);
     }
 
