@@ -58,7 +58,9 @@ public partial class NewDocWindow : Window
             return;
         }
 
-        DocRefBox.Text = _services.Documents.GenerateDocRef(option.Type, DateTime.Now);
+        DocRefBox.Text = _services.WpfReadApi.TryGenerateNextDocRef(option.Type, out var apiDocRef)
+            ? apiDocRef
+            : _services.Documents.GenerateDocRef(option.Type, DateTime.Now);
     }
 
     private async void Create_Click(object sender, RoutedEventArgs e)
@@ -74,51 +76,7 @@ public partial class NewDocWindow : Window
             return;
         }
 
-        if (_services.WpfCreateDocDrafts.IsServerCreateEnabled())
-        {
-            await TryCreateViaServerAsync(option);
-            return;
-        }
-
-        TryCreateLegacy(option);
-    }
-
-    private void TryCreateLegacy(DocTypeOption option)
-    {
-        try
-        {
-            CreatedDocId = _services.Documents.CreateDoc(
-                option.Type,
-                DocRefBox.Text,
-                CommentBox.Text,
-                null,
-                null,
-                null);
-
-            DialogResult = true;
-        }
-        catch (ArgumentException ex)
-        {
-            if (string.Equals(ex.ParamName, "docRef", StringComparison.Ordinal))
-            {
-                var suggested = _services.Documents.GenerateDocRef(option.Type, DateTime.Now);
-                DocRefBox.Text = suggested;
-                DocRefBox.Focus();
-                DocRefBox.SelectAll();
-                MessageBox.Show(
-                    $"Номер уже занят. Предложен новый: {suggested}",
-                    "Документ",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                return;
-            }
-
-            MessageBox.Show(ex.Message, "Документ", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(DatabaseErrorFormatter.Format(ex), "Документ", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        await TryCreateViaServerAsync(option);
     }
 
     private async Task TryCreateViaServerAsync(DocTypeOption option)

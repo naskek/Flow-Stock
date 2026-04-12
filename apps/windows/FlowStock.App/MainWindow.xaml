@@ -10,28 +10,22 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <Menu Grid.Column="0">
-                <MenuItem Header="Операции">
-                    <MenuItem Header="Открыть выбранный" InputGestureText="Ctrl+O" Click="DocsOpen_Click" />
-                    <MenuItem Header="Закрыть текущий документ" InputGestureText="Ctrl+Enter" Click="DocClose_Click" />
-                </MenuItem>
                 <MenuItem Header="Справочники">
                     <MenuItem Header="Товары" Click="ViewItems_Click" />
                     <MenuItem Header="Места хранения" Click="ViewLocations_Click" />
                     <MenuItem Header="Контрагенты" Click="ViewPartners_Click" />
                     <MenuItem Header="Тара..." Click="TaraMenu_Click" />
                     <Separator />
+                    <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
+                    <Separator />
                     <MenuItem Header="Ед. измерения..." Click="UomMenu_Click" />
                     <MenuItem Header="Упаковки..." Click="PackagingManager_Click" />
                 </MenuItem>
                 <MenuItem Header="Сервис">
-                    <MenuItem Header="Подключение к БД..." Click="OpenDbConnection_Click" />
-                    <MenuItem Header="Создание аккаунта..." Click="OpenTsdDevices_Click" />
                     <MenuItem Header="Входящие запросы..." Click="OpenIncomingRequests_Click" />
                     <Separator />
                     <MenuItem Header="Резервные копии..." Click="OpenBackupManager_Click" />
                     <MenuItem Header="Администрирование..." Click="OpenAdmin_Click" />
-                    <MenuItem Header="HU Реестр..." Click="OpenHuRegistry_Click" />
-                    <Separator />
                     <MenuItem Header="Открыть папку данных" Click="OpenDataFolder_Click" />
                     <MenuItem Header="Открыть папку логов" Click="OpenLogsFolder_Click" />
                 </MenuItem>

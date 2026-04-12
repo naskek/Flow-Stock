@@ -311,17 +311,7 @@ app.MapGet("/api/items/by-barcode/{barcode}", (string barcode, IDataStore store)
         return Results.NotFound();
     }
 
-    return Results.Ok(new
-    {
-        id = item.Id,
-        name = item.Name,
-        barcode = item.Barcode,
-        gtin = item.Gtin,
-        base_uom_code = item.BaseUom,
-        max_qty_per_hu = item.MaxQtyPerHu,
-        brand = item.Brand,
-        volume = item.Volume
-    });
+    return Results.Ok(MapItem(item));
 });
 
 app.MapGet("/api/items", (HttpRequest request) =>
@@ -332,13 +322,27 @@ app.MapGet("/api/items", (HttpRequest request) =>
     using var connection = OpenConnection(postgresConnectionString);
     using var command = connection.CreateCommand();
    command.CommandText = @"
-SELECT id, name, barcode, gtin, base_uom, uom, max_qty_per_hu, brand, volume
-FROM items
+SELECT i.id,
+       i.name,
+       i.barcode,
+       i.gtin,
+       i.base_uom,
+       i.uom,
+       i.default_packaging_id,
+       i.brand,
+       i.volume,
+       i.shelf_life_months,
+       i.max_qty_per_hu,
+       i.tara_id,
+       t.name,
+       i.is_marked
+FROM items i
+LEFT JOIN taras t ON t.id = i.tara_id
 WHERE @search::text IS NULL
-   OR name ILIKE @search::text
-   OR barcode ILIKE @search::text
-   OR gtin ILIKE @search::text
-ORDER BY name;"
+   OR i.name ILIKE @search::text
+   OR i.barcode ILIKE @search::text
+   OR i.gtin ILIKE @search::text
+ORDER BY i.name;"
     ;
     AddParam(command, "@search", search ?? (object)DBNull.Value);
     using var reader = command.ExecuteReader();
@@ -357,10 +361,16 @@ ORDER BY name;"
             name = reader.GetString(1),
             barcode = reader.IsDBNull(2) ? null : reader.GetString(2),
             gtin = reader.IsDBNull(3) ? null : reader.GetString(3),
+            base_uom = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom,
             base_uom_code = string.IsNullOrWhiteSpace(baseUom) ? "шт" : baseUom,
-            max_qty_per_hu = reader.IsDBNull(6) ? (double?)null : Convert.ToDouble(reader.GetValue(6), CultureInfo.InvariantCulture),
+            default_packaging_id = reader.IsDBNull(6) ? (long?)null : reader.GetInt64(6),
             brand = reader.IsDBNull(7) ? null : reader.GetString(7),
-            volume = reader.IsDBNull(8) ? null : reader.GetString(8)
+            volume = reader.IsDBNull(8) ? null : reader.GetString(8),
+            shelf_life_months = reader.IsDBNull(9) ? (int?)null : reader.GetInt32(9),
+            max_qty_per_hu = reader.IsDBNull(10) ? (double?)null : Convert.ToDouble(reader.GetValue(10), CultureInfo.InvariantCulture),
+            tara_id = reader.IsDBNull(11) ? (long?)null : reader.GetInt64(11),
+            tara_name = reader.IsDBNull(12) ? null : reader.GetString(12),
+            is_marked = !reader.IsDBNull(13) && reader.GetBoolean(13)
         });
     }
 
@@ -821,6 +831,16 @@ ORDER BY item_id, location_id;";
         });
     }
 
+    return Results.Ok(rows);
+});
+
+app.MapGet("/api/stock/rows", (HttpRequest request, IDataStore store) =>
+{
+    var query = request.Query["q"].ToString();
+    var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+    var rows = store.GetStock(normalized)
+        .Select(MapStockRow)
+        .ToList();
     return Results.Ok(rows);
 });
 
@@ -1452,6 +1472,27 @@ static object MapOrder(Order order)
     };
 }
 
+static object MapItem(Item item)
+{
+    return new
+    {
+        id = item.Id,
+        name = item.Name,
+        barcode = item.Barcode,
+        gtin = item.Gtin,
+        base_uom = string.IsNullOrWhiteSpace(item.BaseUom) ? "шт" : item.BaseUom,
+        base_uom_code = string.IsNullOrWhiteSpace(item.BaseUom) ? "шт" : item.BaseUom,
+        default_packaging_id = item.DefaultPackagingId,
+        max_qty_per_hu = item.MaxQtyPerHu,
+        brand = item.Brand,
+        volume = item.Volume,
+        shelf_life_months = item.ShelfLifeMonths,
+        tara_id = item.TaraId,
+        tara_name = item.TaraName,
+        is_marked = item.IsMarked
+    };
+}
+
 static string GenerateNextOrderRef(IDataStore store)
 {
     long max = 0;
@@ -1532,6 +1573,20 @@ static object MapDocLine(DocLineView line)
         to_location = line.ToLocation,
         from_hu = line.FromHu,
         to_hu = line.ToHu
+    };
+}
+
+static object MapStockRow(StockRow row)
+{
+    return new
+    {
+        item_id = row.ItemId,
+        item_name = row.ItemName,
+        barcode = row.Barcode,
+        location_code = row.LocationCode,
+        hu = row.Hu,
+        qty = row.Qty,
+        base_uom = string.IsNullOrWhiteSpace(row.BaseUom) ? "шт" : row.BaseUom
     };
 }
 

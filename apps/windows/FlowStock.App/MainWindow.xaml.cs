@@ -178,7 +178,7 @@ public partial class MainWindow : Window
                 : "Не удалось подключиться к БД при запуске. Приложение открыто, но часть данных недоступна." +
                   Environment.NewLine +
                   Environment.NewLine +
-                  "Проверьте настройки в меню: Сервис -> Подключение к БД." +
+                  "Проверьте настройки в меню: Сервис -> Администрирование -> Подключение к БД." +
                   Environment.NewLine +
                   $"Техническая ошибка: {ex.Message}";
             MessageBox.Show(message, "FlowStock", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -320,7 +320,10 @@ public partial class MainWindow : Window
         _items.Clear();
         var query = search ?? ItemsSearchBox?.Text;
         var normalized = NormalizeIdentifier(query);
-        foreach (var item in _services.Catalog.GetItems(normalized))
+        var items = _services.WpfReadApi.TryGetItems(normalized, out var apiItems)
+            ? apiItems
+            : _services.Catalog.GetItems(normalized);
+        foreach (var item in items)
         {
             _items.Add(item);
         }
@@ -349,7 +352,10 @@ public partial class MainWindow : Window
     {
         var selectedId = _selectedLocation?.Id;
         _locations.Clear();
-        foreach (var location in _services.Catalog.GetLocations())
+        var locations = _services.WpfReadApi.TryGetLocations(out var apiLocations)
+            ? apiLocations
+            : _services.Catalog.GetLocations();
+        foreach (var location in locations)
         {
             _locations.Add(location);
         }
@@ -364,7 +370,7 @@ public partial class MainWindow : Window
         var selectedCode = GetSelectedStockLocationCode();
         _stockLocationFilters.Clear();
         _stockLocationFilters.Add(new StockLocationFilterOption(null, "Все места"));
-        foreach (var location in _services.Catalog.GetLocations())
+        foreach (var location in _locations)
         {
             _stockLocationFilters.Add(new StockLocationFilterOption(location.Code, location.DisplayName));
         }
@@ -423,7 +429,10 @@ public partial class MainWindow : Window
     {
         var selectedId = _selectedPartner?.Id;
         _partners.Clear();
-        foreach (var partner in _services.Catalog.GetPartners())
+        var partners = _services.WpfReadApi.TryGetPartners(out var apiPartners)
+            ? apiPartners
+            : _services.Catalog.GetPartners();
+        foreach (var partner in partners)
         {
             var status = _services.PartnerStatuses.GetStatus(partner.Id);
             _partners.Add(new PartnerRow(partner, GetPartnerStatusLabel(status)));
@@ -435,7 +444,13 @@ public partial class MainWindow : Window
     {
         var selectedId = (DocsGrid.SelectedItem as Doc)?.Id;
         _docs.Clear();
-        foreach (var doc in ApplyDocFilters(_services.Documents.GetDocs()))
+        var docs = _services.WpfReadApi.TryGetDocs(
+            (DocsTypeFilter.SelectedItem as DocTypeFilterOption)?.Type,
+            (DocsStatusFilter.SelectedItem as DocStatusFilterOption)?.Status,
+            out var apiDocs)
+            ? apiDocs
+            : _services.Documents.GetDocs();
+        foreach (var doc in ApplyDocFilters(docs))
         {
             _docs.Add(doc);
         }
@@ -486,7 +501,10 @@ public partial class MainWindow : Window
     {
         var selectedId = (OrdersGrid.SelectedItem as Order)?.Id;
         _orders.Clear();
-        foreach (var order in _services.Orders.GetOrders())
+        var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
+            ? apiOrders
+            : _services.Orders.GetOrders();
+        foreach (var order in orders)
         {
             _orders.Add(order);
         }
@@ -499,7 +517,10 @@ public partial class MainWindow : Window
         _stock.Clear();
         var locationCode = GetSelectedStockLocationCode();
         var huCode = GetSelectedStockHuCode();
-        foreach (var row in _services.Documents.GetStock(search))
+        var rows = _services.WpfReadApi.TryGetStockRows(search, out var apiRows)
+            ? apiRows
+            : _services.Documents.GetStock(search);
+        foreach (var row in rows)
         {
             if (!string.IsNullOrWhiteSpace(locationCode)
                 && !string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase))
@@ -701,24 +722,17 @@ public partial class MainWindow : Window
 
         try
         {
-            if (_services.WpfDeleteOrders.IsServerDeleteEnabled())
+            var result = _services.WpfDeleteOrders.DeleteOrderAsync(order.Id)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+            if (!result.IsSuccess)
             {
-                var result = _services.WpfDeleteOrders.DeleteOrderAsync(order.Id)
-                    .ConfigureAwait(false)
-                    .GetAwaiter()
-                    .GetResult();
-                if (!result.IsSuccess)
-                {
-                    var icon = result.Kind is WpfDeleteOrderResultKind.Timeout or WpfDeleteOrderResultKind.ServerUnavailable
-                        ? MessageBoxImage.Error
-                        : MessageBoxImage.Warning;
-                    MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
-                    return;
-                }
-            }
-            else
-            {
-                _services.Orders.DeleteOrder(order.Id);
+                var icon = result.Kind is WpfDeleteOrderResultKind.Timeout or WpfDeleteOrderResultKind.ServerUnavailable
+                    ? MessageBoxImage.Error
+                    : MessageBoxImage.Warning;
+                MessageBox.Show(result.Message, "Заказы", MessageBoxButton.OK, icon);
+                return;
             }
 
             LoadOrders();
@@ -794,13 +808,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_services.WpfCloseDocuments.IsServerCloseEnabled())
-        {
-            await TryCloseSelectedDocViaServerAsync(doc);
-            return;
-        }
-
-        TryCloseSelectedDocLegacy(doc);
+        await TryCloseSelectedDocViaServerAsync(doc);
     }
 
     private async Task TryCloseSelectedDocViaServerAsync(Doc doc)
@@ -818,43 +826,6 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(result.Message, "Операции", MessageBoxButton.OK, MessageBoxImage.Information);
         }
-    }
-
-    private void TryCloseSelectedDocLegacy(Doc doc)
-    {
-        var result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: false);
-        if (result.Errors.Count > 0)
-        {
-            MessageBox.Show(string.Join("\n", result.Errors), "Проверка операции", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (result.Warnings.Count > 0)
-        {
-            var warningText = "Остаток уйдет в минус:\n" + string.Join("\n", result.Warnings) + "\n\nЗакрыть операцию?";
-            var confirm = MessageBox.Show(warningText, "Предупреждение", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
-            if (confirm != MessageBoxResult.Yes)
-            {
-                return;
-            }
-
-            result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: true);
-            if (!result.Success)
-            {
-                if (result.Errors.Count > 0)
-                {
-                    MessageBox.Show(string.Join("\n", result.Errors), "Проверка операции", MessageBoxButton.OK, MessageBoxImage.Warning);
-                }
-                return;
-            }
-        }
-
-        if (!result.Success)
-        {
-            return;
-        }
-
-        RefreshAfterClose(doc.Id);
     }
 
     private void RefreshAfterClose(long docId)

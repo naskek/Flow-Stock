@@ -3,9 +3,11 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using FlowStock.Data;
 using Npgsql;
 using MediaBrushes = System.Windows.Media.Brushes;
 
@@ -14,51 +16,67 @@ namespace FlowStock.App;
 public partial class DbConnectionWindow : Window
 {
     private readonly AppServices _services;
+    private readonly PostgresDiscoveryService _discoveryService = new();
     private readonly CloseDocumentApiClient _closeDocumentApiClient = new();
     private BackupSettings _settings;
     private readonly List<RecentConnectionOption> _recentOptions = new();
-    private bool _useServerCloseDocument;
+    private readonly List<PostgresDiscoveryCandidate> _discoveredConnections = new();
+    private readonly bool _requireConnectionOnStartup;
+    private bool _manualConnectionMode;
+    private CancellationTokenSource? _discoveryCts;
     private static readonly string[] ServerEnvironmentKeys =
     {
-        "FLOWSTOCK_USE_SERVER_CREATE_ORDER",
-        "FLOWSTOCK_USE_SERVER_UPDATE_ORDER",
-        "FLOWSTOCK_USE_SERVER_DELETE_ORDER",
-        "FLOWSTOCK_USE_SERVER_SET_ORDER_STATUS",
-        "FLOWSTOCK_USE_SERVER_INCOMING_REQUEST_ORDER_APPROVAL",
-        "FLOWSTOCK_USE_SERVER_CREATE_DOC_DRAFT",
-        "FLOWSTOCK_USE_SERVER_CLOSE_DOCUMENT",
-        "FLOWSTOCK_USE_SERVER_ADD_DOC_LINE",
-        "FLOWSTOCK_USE_SERVER_UPDATE_DOC_LINE",
-        "FLOWSTOCK_USE_SERVER_DELETE_DOC_LINE",
         "FLOWSTOCK_SERVER_BASE_URL",
         "FLOWSTOCK_SERVER_DEVICE_ID",
         "FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS",
         "FLOWSTOCK_SERVER_ALLOW_INVALID_TLS"
     };
-    private const string DefaultHost = "127.0.0.1";
-    private const string DefaultPort = "15432";
-    private const string DefaultDatabase = "flowstock";
-    private const string DefaultUsername = "postgres";
+    private const string LoopbackHost = "127.0.0.1";
 
-    public DbConnectionWindow(AppServices services)
+    public DbConnectionWindow(AppServices services, bool requireConnectionOnStartup = false)
     {
         _services = services;
         _settings = _services.Settings.Load();
+        _requireConnectionOnStartup = requireConnectionOnStartup;
 
         InitializeComponent();
 
         var effective = GetEffectiveConfig();
-        CurrentTargetText.Text = $"{effective.Host}:{effective.Port}/{effective.Database} ({effective.Username})";
+        CurrentTargetText.Text = effective.IsConfigured
+            ? $"{effective.Host}:{effective.Port}/{effective.Database} ({effective.Username})"
+            : "не настроено";
+        StartupModeText.Visibility = _requireConnectionOnStartup ? Visibility.Visible : Visibility.Collapsed;
+        if (_requireConnectionOnStartup)
+        {
+            StartupModeText.Text = _services.DatabaseStartupError ?? (_services.HasDatabaseConfiguration
+                ? "Не удалось подключиться к PostgreSQL. Выберите найденную БД или перейдите в режим ручного подключения."
+                : "Подключение к PostgreSQL ещё не настроено. Выберите найденную БД или перейдите в режим ручного подключения.");
+        }
 
         var postgres = _settings.Postgres ?? new PostgresSettings();
-        HostBox.Text = NormalizeHost(postgres.Host ?? DefaultHost);
-        PortBox.Text = postgres.Port ?? DefaultPort;
-        DatabaseBox.Text = postgres.Database ?? DefaultDatabase;
-        UsernameBox.Text = postgres.Username ?? DefaultUsername;
+        HostBox.Text = NormalizeHost(postgres.Host ?? effective.Host ?? string.Empty);
+        PortBox.Text = postgres.Port ?? effective.Port ?? string.Empty;
+        DatabaseBox.Text = postgres.Database ?? effective.Database ?? string.Empty;
+        UsernameBox.Text = postgres.Username ?? effective.Username ?? string.Empty;
         PasswordBox.Password = postgres.Password ?? string.Empty;
 
         LoadRecentConnections();
         LoadServerSettingsUi();
+        SetManualConnectionMode(false);
+        Loaded += DbConnectionWindow_Loaded;
+        Closed += DbConnectionWindow_Closed;
+    }
+
+    private async void DbConnectionWindow_Loaded(object sender, RoutedEventArgs e)
+    {
+        await DiscoverConnectionsAsync();
+    }
+
+    private void DbConnectionWindow_Closed(object? sender, EventArgs e)
+    {
+        _discoveryCts?.Cancel();
+        _discoveryCts?.Dispose();
+        _discoveryCts = null;
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -81,6 +99,17 @@ public partial class DbConnectionWindow : Window
         _settings.Postgres.Password = string.IsNullOrWhiteSpace(input.Password) ? null : input.Password;
 
         _services.Settings.Save(_settings);
+
+        if (_requireConnectionOnStartup)
+        {
+            MessageBox.Show(
+                "Настройки сохранены. Приложение будет перезапущено.",
+                "Подключение к БД",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            RestartApplication();
+            return;
+        }
 
         var message = BuildSuccessMessage(diagnostics)
                       + $"{Environment.NewLine}{Environment.NewLine}Применить сейчас? Приложение будет перезапущено.";
@@ -117,10 +146,43 @@ public partial class DbConnectionWindow : Window
             return;
         }
 
-        MessageBox.Show(BuildSuccessMessage(diagnostics),
+            MessageBox.Show(BuildSuccessMessage(diagnostics),
             "Подключение к БД",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
+    }
+
+    private async void ScanConnections_Click(object sender, RoutedEventArgs e)
+    {
+        await DiscoverConnectionsAsync();
+    }
+
+    private void DiscoveredConnectionsCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (DiscoveredConnectionsCombo.SelectedItem is not PostgresDiscoveryCandidate candidate)
+        {
+            return;
+        }
+
+        ApplyDiscoveredCandidate(candidate);
+        if (!_manualConnectionMode)
+        {
+            SetDiscoveryStatus($"Выбран найденный адрес {candidate.Host}:{candidate.Port}. Database / Username / Password задаются вручную.", MediaBrushes.DarkGreen);
+        }
+    }
+
+    private void ManualModeButton_Click(object sender, RoutedEventArgs e)
+    {
+        SetManualConnectionMode(true);
+    }
+
+    private void AutoModeButton_Click(object sender, RoutedEventArgs e)
+    {
+        SetManualConnectionMode(false);
+        if (DiscoveredConnectionsCombo.SelectedItem is PostgresDiscoveryCandidate candidate)
+        {
+            ApplyDiscoveredCandidate(candidate);
+        }
     }
 
     private void LoadServerSettingsUi()
@@ -128,16 +190,6 @@ public partial class DbConnectionWindow : Window
         var server = (_settings.Server ?? new ServerSettings()).Normalize();
         ApplyServerSettingsToInputs(new ServerSettings
         {
-            UseServerCreateOrder = server.UseServerCreateOrder,
-            UseServerUpdateOrder = server.UseServerUpdateOrder,
-            UseServerDeleteOrder = server.UseServerDeleteOrder,
-            UseServerSetOrderStatus = server.UseServerSetOrderStatus,
-            UseServerIncomingRequestOrderApproval = server.UseServerIncomingRequestOrderApproval,
-            UseServerCreateDocDraft = server.UseServerCreateDocDraft,
-            UseServerCloseDocument = server.UseServerCloseDocument,
-            UseServerAddDocLine = server.UseServerAddDocLine,
-            UseServerUpdateDocLine = server.UseServerUpdateDocLine,
-            UseServerDeleteDocLine = server.UseServerDeleteDocLine,
             ServerBaseUrl = server.GetServerBaseUrlOrDefault(),
             PcClientUrl = server.GetPcClientUrlOrDefault(),
             TsdClientUrl = server.GetTsdClientUrlOrDefault(),
@@ -153,16 +205,6 @@ public partial class DbConnectionWindow : Window
 
     private void ApplyServerSettingsToInputs(ServerSettings server)
     {
-        UseServerCreateOrderCheckBox.IsChecked = server.UseServerCreateOrder;
-        UseServerUpdateOrderCheckBox.IsChecked = server.UseServerUpdateOrder;
-        UseServerDeleteOrderCheckBox.IsChecked = server.UseServerDeleteOrder;
-        UseServerSetOrderStatusCheckBox.IsChecked = server.UseServerSetOrderStatus;
-        UseServerIncomingOrderApprovalCheckBox.IsChecked = server.UseServerIncomingRequestOrderApproval;
-        UseServerCreateDraftCheckBox.IsChecked = server.UseServerCreateDocDraft;
-        SetCloseMode(server.UseServerCloseDocument);
-        UseServerAddLineCheckBox.IsChecked = server.UseServerAddDocLine;
-        UseServerUpdateLineCheckBox.IsChecked = server.UseServerUpdateDocLine;
-        UseServerDeleteLineCheckBox.IsChecked = server.UseServerDeleteDocLine;
         ServerBaseUrlBox.Text = server.GetServerBaseUrlOrDefault();
         PcClientUrlBox.Text = server.GetPcClientUrlOrDefault();
         TsdClientUrlBox.Text = server.GetTsdClientUrlOrDefault();
@@ -173,39 +215,11 @@ public partial class DbConnectionWindow : Window
 
     private void RefreshServerStatus()
     {
-        OrderCreateModeText.Text = $"Order create mode: {FormatCloseMode(UseServerCreateOrderCheckBox.IsChecked == true)}";
-        OrderUpdateModeText.Text = $"Order update mode: {FormatCloseMode(UseServerUpdateOrderCheckBox.IsChecked == true)}";
-        OrderDeleteModeText.Text = $"Order delete mode: {FormatCloseMode(UseServerDeleteOrderCheckBox.IsChecked == true)}";
-        OrderStatusModeText.Text = $"Order status mode: {FormatCloseMode(UseServerSetOrderStatusCheckBox.IsChecked == true)}";
-        OrderApprovalModeText.Text = $"Incoming request approval mode: {FormatCloseMode(UseServerIncomingOrderApprovalCheckBox.IsChecked == true)}";
-        CreateModeText.Text = $"Draft create mode: {FormatCloseMode(UseServerCreateDraftCheckBox.IsChecked == true)}";
-        CloseModeText.Text = $"Close mode: {FormatCloseMode(_useServerCloseDocument)}";
-        LineAddModeText.Text = $"Line add mode (manual + batch): {FormatCloseMode(UseServerAddLineCheckBox.IsChecked == true)}";
-        LineUpdateModeText.Text = $"Line update mode: {FormatCloseMode(UseServerUpdateLineCheckBox.IsChecked == true)}";
-        LineDeleteModeText.Text = $"Line delete mode: {FormatCloseMode(UseServerDeleteLineCheckBox.IsChecked == true)}";
-        ConfigLoadedText.Text = $"Config loaded: {(File.Exists(_services.SettingsPath) ? "yes" : "no")}";
-
-        var effectiveOrderCreate = _services.WpfCreateOrders.GetEffectiveConfiguration();
-        ActiveOrderCreatePathText.Text = $"Active order create path: {FormatCloseMode(effectiveOrderCreate.UseServerCreateOrder)}";
-        var effectiveOrderUpdate = _services.WpfUpdateOrders.GetEffectiveConfiguration();
-        ActiveOrderUpdatePathText.Text = $"Active order update path: {FormatCloseMode(effectiveOrderUpdate.UseServerUpdateOrder)}";
-        var effectiveOrderDelete = _services.WpfDeleteOrders.GetEffectiveConfiguration();
-        ActiveOrderDeletePathText.Text = $"Active order delete path: {FormatCloseMode(effectiveOrderDelete.UseServerDeleteOrder)}";
-        var effectiveOrderStatus = _services.WpfSetOrderStatuses.GetEffectiveConfiguration();
-        ActiveOrderStatusPathText.Text = $"Active order status path: {FormatCloseMode(effectiveOrderStatus.UseServerSetOrderStatus)}";
-        var effectiveIncomingOrderApproval = _services.IncomingRequestOrderApprovals.GetEffectiveConfiguration();
-        ActiveIncomingOrderApprovalPathText.Text =
-            $"Active incoming request approval path: {FormatCloseMode(effectiveIncomingOrderApproval.UseServerIncomingRequestOrderApproval)}";
-        var effectiveCreate = _services.WpfCreateDocDrafts.GetEffectiveConfiguration();
-        ActiveCreatePathText.Text = $"Active draft create path: {FormatCloseMode(effectiveCreate.UseServerCreateDocDraft)}";
+        ApiWriteModeText.Text = "API-only write-path: заказы, подтверждение входящих веб-заявок, создание/проведение документов и строки документов.";
         var effective = _services.WpfCloseDocuments.GetEffectiveConfiguration();
-        ActiveClosePathText.Text = $"Active close path: {FormatCloseMode(effective.UseServerCloseDocument)}";
-        var effectiveLine = _services.WpfAddDocLines.GetEffectiveConfiguration();
-        ActiveLineAddPathText.Text = $"Active line add path (manual + batch): {FormatCloseMode(effectiveLine.UseServerAddDocLine)}";
-        var effectiveLineUpdate = _services.WpfUpdateDocLines.GetEffectiveConfiguration();
-        ActiveLineUpdatePathText.Text = $"Active line update path: {FormatCloseMode(effectiveLineUpdate.UseServerUpdateDocLine)}";
-        var effectiveLineDelete = _services.WpfDeleteDocLines.GetEffectiveConfiguration();
-        ActiveLineDeletePathText.Text = $"Active line delete path: {FormatCloseMode(effectiveLineDelete.UseServerDeleteDocLine)}";
+        ApiWriteCoverageText.Text =
+            $"Effective API target: {effective.BaseUrl} | device: {effective.DeviceId} | timeout: {effective.CloseTimeoutSeconds}s | TLS override: {(effective.AllowInvalidTls ? "dev-only enabled" : "strict")}";
+        ConfigLoadedText.Text = $"Config loaded: {(File.Exists(_services.SettingsPath) ? "yes" : "no")}";
 
         var overrides = GetServerEnvironmentOverrides();
         if (overrides.Count == 0)
@@ -218,75 +232,6 @@ public partial class DbConnectionWindow : Window
         EnvironmentOverrideText.Text =
             $"Environment override active: {string.Join(", ", overrides)}. Active server paths may differ from saved settings.";
         EnvironmentOverrideText.Visibility = Visibility.Visible;
-    }
-
-    private void ToggleCloseMode_Click(object sender, RoutedEventArgs e)
-    {
-        SetCloseMode(!_useServerCloseDocument);
-        RefreshServerStatus();
-        SetServerStatus(string.Empty, MediaBrushes.Gray);
-    }
-
-    private void UseServerCreateDraftCheckBox_Changed(object sender, RoutedEventArgs e)
-    {
-        RefreshServerStatus();
-        SetServerStatus(string.Empty, MediaBrushes.Gray);
-    }
-
-    private void UseServerCreateOrderCheckBox_Changed(object sender, RoutedEventArgs e)
-    {
-        RefreshServerStatus();
-        SetServerStatus(string.Empty, MediaBrushes.Gray);
-    }
-
-    private void UseServerUpdateOrderCheckBox_Changed(object sender, RoutedEventArgs e)
-    {
-        RefreshServerStatus();
-        SetServerStatus(string.Empty, MediaBrushes.Gray);
-    }
-
-    private void UseServerDeleteOrderCheckBox_Changed(object sender, RoutedEventArgs e)
-    {
-        RefreshServerStatus();
-        SetServerStatus(string.Empty, MediaBrushes.Gray);
-    }
-
-    private void UseServerSetOrderStatusCheckBox_Changed(object sender, RoutedEventArgs e)
-    {
-        RefreshServerStatus();
-        SetServerStatus(string.Empty, MediaBrushes.Gray);
-    }
-
-    private void UseServerIncomingOrderApprovalCheckBox_Changed(object sender, RoutedEventArgs e)
-    {
-        RefreshServerStatus();
-        SetServerStatus(string.Empty, MediaBrushes.Gray);
-    }
-
-    private void UseServerAddLineCheckBox_Changed(object sender, RoutedEventArgs e)
-    {
-        RefreshServerStatus();
-        SetServerStatus(string.Empty, MediaBrushes.Gray);
-    }
-
-    private void UseServerUpdateLineCheckBox_Changed(object sender, RoutedEventArgs e)
-    {
-        RefreshServerStatus();
-        SetServerStatus(string.Empty, MediaBrushes.Gray);
-    }
-
-    private void UseServerDeleteLineCheckBox_Changed(object sender, RoutedEventArgs e)
-    {
-        RefreshServerStatus();
-        SetServerStatus(string.Empty, MediaBrushes.Gray);
-    }
-
-    private void SetCloseMode(bool useServerCloseDocument)
-    {
-        _useServerCloseDocument = useServerCloseDocument;
-        ToggleCloseModeButton.Content = useServerCloseDocument
-            ? "Switch to Legacy"
-            : "Switch to Server API";
     }
 
     private async void CheckServer_Click(object sender, RoutedEventArgs e)
@@ -364,16 +309,6 @@ public partial class DbConnectionWindow : Window
 
         serverSettings = new ServerSettings
         {
-            UseServerCreateOrder = UseServerCreateOrderCheckBox.IsChecked == true,
-            UseServerUpdateOrder = UseServerUpdateOrderCheckBox.IsChecked == true,
-            UseServerDeleteOrder = UseServerDeleteOrderCheckBox.IsChecked == true,
-            UseServerSetOrderStatus = UseServerSetOrderStatusCheckBox.IsChecked == true,
-            UseServerIncomingRequestOrderApproval = UseServerIncomingOrderApprovalCheckBox.IsChecked == true,
-            UseServerCreateDocDraft = UseServerCreateDraftCheckBox.IsChecked == true,
-            UseServerCloseDocument = _useServerCloseDocument,
-            UseServerAddDocLine = UseServerAddLineCheckBox.IsChecked == true,
-            UseServerUpdateDocLine = UseServerUpdateLineCheckBox.IsChecked == true,
-            UseServerDeleteDocLine = UseServerDeleteLineCheckBox.IsChecked == true,
             ServerBaseUrl = serverBaseUrl,
             PcClientUrl = pcClientUrl,
             TsdClientUrl = tsdClientUrl,
@@ -399,6 +334,105 @@ public partial class DbConnectionWindow : Window
     {
         ServerStatusText.Text = message;
         ServerStatusText.Foreground = brush;
+    }
+
+    private async Task DiscoverConnectionsAsync()
+    {
+        _discoveryCts?.Cancel();
+        _discoveryCts?.Dispose();
+        _discoveryCts = new CancellationTokenSource();
+
+        ScanConnectionsButton.IsEnabled = false;
+        SetDiscoveryStatus("Идет поиск PostgreSQL на этом ПК и в локальной сети...", MediaBrushes.DimGray);
+
+        try
+        {
+            var currentHost = NormalizeHost(HostBox.Text?.Trim() ?? string.Empty);
+            var currentPort = PortBox.Text?.Trim() ?? string.Empty;
+            var hasCurrentTarget = !string.IsNullOrWhiteSpace(currentHost) && !string.IsNullOrWhiteSpace(currentPort);
+            var discovered = await _discoveryService.DiscoverAsync(_discoveryCts.Token);
+
+            _discoveredConnections.Clear();
+            _discoveredConnections.AddRange(discovered);
+            DiscoveredConnectionsCombo.ItemsSource = null;
+            DiscoveredConnectionsCombo.ItemsSource = _discoveredConnections;
+
+            if (_discoveredConnections.Count == 0)
+            {
+                DiscoveredConnectionsCombo.SelectedItem = null;
+                SetDiscoveryStatus(
+                    "Автопоиск не нашёл открытый PostgreSQL на этом ПК или в локальной сети. Переключитесь в режим ручного подключения.",
+                    MediaBrushes.DarkOrange);
+                return;
+            }
+
+            var selected = _discoveredConnections.FirstOrDefault(candidate =>
+                string.Equals(candidate.Host, currentHost, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(candidate.Port.ToString(CultureInfo.InvariantCulture), currentPort, StringComparison.OrdinalIgnoreCase))
+                ?? _discoveredConnections[0];
+
+            DiscoveredConnectionsCombo.SelectedItem = selected;
+            if (!hasCurrentTarget && !_manualConnectionMode)
+            {
+                ApplyDiscoveredCandidate(selected);
+            }
+            else if (!string.Equals(selected.Host, currentHost, StringComparison.OrdinalIgnoreCase)
+                     || !string.Equals(selected.Port.ToString(CultureInfo.InvariantCulture), currentPort, StringComparison.OrdinalIgnoreCase))
+            {
+                SetManualConnectionMode(true);
+                SetDiscoveryStatus(
+                    $"Автопоиск нашёл {_discoveredConnections.Count} кандидатов, но текущее подключение {currentHost}:{currentPort} среди них не найдено. Оставлен ручной режим.",
+                    MediaBrushes.DarkOrange);
+                return;
+            }
+            else if (!_manualConnectionMode)
+            {
+                ApplyDiscoveredCandidate(selected);
+            }
+
+            SetDiscoveryStatus(
+                $"Найдено подключений: {_discoveredConnections.Count}. По умолчанию используется автопоиск host/port, остальные поля задаются вручную.",
+                MediaBrushes.DarkGreen);
+        }
+        catch (OperationCanceledException)
+        {
+            SetDiscoveryStatus("Автопоиск отменен.", MediaBrushes.Gray);
+        }
+        catch (Exception ex)
+        {
+            _services.AppLogger.Error("postgres_discovery_failed", ex);
+            SetDiscoveryStatus($"Автопоиск завершился с ошибкой: {ex.Message}", MediaBrushes.DarkRed);
+        }
+        finally
+        {
+            ScanConnectionsButton.IsEnabled = true;
+        }
+    }
+
+    private void ApplyDiscoveredCandidate(PostgresDiscoveryCandidate candidate)
+    {
+        HostBox.Text = candidate.Host;
+        PortBox.Text = candidate.Port.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private void SetManualConnectionMode(bool isManual)
+    {
+        _manualConnectionMode = isManual;
+        HostBox.IsEnabled = isManual;
+        PortBox.IsEnabled = isManual;
+        ManualModeButton.Visibility = isManual ? Visibility.Collapsed : Visibility.Visible;
+        AutoModeButton.Visibility = isManual ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!_manualConnectionMode && DiscoveredConnectionsCombo.SelectedItem is PostgresDiscoveryCandidate candidate)
+        {
+            ApplyDiscoveredCandidate(candidate);
+        }
+    }
+
+    private void SetDiscoveryStatus(string message, System.Windows.Media.Brush brush)
+    {
+        DiscoveryStatusText.Text = message;
+        DiscoveryStatusText.Foreground = brush;
     }
 
     private bool TryReadInput(out ConnectionInput input)
@@ -467,6 +501,7 @@ public partial class DbConnectionWindow : Window
             };
             using var connection = new NpgsqlConnection(builder.ConnectionString);
             connection.Open();
+            ValidateFlowStockSchema(builder.ConnectionString);
             using var command = new NpgsqlCommand(
                 "select current_database(), current_user, inet_server_addr(), inet_server_port(), version();",
                 connection);
@@ -482,6 +517,12 @@ public partial class DbConnectionWindow : Window
                 $"db_connection_test ok db={diagnostics.Database} user={diagnostics.User} server_addr={diagnostics.ServerAddr} server_port={diagnostics.ServerPort} version={diagnostics.Version}");
             AddRecentConnection(input);
             return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            _services.AppLogger.Error("db_connection_test failed", ex);
+            ShowConnectionError(DatabaseErrorFormatter.Format(ex), ex.ToString());
+            return false;
         }
         catch (PostgresException ex)
         {
@@ -513,7 +554,8 @@ public partial class DbConnectionWindow : Window
                $"База: {diagnostics.Database}{Environment.NewLine}" +
                $"Пользователь: {diagnostics.User}{Environment.NewLine}" +
                $"Сервер: {diagnostics.ServerAddr}:{diagnostics.ServerPort}{Environment.NewLine}" +
-               $"Версия: {diagnostics.Version}";
+               $"Версия: {diagnostics.Version}{Environment.NewLine}" +
+               $"Схема FlowStock: OK";
     }
 
     private void ShowConnectionError(string summary, string details)
@@ -528,11 +570,16 @@ public partial class DbConnectionWindow : Window
     private EffectiveConfig GetEffectiveConfig()
     {
         var settings = _settings.Postgres ?? new PostgresSettings();
-        var host = ReadEnvOrSettings("FLOWSTOCK_PG_HOST", settings.Host) ?? DefaultHost;
-        var port = ReadEnvOrSettings("FLOWSTOCK_PG_PORT", settings.Port) ?? DefaultPort;
-        var database = ReadEnvOrSettings("FLOWSTOCK_PG_DB", settings.Database) ?? DefaultDatabase;
-        var user = ReadEnvOrSettings("FLOWSTOCK_PG_USER", settings.Username) ?? DefaultUsername;
-        return new EffectiveConfig(NormalizeHost(host), port, database, user);
+        var host = ReadEnvOrSettings("FLOWSTOCK_PG_HOST", settings.Host);
+        var port = ReadEnvOrSettings("FLOWSTOCK_PG_PORT", settings.Port);
+        var database = ReadEnvOrSettings("FLOWSTOCK_PG_DB", settings.Database);
+        var user = ReadEnvOrSettings("FLOWSTOCK_PG_USER", settings.Username);
+        var normalizedHost = string.IsNullOrWhiteSpace(host) ? null : NormalizeHost(host);
+        var isConfigured = !string.IsNullOrWhiteSpace(normalizedHost)
+                           && !string.IsNullOrWhiteSpace(port)
+                           && !string.IsNullOrWhiteSpace(database)
+                           && !string.IsNullOrWhiteSpace(user);
+        return new EffectiveConfig(normalizedHost, port, database, user, isConfigured);
     }
 
     private static string? ReadEnvOrSettings(string envKey, string? settingsValue)
@@ -549,8 +596,14 @@ public partial class DbConnectionWindow : Window
     private static string NormalizeHost(string host)
     {
         return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-            ? DefaultHost
+            ? LoopbackHost
             : host;
+    }
+
+    private static void ValidateFlowStockSchema(string connectionString)
+    {
+        var store = new PostgresDataStore(connectionString);
+        store.Initialize();
     }
 
     private void OpenConfiguredUrl(string? rawUrl, string defaultScheme, string fieldName)
@@ -578,11 +631,6 @@ public partial class DbConnectionWindow : Window
         return false;
     }
 
-    private static string FormatCloseMode(bool useServerCloseDocument)
-    {
-        return useServerCloseDocument ? "Server API" : "Legacy";
-    }
-
     private static List<string> GetServerEnvironmentOverrides()
     {
         var overrides = new List<string>();
@@ -597,7 +645,7 @@ public partial class DbConnectionWindow : Window
         return overrides;
     }
 
-    private sealed record EffectiveConfig(string Host, string Port, string Database, string Username);
+    private sealed record EffectiveConfig(string? Host, string? Port, string? Database, string? Username, bool IsConfigured);
 
     private sealed record ConnectionDiagnostics(string Database, string User, string ServerAddr, string ServerPort, string Version);
 
@@ -635,10 +683,10 @@ public partial class DbConnectionWindow : Window
                 continue;
             }
 
-            var host = NormalizeHost(entry.Host ?? DefaultHost);
-            var port = string.IsNullOrWhiteSpace(entry.Port) ? DefaultPort : entry.Port!;
-            var database = string.IsNullOrWhiteSpace(entry.Database) ? DefaultDatabase : entry.Database!;
-            var username = string.IsNullOrWhiteSpace(entry.Username) ? DefaultUsername : entry.Username!;
+            var host = NormalizeHost(entry.Host ?? string.Empty);
+            var port = entry.Port ?? string.Empty;
+            var database = entry.Database ?? string.Empty;
+            var username = entry.Username ?? string.Empty;
             var display = $"{host}:{port}/{database} ({username})";
             _recentOptions.Add(new RecentConnectionOption(display, new PostgresConnectionProfile
             {
@@ -661,10 +709,11 @@ public partial class DbConnectionWindow : Window
         }
 
         var profile = option.Profile;
-        HostBox.Text = NormalizeHost(profile.Host ?? DefaultHost);
-        PortBox.Text = profile.Port ?? DefaultPort;
-        DatabaseBox.Text = profile.Database ?? DefaultDatabase;
-        UsernameBox.Text = profile.Username ?? DefaultUsername;
+        SetManualConnectionMode(true);
+        HostBox.Text = NormalizeHost(profile.Host ?? string.Empty);
+        PortBox.Text = profile.Port ?? string.Empty;
+        DatabaseBox.Text = profile.Database ?? string.Empty;
+        UsernameBox.Text = profile.Username ?? string.Empty;
         PasswordBox.Password = profile.Password ?? string.Empty;
     }
 

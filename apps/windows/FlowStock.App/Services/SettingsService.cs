@@ -248,6 +248,16 @@ public sealed class ServerSettings
 
     public ServerSettings Normalize()
     {
+        UseServerCreateOrder = true;
+        UseServerUpdateOrder = true;
+        UseServerDeleteOrder = true;
+        UseServerSetOrderStatus = true;
+        UseServerIncomingRequestOrderApproval = true;
+        UseServerCreateDocDraft = true;
+        UseServerCloseDocument = true;
+        UseServerAddDocLine = true;
+        UseServerUpdateDocLine = true;
+        UseServerDeleteDocLine = true;
         ServerBaseUrl = NormalizeValue(ServerBaseUrl);
         PcClientUrl = NormalizeValue(PcClientUrl);
         TsdClientUrl = NormalizeValue(TsdClientUrl);

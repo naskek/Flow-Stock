@@ -23,6 +23,24 @@ public partial class AdminWindow : Window
         LoadClientBlocksUi();
     }
 
+    private void OpenDbConnection_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new DbConnectionWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
+    private void OpenTsdDevices_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new TsdDeviceWindow(_services)
+        {
+            Owner = this
+        };
+        window.ShowDialog();
+    }
+
     private void ClearOperations_Click(object sender, RoutedEventArgs e)
     {
         var confirm = MessageBox.Show(

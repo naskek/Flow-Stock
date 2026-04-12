@@ -2,7 +2,6 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Windows;
 using FlowStock.Core.Models;
 
@@ -145,8 +144,7 @@ public partial class IncomingRequestsWindow : Window
 
                 if (row.OrderRequest != null)
                 {
-                    if (_services.IncomingRequestOrderApprovals.IsServerApprovalEnabled()
-                        && _services.IncomingRequestOrderApprovals.CanHandle(row.OrderRequest.RequestType))
+                    if (_services.IncomingRequestOrderApprovals.CanHandle(row.OrderRequest.RequestType))
                     {
                         var outcome = await _services.IncomingRequestOrderApprovals
                             .ApproveAsync(row.OrderRequest, resolvedBy)
@@ -163,14 +161,7 @@ public partial class IncomingRequestsWindow : Window
                         continue;
                     }
 
-                    var legacyOutcome = ApplyOrderRequest(row.OrderRequest);
-                    _services.DataStore.ResolveOrderRequest(
-                        row.OrderRequest.Id,
-                        OrderRequestStatus.Approved,
-                        resolvedBy,
-                        legacyOutcome.Note,
-                        legacyOutcome.AppliedOrderId);
-                    approvedOrders++;
+                    errors.Add($"#{row.OrderRequest.Id}: Неподдерживаемый тип заявки: {row.OrderRequest.RequestType}");
                 }
             }
             catch (Exception ex)
@@ -273,85 +264,6 @@ public partial class IncomingRequestsWindow : Window
     private void Close_Click(object sender, RoutedEventArgs e)
     {
         Close();
-    }
-
-    private RequestApplyResult ApplyOrderRequest(OrderRequest request)
-    {
-        if (string.Equals(request.RequestType, OrderRequestType.CreateOrder, StringComparison.OrdinalIgnoreCase))
-        {
-            var payload = JsonSerializer.Deserialize<CreateOrderPayload>(request.PayloadJson, JsonOptions)
-                          ?? throw new InvalidOperationException("Некорректный payload заявки CREATE_ORDER.");
-            if (string.IsNullOrWhiteSpace(payload.OrderRef))
-            {
-                throw new InvalidOperationException("Не указан номер заказа.");
-            }
-
-            if (payload.PartnerId <= 0)
-            {
-                throw new InvalidOperationException("Не указан контрагент.");
-            }
-
-            var dueDate = ParseDueDate(payload.DueDate);
-            var lines = payload.Lines?
-                .Where(line => line.ItemId > 0 && line.QtyOrdered > 0)
-                .Select(line => new OrderLineView
-                {
-                    ItemId = line.ItemId,
-                    QtyOrdered = line.QtyOrdered
-                })
-                .ToList() ?? new List<OrderLineView>();
-            if (lines.Count == 0)
-            {
-                throw new InvalidOperationException("В заявке нет строк заказа.");
-            }
-
-            var createdOrderId = _services.Orders.CreateOrder(
-                payload.OrderRef.Trim(),
-                payload.PartnerId,
-                dueDate,
-                OrderStatus.Accepted,
-                payload.Comment,
-                lines);
-            return new RequestApplyResult(createdOrderId, $"Создан заказ ID={createdOrderId}.");
-        }
-
-        if (string.Equals(request.RequestType, OrderRequestType.SetOrderStatus, StringComparison.OrdinalIgnoreCase))
-        {
-            var payload = JsonSerializer.Deserialize<SetOrderStatusPayload>(request.PayloadJson, JsonOptions)
-                          ?? throw new InvalidOperationException("Некорректный payload заявки SET_ORDER_STATUS.");
-            if (payload.OrderId <= 0)
-            {
-                throw new InvalidOperationException("Не указан заказ для смены статуса.");
-            }
-
-            var nextStatus = OrderStatusMapper.StatusFromString(payload.Status)
-                             ?? throw new InvalidOperationException("Неизвестный статус в заявке.");
-            _services.Orders.ChangeOrderStatus(payload.OrderId, nextStatus);
-            var statusDisplay = OrderStatusMapper.StatusToDisplayName(nextStatus);
-            return new RequestApplyResult(payload.OrderId, $"Статус изменен на \"{statusDisplay}\".");
-        }
-
-        throw new InvalidOperationException($"Неизвестный тип заявки: {request.RequestType}");
-    }
-
-    private static DateTime? ParseDueDate(string? dueDate)
-    {
-        if (string.IsNullOrWhiteSpace(dueDate))
-        {
-            return null;
-        }
-
-        if (DateTime.TryParseExact(
-                dueDate.Trim(),
-                "yyyy-MM-dd",
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.None,
-                out var parsed))
-        {
-            return parsed.Date;
-        }
-
-        throw new InvalidOperationException("Некорректная дата отгрузки в заявке.");
     }
 
     private static string BuildItemSummary(ItemRequest request)
@@ -463,44 +375,6 @@ public partial class IncomingRequestsWindow : Window
     {
         PropertyNameCaseInsensitive = true
     };
-
-    private sealed record RequestApplyResult(long? AppliedOrderId, string? Note);
-
-    private sealed record CreateOrderPayload
-    {
-        [JsonPropertyName("order_ref")]
-        public string? OrderRef { get; init; }
-
-        [JsonPropertyName("partner_id")]
-        public long PartnerId { get; init; }
-
-        [JsonPropertyName("due_date")]
-        public string? DueDate { get; init; }
-
-        [JsonPropertyName("comment")]
-        public string? Comment { get; init; }
-
-        [JsonPropertyName("lines")]
-        public List<CreateOrderLinePayload>? Lines { get; init; }
-    }
-
-    private sealed record CreateOrderLinePayload
-    {
-        [JsonPropertyName("item_id")]
-        public long ItemId { get; init; }
-
-        [JsonPropertyName("qty_ordered")]
-        public double QtyOrdered { get; init; }
-    }
-
-    private sealed record SetOrderStatusPayload
-    {
-        [JsonPropertyName("order_id")]
-        public long OrderId { get; init; }
-
-        [JsonPropertyName("status")]
-        public string? Status { get; init; }
-    }
 
     private sealed record IncomingRequestRow
     {

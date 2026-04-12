@@ -22,11 +22,6 @@ public sealed class IncomingRequestOrderApiBridgeService
         _dataStore = dataStore;
     }
 
-    public bool IsServerApprovalEnabled()
-    {
-        return LoadConfiguration().UseServerIncomingRequestOrderApproval;
-    }
-
     public IncomingRequestOrderApiBridgeConfiguration GetEffectiveConfiguration()
     {
         return LoadConfiguration();
@@ -44,11 +39,6 @@ public sealed class IncomingRequestOrderApiBridgeService
         CancellationToken cancellationToken = default)
     {
         var configuration = LoadConfiguration();
-        if (!configuration.UseServerIncomingRequestOrderApproval)
-        {
-            return IncomingRequestOrderApprovalResult.FeatureDisabled();
-        }
-
         if (string.Equals(request.RequestType, OrderRequestType.CreateOrder, StringComparison.OrdinalIgnoreCase))
         {
             return await ApproveCreateOrderAsync(request, resolvedBy, configuration, cancellationToken).ConfigureAwait(false);
@@ -361,8 +351,6 @@ public sealed class IncomingRequestOrderApiBridgeService
     private IncomingRequestOrderApiBridgeConfiguration LoadConfiguration()
     {
         var settings = _settings.Load().Server ?? new ServerSettings();
-        var enabled = ReadEnvBool("FLOWSTOCK_USE_SERVER_INCOMING_REQUEST_ORDER_APPROVAL")
-                      ?? settings.UseServerIncomingRequestOrderApproval;
         var baseUrl = NormalizeBaseUrl(ReadEnvOrSettings("FLOWSTOCK_SERVER_BASE_URL", settings.BaseUrl) ?? WpfCloseDocumentService.DefaultServerBaseUrl);
         var timeoutSeconds = ReadEnvInt("FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS") ?? settings.CloseTimeoutSeconds;
         if (timeoutSeconds < 1)
@@ -371,7 +359,7 @@ public sealed class IncomingRequestOrderApiBridgeService
         }
 
         var allowInvalidTls = ReadEnvBool("FLOWSTOCK_SERVER_ALLOW_INVALID_TLS") ?? settings.AllowInvalidTls;
-        return new IncomingRequestOrderApiBridgeConfiguration(enabled, baseUrl, timeoutSeconds, allowInvalidTls);
+        return new IncomingRequestOrderApiBridgeConfiguration(baseUrl, timeoutSeconds, allowInvalidTls);
     }
 
     private static string NormalizeBaseUrl(string value)
@@ -479,7 +467,6 @@ public sealed class IncomingRequestOrderApiBridgeService
 }
 
 public sealed record IncomingRequestOrderApiBridgeConfiguration(
-    bool UseServerIncomingRequestOrderApproval,
     string BaseUrl,
     int RequestTimeoutSeconds,
     bool AllowInvalidTls);
@@ -492,14 +479,6 @@ public sealed class IncomingRequestOrderApprovalResult
     public Exception? Exception { get; init; }
 
     public bool IsSuccess => Kind == IncomingRequestOrderApprovalResultKind.Approved;
-
-    public static IncomingRequestOrderApprovalResult FeatureDisabled()
-    {
-        return new IncomingRequestOrderApprovalResult
-        {
-            Kind = IncomingRequestOrderApprovalResultKind.FeatureDisabled
-        };
-    }
 
     public static IncomingRequestOrderApprovalResult Success(long? appliedOrderId, string message)
     {
@@ -527,7 +506,6 @@ public sealed class IncomingRequestOrderApprovalResult
 
 public enum IncomingRequestOrderApprovalResultKind
 {
-    FeatureDisabled,
     Approved,
     ValidationFailed,
     NotFound,

@@ -62,7 +62,10 @@ public partial class OrderDetailsWindow : Window
     private void LoadPartners()
     {
         _partners.Clear();
-        foreach (var partner in _services.Catalog.GetPartners())
+        var partners = _services.WpfReadApi.TryGetPartners(out var apiPartners)
+            ? apiPartners
+            : _services.Catalog.GetPartners();
+        foreach (var partner in partners)
         {
             var status = _services.PartnerStatuses.GetStatus(partner.Id);
             if (status == PartnerStatus.Supplier)
@@ -153,15 +156,7 @@ public partial class OrderDetailsWindow : Window
 
     private bool TrySaveOrder(bool showFeedback)
     {
-        var useServerSetOrderStatus = _orderId.HasValue && _services.WpfSetOrderStatuses.IsServerStatusChangeEnabled();
-        var useServerUpdateOrder = _orderId.HasValue && _services.WpfUpdateOrders.IsServerUpdateEnabled();
-        var useServerCreateOrder = !_orderId.HasValue && _services.WpfCreateOrders.IsServerCreateEnabled();
-        if (!TryGetHeaderValues(useServerCreateOrder || useServerUpdateOrder, out var orderRef, out var type, out var partnerId, out var dueDate, out var status, out var comment))
-        {
-            return false;
-        }
-
-        if (!useServerCreateOrder && !useServerUpdateOrder && !TryValidateOrderRefUnique(orderRef))
+        if (!TryGetHeaderValues(allowBlankOrderRef: false, out var orderRef, out var type, out var partnerId, out var dueDate, out var status, out var comment))
         {
             return false;
         }
@@ -172,44 +167,13 @@ public partial class OrderDetailsWindow : Window
             {
                 if (CanUseDirectStatusChangeFlow(orderRef, type, partnerId, dueDate, status, comment))
                 {
-                    if (useServerSetOrderStatus)
-                    {
-                        return TrySetOrderStatusViaServer(_orderId.Value, status, showFeedback);
-                    }
-
-                    _services.Orders.ChangeOrderStatus(_orderId.Value, status);
-                    LoadOrder();
-                    if (showFeedback)
-                    {
-                        SaveStatusText.Text = "Сохранено";
-                    }
-
-                    return true;
+                    return TrySetOrderStatusViaServer(_orderId.Value, status, showFeedback);
                 }
 
-                if (useServerUpdateOrder)
-                {
-                    return TryUpdateOrderViaServer(_orderId.Value, orderRef, type, partnerId, dueDate, status, comment, showFeedback);
-                }
-
-                _services.Orders.UpdateOrder(_orderId.Value, orderRef, partnerId, dueDate, status, comment, _lines, type);
-            }
-            else if (useServerCreateOrder)
-            {
-                return TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, status, comment, showFeedback);
-            }
-            else
-            {
-                _orderId = _services.Orders.CreateOrder(orderRef, partnerId, dueDate, status, comment, _lines, type);
+                return TryUpdateOrderViaServer(_orderId.Value, orderRef, type, partnerId, dueDate, status, comment, showFeedback);
             }
 
-            LoadOrder();
-            if (showFeedback)
-            {
-                SaveStatusText.Text = "Сохранено";
-            }
-
-            return true;
+            return TryCreateOrderViaServer(orderRef, type, partnerId, dueDate, status, comment, showFeedback);
         }
         catch (ArgumentException ex)
         {

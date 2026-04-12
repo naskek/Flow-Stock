@@ -99,13 +99,19 @@ public partial class OperationDetailsWindow : Window
     private void LoadCatalog()
     {
         _locations.Clear();
-        foreach (var location in _services.Catalog.GetLocations())
+        var locations = _services.WpfReadApi.TryGetLocations(out var apiLocations)
+            ? apiLocations
+            : _services.Catalog.GetLocations();
+        foreach (var location in locations)
         {
             _locations.Add(location);
         }
 
         _partnersAll.Clear();
-        foreach (var partner in _services.Catalog.GetPartners())
+        var partners = _services.WpfReadApi.TryGetPartners(out var apiPartners)
+            ? apiPartners
+            : _services.Catalog.GetPartners();
+        foreach (var partner in partners)
         {
             _partnersAll.Add(partner);
         }
@@ -115,7 +121,10 @@ public partial class OperationDetailsWindow : Window
     private void LoadOrders()
     {
         _ordersAll.Clear();
-        foreach (var order in _services.Orders.GetOrders())
+        var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
+            ? apiOrders
+            : _services.Orders.GetOrders();
+        foreach (var order in orders)
         {
             if (order.Status == OrderStatus.Shipped)
             {
@@ -467,13 +476,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (_services.WpfCloseDocuments.IsServerCloseEnabled())
-        {
-            await TryCloseCurrentDocViaServerAsync(doc);
-            return;
-        }
-
-        TryCloseCurrentDocLegacy(doc);
+        await TryCloseCurrentDocViaServerAsync(doc);
     }
 
     private async Task TryCloseCurrentDocViaServerAsync(Doc doc)
@@ -504,76 +507,6 @@ public partial class OperationDetailsWindow : Window
             WpfCloseDocumentResultKind.ServerRejected => MessageBoxImage.Warning,
             _ => MessageBoxImage.Error
         };
-    }
-
-    private void TryCloseCurrentDocLegacy(Doc doc)
-    {
-        CloseDocResult result;
-        try
-        {
-            result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: false);
-        }
-        catch (Exception ex)
-        {
-            _services.AppLogger.Error("Doc close failed", ex);
-            MessageBox.Show(
-                "Не удалось провести операцию. Проверьте доступ к базе данных и повторите.",
-                "Операция",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-            return;
-        }
-        if (result.Errors.Count > 0)
-        {
-            MessageBox.Show(string.Join("\n", result.Errors), "Проверка операции", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (doc.Type == DocType.Outbound && result.Warnings.Count > 0)
-        {
-            MessageBox.Show(string.Join("\n", result.Warnings), "Недостаточно товара", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (result.Warnings.Count > 0)
-        {
-            var warningText = "Остаток уйдет в минус:\n" + string.Join("\n", result.Warnings) + "\n\nЗакрыть операцию?";
-            var confirm = MessageBox.Show(warningText, "Предупреждение", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
-            if (confirm != MessageBoxResult.Yes)
-            {
-                return;
-            }
-
-            try
-            {
-                result = _services.Documents.TryCloseDoc(doc.Id, allowNegative: true);
-            }
-            catch (Exception ex)
-            {
-                _services.AppLogger.Error("Doc close failed (allow negative)", ex);
-                MessageBox.Show(
-                    "Не удалось провести операцию. Проверьте доступ к базе данных и повторите.",
-                    "Операция",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error);
-                return;
-            }
-            if (!result.Success)
-            {
-                if (result.Errors.Count > 0)
-                {
-                    MessageBox.Show(string.Join("\n", result.Errors), "Проверка операции", MessageBoxButton.OK, MessageBoxImage.Warning);
-                }
-                return;
-            }
-        }
-
-        if (!result.Success)
-        {
-            return;
-        }
-
-        Close();
     }
 
     private async void DocAddLine_Click(object sender, RoutedEventArgs e)
@@ -662,13 +595,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (_services.WpfAddDocLines.IsServerAddDocLineEnabled())
-        {
-            await TryAddLineViaServerAsync(item, qtyBase, qtyInput, uomCode, fromLocation, toLocation, fromHu, toHu);
-            return;
-        }
-
-        TryAddLineLegacy(item, qtyBase, qtyInput, uomCode, fromLocation, toLocation, fromHu, toHu);
+        await TryAddLineViaServerAsync(item, qtyBase, qtyInput, uomCode, fromLocation, toLocation, fromHu, toHu);
     }
 
     private async Task TryAddLineViaServerAsync(
@@ -732,45 +659,6 @@ public partial class OperationDetailsWindow : Window
         };
     }
 
-    private void TryAddLineLegacy(
-        Item item,
-        double qtyBase,
-        double? qtyInput,
-        string? uomCode,
-        Location? fromLocation,
-        Location? toLocation,
-        string? fromHu,
-        string? toHu)
-    {
-        try
-        {
-            var existing = _services.DataStore.GetDocLines(_doc!.Id)
-                .FirstOrDefault(line => line.ItemId == item.Id
-                                        && line.FromLocationId == fromLocation?.Id
-                                        && line.ToLocationId == toLocation?.Id
-                                        && string.Equals(NormalizeHuValue(line.FromHu), NormalizeHuValue(fromHu), StringComparison.OrdinalIgnoreCase)
-                                        && string.Equals(NormalizeHuValue(line.ToHu), NormalizeHuValue(toHu), StringComparison.OrdinalIgnoreCase));
-            if (existing != null)
-            {
-                var sameUom = IsSameUom(existing.UomCode, uomCode);
-                var mergedInput = sameUom
-                    ? (existing.QtyInput ?? 0) + qtyInput
-                    : (double?)null;
-                var mergedCode = sameUom ? uomCode : null;
-                _services.Documents.UpdateDocLineQty(_doc!.Id, existing.Id, existing.Qty + qtyBase, mergedInput, mergedCode);
-            }
-            else
-            {
-                _services.Documents.AddDocLine(_doc!.Id, item!.Id, qtyBase, fromLocation?.Id, toLocation?.Id, qtyInput, uomCode, fromHu, toHu);
-            }
-            LoadDocLines();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
     private async void DocDeleteLine_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureDraftDocSelected())
@@ -790,30 +678,23 @@ public partial class OperationDetailsWindow : Window
 
         try
         {
-            if (_services.WpfDeleteDocLines.IsServerDeleteEnabled())
+            var result = await _services.WpfDeleteDocLines.DeleteLinesAsync(_doc!, selectedLineIds);
+            if (result.ShouldRefresh)
             {
-                var result = await _services.WpfDeleteDocLines.DeleteLinesAsync(_doc!, selectedLineIds);
-                if (result.ShouldRefresh)
+                LoadDoc();
+            }
+
+            if (result.IsSuccess)
+            {
+                if (!string.IsNullOrWhiteSpace(result.Message))
                 {
-                    LoadDoc();
+                    MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
 
-                if (result.IsSuccess)
-                {
-                    if (!string.IsNullOrWhiteSpace(result.Message))
-                    {
-                        MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-                    }
-
-                    return;
-                }
-
-                MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, ResolveServerDeleteLineMessageImage(result.Kind));
                 return;
             }
 
-            _services.Documents.DeleteDocLines(_doc!.Id, selectedLineIds);
-            LoadDocLines();
+            MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, ResolveServerDeleteLineMessageImage(result.Kind));
         }
         catch (Exception ex)
         {
@@ -1058,51 +939,37 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (_services.WpfUpdateDocLines.IsServerUpdateEnabled())
+        var result = await _services.WpfUpdateDocLines.UpdateLineAsync(
+            _doc,
+            new WpfUpdateDocLineContext(
+                currentLine.Id,
+                qtyDialog.QtyBase,
+                qtyDialog.UomCode,
+                currentLine.FromLocationId,
+                currentLine.ToLocationId,
+                currentLine.FromHu,
+                currentLine.ToHu));
+
+        if (result.ShouldRefresh)
         {
-            var result = await _services.WpfUpdateDocLines.UpdateLineAsync(
-                _doc,
-                new WpfUpdateDocLineContext(
-                    currentLine.Id,
-                    qtyDialog.QtyBase,
-                    qtyDialog.UomCode,
-                    currentLine.FromLocationId,
-                    currentLine.ToLocationId,
-                    currentLine.FromHu,
-                    currentLine.ToHu));
+            LoadDoc();
+        }
 
-            if (result.ShouldRefresh)
+        if (result.IsSuccess)
+        {
+            if (!string.IsNullOrWhiteSpace(result.Message))
             {
-                LoadDoc();
+                MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
             }
 
-            if (result.IsSuccess)
-            {
-                if (!string.IsNullOrWhiteSpace(result.Message))
-                {
-                    MessageBox.Show(result.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
-
-                return;
-            }
-
-            MessageBox.Show(
-                result.Message,
-                "Операция",
-                MessageBoxButton.OK,
-                ResolveServerUpdateLineMessageImage(result.Kind));
             return;
         }
 
-        try
-        {
-            _services.Documents.UpdateDocLineQty(_doc!.Id, _selectedDocLine.Id, qtyDialog.QtyBase, qtyDialog.QtyInput, qtyDialog.UomCode);
-            LoadDocLines();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        MessageBox.Show(
+            result.Message,
+            "Операция",
+            MessageBoxButton.OK,
+            ResolveServerUpdateLineMessageImage(result.Kind));
     }
 
     private static MessageBoxImage ResolveServerUpdateLineMessageImage(WpfUpdateDocLineResultKind kind)
@@ -1225,11 +1092,6 @@ public partial class OperationDetailsWindow : Window
                 "Операция",
                 "assign-hu");
             return;
-        }
-        else if (_doc.Type == DocType.Outbound)
-        {
-            LogHuServerFlowInfo(
-                $"assign-hu routed to legacy local path: add={_services.WpfAddDocLines.IsServerAddDocLineEnabled()} update={_services.WpfUpdateDocLines.IsServerUpdateEnabled()} delete={_services.WpfDeleteDocLines.IsServerDeleteEnabled()}");
         }
 
         try
@@ -2105,9 +1967,6 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        LogHuServerFlowInfo(
-            $"outbound-hu-apply routed to legacy local path: add={_services.WpfAddDocLines.IsServerAddDocLineEnabled()} update={_services.WpfUpdateDocLines.IsServerUpdateEnabled()} delete={_services.WpfDeleteDocLines.IsServerDeleteEnabled()}");
-
         var ratio = line.QtyInput.HasValue && line.Qty > 0
             ? line.QtyInput.Value / line.Qty
             : (double?)null;
@@ -2185,57 +2044,13 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        var useServerBatchRebuild = IsServerBatchRebuildEnabled();
-        LogOutboundOrderBoundInfo(
-            $"explicit fill invoked: order_id={selected.Id}; mode={(useServerBatchRebuild ? "server" : "legacy")}; partial={_isPartialShipment}");
-
-        if (useServerBatchRebuild)
-        {
-            LogOutboundOrderBoundInfo($"explicit fill routed to server batch path for order_id={selected.Id}");
-            return await TryApplyOrderSelectionViaServerAsync(selected);
-        }
-
-        if (_services.WpfBatchAddDocLines.IsServerBatchAddDocLineEnabled() && !_services.WpfDeleteDocLines.IsServerDeleteEnabled())
-        {
-            LogOutboundOrderBoundInfo($"explicit fill routed to legacy local path for order_id={selected.Id}; reason=server delete-line mode disabled");
-        }
-        else
-        {
-            LogOutboundOrderBoundInfo($"explicit fill routed to legacy local path for order_id={selected.Id}");
-        }
-
-        TryApplyOrderSelectionLegacy(selected);
-        return true;
-    }
-
-    private void TryApplyOrderSelectionLegacy(OrderOption selected)
-    {
-        if (_doc == null || _doc.Type != DocType.Outbound)
-        {
-            return;
-        }
-
-        try
-        {
-            var added = _services.Documents.ApplyOrderToDoc(_doc.Id, selected.Id);
-            LoadOrderQuantities(selected.Id);
-            LoadDoc();
-            if (added == 0)
-            {
-                MessageBox.Show("По заказу нет остатка к отгрузке.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        LogOutboundOrderBoundInfo($"explicit fill invoked: order_id={selected.Id}; mode=server; partial={_isPartialShipment}");
+        return await TryApplyOrderSelectionViaServerAsync(selected);
     }
 
     private bool IsFullServerLineLifecycleEnabled()
     {
-        return _services.WpfAddDocLines.IsServerAddDocLineEnabled()
-               && _services.WpfUpdateDocLines.IsServerUpdateEnabled()
-               && _services.WpfDeleteDocLines.IsServerDeleteEnabled();
+        return true;
     }
 
     private async Task<bool> TryApplyOutboundHuMutationViaServerAsync(
@@ -2574,26 +2389,6 @@ public partial class OperationDetailsWindow : Window
 
             return;
         }
-
-        if (_services.WpfBatchAddDocLines.IsServerBatchAddDocLineEnabled()
-            && !_services.WpfDeleteDocLines.IsServerDeleteEnabled())
-        {
-            _services.AppLogger.Info($"wpf_batch_rebuild doc_id={_doc.Id} doc_type=ProductionReceipt mode=legacy reason=server_delete_disabled");
-        }
-
-        try
-        {
-            var added = _services.Documents.ApplyOrderToProductionReceipt(_doc.Id, orderId, toLocation?.Id, toHu, replaceLines);
-            LoadDoc();
-            if (showEmptyMessage && added == 0)
-            {
-                MessageBox.Show("Нет позиций для приёмки по выбранному заказу.", "Выпуск продукции", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
     }
 
     private IReadOnlyList<WpfAddDocLineContext> BuildOutboundOrderBatchContexts(long orderId, long? fromLocationId, string? fromHu)
@@ -2634,8 +2429,7 @@ public partial class OperationDetailsWindow : Window
 
     private bool IsServerBatchRebuildEnabled()
     {
-        return _services.WpfBatchAddDocLines.IsServerBatchAddDocLineEnabled()
-               && _services.WpfDeleteDocLines.IsServerDeleteEnabled();
+        return true;
     }
 
     private async Task<bool> TryDeleteLinesForServerRebuildAsync(
