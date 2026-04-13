@@ -8060,7 +8060,12 @@
               }
               return postJson(baseUrl + "/api/docs/" + encodeURIComponent(docUid) + "/lines", linePayload);
             });
-          }, Promise.resolve(true));
+          }, Promise.resolve(true)).then(function () {
+            return postJson(baseUrl + "/api/docs/" + encodeURIComponent(docUid) + "/close", {
+              event_id: createUuid(),
+              device_id: deviceId,
+            });
+          });
         });
       });
   }

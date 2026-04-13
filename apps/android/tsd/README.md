@@ -26,14 +26,14 @@
 3. Выберите Chrome и откройте страницу.
 
 ## Сканер (keyboard / intent)
-- По умолчанию используется keyboard wedge (скан печатается в фокус).
-- Intent-сканирование поддерживается только через JS-bridge в native wrapper (WebView/TWA/Capacitor).
-- В чистом Chrome/PWA broadcast intent недоступен.
+- По умолчанию используется `keyboard wedge` (сканер печатает данные в текущий фокус).
+- `Intent`-сканирование поддерживается только через JS-bridge в нативной оболочке (`WebView` / `TWA` / `Capacitor`).
+- В чистом `Chrome` / `PWA` broadcast intent недоступен.
 
 ### Режимы
-- `auto` (по умолчанию): intent при наличии bridge, иначе keyboard.
-- `keyboard`: принудительно wedge.
-- `intent`: принудительно intent (если bridge нет — fallback на keyboard).
+- `auto` (по умолчанию): используется `intent`, если доступен bridge, иначе `keyboard`.
+- `keyboard`: принудительный режим wedge.
+- `intent`: принудительный режим `intent` (если bridge недоступен, будет fallback на `keyboard`).
 
 Способы указать режим:
 - В debug-режиме (откройте `index.html?debug=1#/settings`) выберите режим в настройках.
@@ -100,4 +100,4 @@
 - Для полного сброса настроек очистите данные Chrome.
 
 ## Примечание
-- Остатки по складу будут добавлены на следующем шаге.
+- Этот документ и остальные Markdown-файлы репозитория поддерживаются на русском языке.
