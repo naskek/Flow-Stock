@@ -638,14 +638,34 @@ public sealed class WpfReadApiService
 
     private static int? ReadNullableInt32(JsonElement element, string propertyName)
     {
-        return element.TryGetProperty(propertyName, out var property) && property.TryGetInt32(out var value)
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (property.TryGetInt32(out var value))
+        {
+            return value;
+        }
+
+        return int.TryParse(property.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value)
             ? value
             : null;
     }
 
     private static long? ReadNullableInt64(JsonElement element, string propertyName)
     {
-        return element.TryGetProperty(propertyName, out var property) && property.TryGetInt64(out var value)
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (property.TryGetInt64(out var value))
+        {
+            return value;
+        }
+
+        return long.TryParse(property.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value)
             ? value
             : null;
     }

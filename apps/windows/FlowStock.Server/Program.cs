@@ -715,6 +715,22 @@ ORDER BY i.name;"
     var list = new List<object>();
     while (reader.Read())
     {
+        // Compatibility: some databases have items.is_marked as integer (0/1) instead of boolean.
+        bool isMarked = false;
+        if (!reader.IsDBNull(13))
+        {
+            var raw = reader.GetValue(13);
+            isMarked = raw switch
+            {
+                bool b => b,
+                byte b => b != 0,
+                short s => s != 0,
+                int i => i != 0,
+                long l => l != 0,
+                _ => Convert.ToInt32(raw, CultureInfo.InvariantCulture) != 0
+            };
+        }
+
         var baseUom = reader.IsDBNull(4) ? null : reader.GetString(4);
         if (string.IsNullOrWhiteSpace(baseUom) && !reader.IsDBNull(5))
         {
@@ -736,7 +752,7 @@ ORDER BY i.name;"
             max_qty_per_hu = reader.IsDBNull(10) ? (double?)null : Convert.ToDouble(reader.GetValue(10), CultureInfo.InvariantCulture),
             tara_id = reader.IsDBNull(11) ? (long?)null : reader.GetInt64(11),
             tara_name = reader.IsDBNull(12) ? null : reader.GetString(12),
-            is_marked = !reader.IsDBNull(13) && reader.GetBoolean(13)
+            is_marked = isMarked
         });
     }
 
