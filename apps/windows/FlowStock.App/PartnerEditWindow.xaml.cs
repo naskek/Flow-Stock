@@ -40,8 +40,8 @@ public partial class PartnerEditWindow : Window
         NameBox.Text = _partner.Name;
         InnBox.Text = _partner.Code ?? string.Empty;
         var currentStatus = _services.WpfPartnerApi.TryGetPartners(out var apiPartners)
-            ? apiPartners.FirstOrDefault(entry => entry.Partner.Id == _partner.Id)?.Status ?? _services.PartnerStatuses.GetStatus(_partner.Id)
-            : _services.PartnerStatuses.GetStatus(_partner.Id);
+            ? apiPartners.FirstOrDefault(entry => entry.Partner.Id == _partner.Id)?.Status ?? PartnerStatus.Both
+            : PartnerStatus.Both;
         StatusCombo.SelectedItem = _statusOptions.FirstOrDefault(option => option.Status == currentStatus)
                                    ?? _statusOptions.LastOrDefault();
     }
@@ -81,10 +81,10 @@ public partial class PartnerEditWindow : Window
 
                 var partnerId = result.IsSuccess
                     ? (result.PartnerId ?? 0)
-                    : _services.Catalog.CreatePartner(name, inn);
-                if (!result.IsSuccess)
+                    : 0;
+                if (partnerId <= 0)
                 {
-                    _services.PartnerStatuses.SetStatus(partnerId, status);
+                    throw new InvalidOperationException("Сервер не вернул идентификатор нового контрагента.");
                 }
 
                 SavedPartnerId = partnerId;
@@ -94,13 +94,7 @@ public partial class PartnerEditWindow : Window
                 var result = await _services.WpfPartnerApi.TryUpdatePartnerAsync(_partner.Id, name, inn, status).ConfigureAwait(true);
                 if (!result.IsSuccess)
                 {
-                    if (!string.IsNullOrWhiteSpace(result.Error))
-                    {
-                        throw new InvalidOperationException(result.Error);
-                    }
-
-                    _services.Catalog.UpdatePartner(_partner.Id, name, inn);
-                    _services.PartnerStatuses.SetStatus(_partner.Id, status);
+                    throw new InvalidOperationException(result.Error ?? "Не удалось обновить контрагента через сервер.");
                 }
 
                 SavedPartnerId = _partner.Id;
@@ -134,7 +128,7 @@ public partial class PartnerEditWindow : Window
 
         var duplicate = _services.WpfPartnerApi.TryGetPartners(out var apiPartners)
             ? apiPartners.Select(entry => entry.Partner).FirstOrDefault(partner => string.Equals(partner.Code, inn, StringComparison.OrdinalIgnoreCase))
-            : _services.DataStore.FindPartnerByCode(inn);
+            : null;
         if (duplicate == null)
         {
             return true;

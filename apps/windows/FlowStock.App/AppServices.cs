@@ -29,6 +29,7 @@ public sealed class AppServices
     public WpfImportApiService WpfImportApi { get; }
     public WpfPackagingApiService WpfPackagingApi { get; }
     public WpfReadApiService WpfReadApi { get; }
+    public WpfDocumentRuntimeApiService WpfDocumentRuntimeApi { get; }
     public WpfIncomingRequestsApiService WpfIncomingRequestsApi { get; }
     public WpfCreateOrderService WpfCreateOrders { get; }
     public WpfUpdateOrderService WpfUpdateOrders { get; }
@@ -92,12 +93,13 @@ public sealed class AppServices
         WpfImportApi = new WpfImportApiService(Settings, appLogger);
         WpfPackagingApi = new WpfPackagingApiService(Settings, appLogger);
         WpfReadApi = new WpfReadApiService(Settings, appLogger);
+        WpfDocumentRuntimeApi = new WpfDocumentRuntimeApiService(Settings, appLogger);
         WpfIncomingRequestsApi = new WpfIncomingRequestsApiService(Settings, appLogger);
         WpfCreateOrders = new WpfCreateOrderService(Settings, appLogger);
         WpfUpdateOrders = new WpfUpdateOrderService(Settings, appLogger);
         WpfDeleteOrders = new WpfDeleteOrderService(Settings, appLogger);
         WpfSetOrderStatuses = new WpfSetOrderStatusService(Settings, appLogger);
-        IncomingRequestOrderApprovals = new IncomingRequestOrderApiBridgeService(Settings, appLogger, dataStore, WpfIncomingRequestsApi);
+        IncomingRequestOrderApprovals = new IncomingRequestOrderApiBridgeService(Settings, appLogger, WpfIncomingRequestsApi);
         WpfCreateDocDrafts = new WpfCreateDocDraftService(Settings, appLogger);
         WpfCloseDocuments = new WpfCloseDocumentService(connectionString, Settings, appLogger);
         WpfAddDocLines = new WpfAddDocLineService(connectionString, Settings, appLogger);

@@ -203,6 +203,66 @@ public sealed class CloseHuRequest
     public string? Note { get; set; }
 }
 
+public sealed class SaveDocHeaderRequest
+{
+    [JsonPropertyName("partner_id")]
+    public long? PartnerId { get; set; }
+
+    [JsonPropertyName("order_id")]
+    public long? OrderId { get; set; }
+
+    [JsonPropertyName("shipping_ref")]
+    public string? ShippingRef { get; set; }
+
+    [JsonPropertyName("reason_code")]
+    public string? ReasonCode { get; set; }
+
+    [JsonPropertyName("comment")]
+    public string? Comment { get; set; }
+
+    [JsonPropertyName("production_batch_no")]
+    public string? ProductionBatchNo { get; set; }
+}
+
+public sealed class AssignDocLineHuRequest
+{
+    [JsonPropertyName("qty")]
+    public double Qty { get; set; }
+
+    [JsonPropertyName("from_hu")]
+    public string? FromHu { get; set; }
+
+    [JsonPropertyName("to_hu")]
+    public string? ToHu { get; set; }
+}
+
+public sealed class AutoDistributeProductionReceiptHusRequest
+{
+    [JsonPropertyName("line_ids")]
+    public List<long>? LineIds { get; set; }
+}
+
+public sealed class DistributeProductionLineByHuCapacityRequest
+{
+    [JsonPropertyName("max_qty_per_hu")]
+    public double MaxQtyPerHu { get; set; }
+
+    [JsonPropertyName("hu_codes")]
+    public List<string>? HuCodes { get; set; }
+}
+
+public sealed class SetPackSingleHuRequest
+{
+    [JsonPropertyName("pack_single_hu")]
+    public bool PackSingleHu { get; set; }
+}
+
+public sealed class ImportJsonlRequest
+{
+    [JsonPropertyName("content")]
+    public string? Content { get; set; }
+}
+
 public sealed class TsdLoginRequest
 {
     [JsonPropertyName("login")]

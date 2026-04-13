@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using FlowStock.Core.Abstractions;
 using FlowStock.Core.Models;
 
 namespace FlowStock.App;
@@ -11,7 +10,6 @@ public sealed class IncomingRequestOrderApiBridgeService
 {
     private readonly SettingsService _settings;
     private readonly FileLogger _logger;
-    private readonly IDataStore _dataStore;
     private readonly WpfIncomingRequestsApiService _incomingRequestsApi;
     private readonly CreateOrderApiClient _createOrderApiClient = new();
     private readonly SetOrderStatusApiClient _setOrderStatusApiClient = new();
@@ -19,12 +17,10 @@ public sealed class IncomingRequestOrderApiBridgeService
     public IncomingRequestOrderApiBridgeService(
         SettingsService settings,
         FileLogger logger,
-        IDataStore dataStore,
         WpfIncomingRequestsApiService incomingRequestsApi)
     {
         _settings = settings;
         _logger = logger;
-        _dataStore = dataStore;
         _incomingRequestsApi = incomingRequestsApi;
     }
 
@@ -296,13 +292,8 @@ public sealed class IncomingRequestOrderApiBridgeService
         {
             return;
         }
-
-        _dataStore.ResolveOrderRequest(
-            requestId,
-            OrderRequestStatus.Approved,
-            resolvedBy,
-            note,
-            appliedOrderId);
+        
+        throw new InvalidOperationException("Не удалось подтвердить заявку на сервере: не выполнена фиксация статуса APPROVED.");
     }
 
     private static IncomingRequestOrderApprovalResult MapCreateHttpError(CreateOrderApiCallResult apiCall)

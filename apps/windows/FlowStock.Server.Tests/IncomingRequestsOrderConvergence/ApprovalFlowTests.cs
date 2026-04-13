@@ -17,7 +17,7 @@ public sealed class ApprovalFlowTests
         var settingsService = new SettingsService(temp.SettingsPath);
         var logger = new FileLogger(temp.LogPath);
         var requestsApi = new WpfIncomingRequestsApiService(settingsService, logger);
-        var service = new IncomingRequestOrderApiBridgeService(settingsService, logger, harness.Store, requestsApi);
+        var service = new IncomingRequestOrderApiBridgeService(settingsService, logger, requestsApi);
 
         var result = await service.ApproveAsync(request, "wpf-operator");
 
@@ -47,7 +47,7 @@ public sealed class ApprovalFlowTests
         var settingsService = new SettingsService(temp.SettingsPath);
         var logger = new FileLogger(temp.LogPath);
         var requestsApi = new WpfIncomingRequestsApiService(settingsService, logger);
-        var service = new IncomingRequestOrderApiBridgeService(settingsService, logger, harness.Store, requestsApi);
+        var service = new IncomingRequestOrderApiBridgeService(settingsService, logger, requestsApi);
 
         var result = await service.ApproveAsync(request, "wpf-operator");
 

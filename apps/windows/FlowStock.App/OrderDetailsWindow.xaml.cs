@@ -78,15 +78,9 @@ public partial class OrderDetailsWindow : Window
 
         var partners = _services.WpfReadApi.TryGetPartners(out var readApiPartners)
             ? readApiPartners
-            : _services.Catalog.GetPartners();
+            : Array.Empty<Partner>();
         foreach (var partner in partners)
         {
-            var status = _services.PartnerStatuses.GetStatus(partner.Id);
-            if (status == PartnerStatus.Supplier)
-            {
-                continue;
-            }
-
             _partners.Add(partner);
         }
     }
@@ -124,7 +118,7 @@ public partial class OrderDetailsWindow : Window
         BeginLoad();
         _order = _services.WpfReadApi.TryGetOrder(_orderId.Value, out var apiOrder)
             ? apiOrder
-            : _services.Orders.GetOrder(_orderId.Value);
+            : null;
         if (_order == null)
         {
             MessageBox.Show("Заказ не найден.", "Заказы", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -151,7 +145,7 @@ public partial class OrderDetailsWindow : Window
         _lines.Clear();
         var lines = _services.WpfReadApi.TryGetOrderLines(_order.Id, out var apiLines)
             ? apiLines
-            : _services.Orders.GetOrderLineViews(_order.Id);
+            : Array.Empty<OrderLineView>();
         foreach (var line in lines)
         {
             _lines.Add(line);
@@ -367,7 +361,7 @@ public partial class OrderDetailsWindow : Window
     {
         var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
             ? apiPackagings
-            : _services.Packagings.GetPackagings(item.Id);
+            : Array.Empty<ItemPackaging>();
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
         var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode)
         {
@@ -411,7 +405,7 @@ public partial class OrderDetailsWindow : Window
             return;
         }
 
-        var item = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : _services.Catalog.GetItems(null))
+        var item = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
             .FirstOrDefault(candidate => candidate.Id == _selectedLine.ItemId);
         if (item == null)
         {
@@ -421,7 +415,7 @@ public partial class OrderDetailsWindow : Window
 
         var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
             ? apiPackagings
-            : _services.Packagings.GetPackagings(item.Id);
+            : Array.Empty<ItemPackaging>();
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
         var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, _selectedLine.QtyOrdered, defaultUomCode)
         {
@@ -473,7 +467,7 @@ public partial class OrderDetailsWindow : Window
 
         var availableByItem = _services.WpfReadApi.TryGetItemAvailability(out var apiAvailability)
             ? apiAvailability
-            : _services.Orders.GetItemAvailability();
+            : new Dictionary<long, double>();
         var processedByLine = new Dictionary<long, double>();
 
         if (_orderId.HasValue)
@@ -482,7 +476,7 @@ public partial class OrderDetailsWindow : Window
             {
                 var receiptRemaining = _services.WpfReadApi.TryGetOrderReceiptRemaining(_orderId.Value, out var apiReceipt)
                     ? apiReceipt
-                    : _services.Documents.GetOrderReceiptRemaining(_orderId.Value);
+                    : Array.Empty<OrderReceiptLine>();
                 processedByLine = receiptRemaining.ToDictionary(line => line.OrderLineId, line => line.QtyReceived);
             }
             else
@@ -490,11 +484,6 @@ public partial class OrderDetailsWindow : Window
                 if (_services.WpfReadApi.TryGetOrderLines(_orderId.Value, out var apiLines))
                 {
                     processedByLine = apiLines.ToDictionary(line => line.Id, line => line.QtyShipped);
-                }
-                else
-                {
-                    processedByLine = _services.Orders.GetShippedTotals(_orderId.Value)
-                        .ToDictionary(entry => entry.Key, entry => entry.Value);
                 }
             }
         }
@@ -733,7 +722,7 @@ public partial class OrderDetailsWindow : Window
             return apiPartners.FirstOrDefault(entry => entry.Partner.Id == partnerId)?.Status == PartnerStatus.Supplier;
         }
 
-        return _services.PartnerStatuses.GetStatus(partnerId) == PartnerStatus.Supplier;
+        return false;
     }
 
     private bool TryValidateOrderRefUnique(string orderRef)
@@ -741,7 +730,7 @@ public partial class OrderDetailsWindow : Window
         var normalized = orderRef.Trim();
         var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
             ? apiOrders
-            : _services.Orders.GetOrders();
+            : Array.Empty<Order>();
         var duplicate = orders
             .FirstOrDefault(order => string.Equals(order.OrderRef, normalized, StringComparison.OrdinalIgnoreCase)
                                      && (!_orderId.HasValue || order.Id != _orderId.Value));
@@ -804,7 +793,7 @@ public partial class OrderDetailsWindow : Window
         var max = 0L;
         var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
             ? apiOrders
-            : _services.Orders.GetOrders();
+            : Array.Empty<Order>();
         foreach (var order in orders)
         {
             var orderRef = order.OrderRef?.Trim();
@@ -883,9 +872,10 @@ public partial class OrderDetailsWindow : Window
             return false;
         }
 
-        var persistedLines = _services.WpfReadApi.TryGetOrderLines(_orderId.Value, out var apiLines)
-            ? apiLines
-            : _services.Orders.GetOrderLineViews(_orderId.Value);
+        if (!_services.WpfReadApi.TryGetOrderLines(_orderId.Value, out var persistedLines))
+        {
+            return false;
+        }
         return HaveEquivalentLineSnapshot(_lines, persistedLines);
     }
 

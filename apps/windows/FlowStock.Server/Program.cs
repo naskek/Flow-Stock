@@ -245,6 +245,34 @@ app.MapPost("/api/import-errors/{errorId:long}/reapply", (long errorId, ImportSe
         : Results.Ok(new ApiResult(false, "REAPPLY_FAILED"));
 });
 
+app.MapPost("/api/imports/jsonl", async (HttpRequest request, ImportService importService) =>
+{
+    var parsed = await ParseJsonBody<ImportJsonlRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var content = parsed.Value?.Content;
+    if (string.IsNullOrWhiteSpace(content))
+    {
+        return Results.BadRequest(new ApiResult(false, "EMPTY_CONTENT"));
+    }
+
+    var result = importService.ImportJsonlContent(content);
+    return Results.Ok(new
+    {
+        imported = result.Imported,
+        duplicates = result.Duplicates,
+        errors = result.Errors,
+        documents_created = result.DocumentsCreated,
+        operations_imported = result.OperationsImported,
+        lines_imported = result.LinesImported,
+        items_upserted = result.ItemsUpserted,
+        device_ids = result.DeviceIds
+    });
+});
+
 app.MapGet("/api/admin/tsd-devices", () =>
 {
     using var connection = OpenConnection(postgresConnectionString);
@@ -1248,6 +1276,277 @@ app.MapGet("/api/docs/{docId:long}/lines", (long docId, IDataStore store) =>
         .Select(MapDocLine)
         .ToList();
     return Results.Ok(lines);
+});
+
+app.MapPost("/api/docs/{docId:long}/recount", (long docId, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    if (doc.Type != DocType.Inventory)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
+    }
+
+    docs.MarkDocForRecount(docId);
+    return Results.Ok(new ApiResult(true));
+});
+
+app.MapPost("/api/docs/{docId:long}/header", async (long docId, HttpRequest request, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    var parsed = await ParseJsonBody<SaveDocHeaderRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var saveRequest = parsed.Value!;
+    var partnerId = saveRequest.PartnerId;
+    if (partnerId.HasValue && store.GetPartner(partnerId.Value) == null)
+    {
+        return Results.BadRequest(new ApiResult(false, "PARTNER_NOT_FOUND"));
+    }
+
+    var shippingRef = NormalizeHu(saveRequest.ShippingRef);
+    var reasonCode = string.IsNullOrWhiteSpace(saveRequest.ReasonCode) ? null : saveRequest.ReasonCode.Trim();
+    var comment = string.IsNullOrWhiteSpace(saveRequest.Comment) ? null : saveRequest.Comment.Trim();
+    var productionBatchNo = string.IsNullOrWhiteSpace(saveRequest.ProductionBatchNo) ? null : saveRequest.ProductionBatchNo.Trim();
+
+    Order? order = null;
+    if (saveRequest.OrderId.HasValue)
+    {
+        order = store.GetOrder(saveRequest.OrderId.Value);
+        if (order == null)
+        {
+            return Results.BadRequest(new ApiResult(false, "ORDER_NOT_FOUND"));
+        }
+    }
+
+    if (order != null)
+    {
+        var headerPartnerId = doc.Type == DocType.Outbound ? order.PartnerId : partnerId;
+        docs.UpdateDocHeader(docId, headerPartnerId, order.OrderRef, shippingRef);
+        docs.UpdateDocOrderBinding(docId, order.Id);
+    }
+    else
+    {
+        if (doc.Type == DocType.Outbound)
+        {
+            docs.ClearDocOrder(docId, partnerId);
+        }
+        else if (doc.Type == DocType.ProductionReceipt)
+        {
+            docs.UpdateDocOrderBinding(docId, null);
+        }
+
+        docs.UpdateDocHeader(docId, partnerId, null, shippingRef);
+    }
+
+    if (doc.Type == DocType.WriteOff)
+    {
+        docs.UpdateDocReason(docId, reasonCode);
+    }
+    else if (doc.Type == DocType.ProductionReceipt)
+    {
+        docs.UpdateDocProductionBatch(docId, productionBatchNo);
+        docs.UpdateDocComment(docId, comment);
+    }
+
+    var updated = store.GetDoc(docId);
+    return updated == null
+        ? Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"))
+        : Results.Ok(MapDoc(updated));
+});
+
+app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/assign-hu", async (long docId, long lineId, HttpRequest request, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    if (store.GetDocLines(docId).All(line => line.Id != lineId))
+    {
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LINE"));
+    }
+
+    var parsed = await ParseJsonBody<AssignDocLineHuRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var assignRequest = parsed.Value!;
+    if (assignRequest.Qty <= 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_QTY"));
+    }
+
+    try
+    {
+        docs.AssignDocLineHu(
+            docId,
+            lineId,
+            assignRequest.Qty,
+            NormalizeHu(assignRequest.FromHu),
+            NormalizeHu(assignRequest.ToHu));
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapPost("/api/docs/{docId:long}/production-receipt/auto-distribute-hus", async (long docId, HttpRequest request, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    if (doc.Type != DocType.ProductionReceipt)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
+    }
+
+    var parsed = await ParseJsonBody<AutoDistributeProductionReceiptHusRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var lineIds = (parsed.Value!.LineIds ?? new List<long>())
+        .Where(id => id > 0)
+        .Distinct()
+        .ToList();
+
+    var usedHuCount = docs.AutoDistributeProductionReceiptHus(docId, lineIds.Count > 0 ? lineIds : null);
+    return Results.Ok(new
+    {
+        ok = true,
+        used_hu_count = usedHuCount
+    });
+});
+
+app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/distribute-hu-capacity", async (long docId, long lineId, HttpRequest request, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    if (doc.Type != DocType.ProductionReceipt)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
+    }
+
+    if (store.GetDocLines(docId).All(line => line.Id != lineId))
+    {
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LINE"));
+    }
+
+    var parsed = await ParseJsonBody<DistributeProductionLineByHuCapacityRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    var distributeRequest = parsed.Value!;
+    if (distributeRequest.MaxQtyPerHu <= 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_CAPACITY"));
+    }
+
+    var huCodes = (distributeRequest.HuCodes ?? new List<string>())
+        .Where(code => !string.IsNullOrWhiteSpace(code))
+        .Select(code => code.Trim())
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+    if (huCodes.Count == 0)
+    {
+        return Results.BadRequest(new ApiResult(false, "MISSING_HU"));
+    }
+
+    try
+    {
+        docs.DistributeProductionLineByHuCapacity(docId, lineId, distributeRequest.MaxQtyPerHu, huCodes);
+        return Results.Ok(new ApiResult(true));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new ApiResult(false, ex.Message));
+    }
+});
+
+app.MapPost("/api/docs/{docId:long}/lines/{lineId:long}/pack-single-hu", async (long docId, long lineId, HttpRequest request, IDataStore store, DocumentService docs) =>
+{
+    var doc = store.GetDoc(docId);
+    if (doc == null)
+    {
+        return Results.NotFound(new ApiResult(false, "DOC_NOT_FOUND"));
+    }
+
+    if (doc.Status != DocStatus.Draft)
+    {
+        return Results.BadRequest(new ApiResult(false, "DOC_NOT_DRAFT"));
+    }
+
+    if (doc.Type != DocType.ProductionReceipt)
+    {
+        return Results.BadRequest(new ApiResult(false, "INVALID_DOC_TYPE"));
+    }
+
+    if (store.GetDocLines(docId).All(line => line.Id != lineId))
+    {
+        return Results.BadRequest(new ApiResult(false, "UNKNOWN_LINE"));
+    }
+
+    var parsed = await ParseJsonBody<SetPackSingleHuRequest>(request);
+    if (!parsed.IsSuccess)
+    {
+        return parsed.Error!;
+    }
+
+    docs.UpdateProductionLinePackSingleHu(docId, lineId, parsed.Value!.PackSingleHu);
+    return Results.Ok(new ApiResult(true));
 });
 
 app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>

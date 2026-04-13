@@ -27,7 +27,7 @@ public partial class UomWindow : Window
         _uoms.Clear();
         var uoms = _services.WpfCatalogApi.TryGetUoms(out var apiUoms)
             ? apiUoms
-            : _services.Catalog.GetUoms();
+            : Array.Empty<Uom>();
         foreach (var uom in uoms)
         {
             _uoms.Add(uom);
@@ -49,12 +49,7 @@ public partial class UomWindow : Window
             var result = await _services.WpfCatalogApi.TryCreateUomAsync(UomNameBox.Text.Trim()).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(result.Error))
-                {
-                    throw new InvalidOperationException(result.Error);
-                }
-
-                _services.Catalog.CreateUom(UomNameBox.Text);
+                throw new InvalidOperationException(result.Error ?? "Не удалось создать единицу измерения через сервер.");
             }
 
             UomNameBox.Text = string.Empty;
@@ -95,12 +90,7 @@ public partial class UomWindow : Window
             var result = await _services.WpfCatalogApi.TryDeleteUomAsync(_selectedUom.Id).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(result.Error))
-                {
-                    throw new InvalidOperationException(result.Error);
-                }
-
-                _services.Catalog.DeleteUom(_selectedUom.Id);
+                throw new InvalidOperationException(result.Error ?? "Не удалось удалить единицу измерения через сервер.");
             }
 
             LoadUoms();

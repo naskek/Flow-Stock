@@ -32,7 +32,7 @@ public partial class IncomingRequestsWindow : Window
         var merged = new List<IncomingRequestRow>();
         var itemRequests = _services.WpfIncomingRequestsApi.TryGetItemRequests(includeResolved, out var apiItemRequests)
             ? apiItemRequests
-            : _services.DataStore.GetItemRequests(includeResolved);
+            : Array.Empty<ItemRequest>();
         foreach (var itemRequest in itemRequests)
         {
             merged.Add(new IncomingRequestRow
@@ -55,7 +55,7 @@ public partial class IncomingRequestsWindow : Window
 
         var orderRequests = _services.WpfIncomingRequestsApi.TryGetOrderRequests(includeResolved, out var apiOrderRequests)
             ? apiOrderRequests
-            : _services.DataStore.GetOrderRequests(includeResolved);
+            : Array.Empty<OrderRequest>();
         foreach (var orderRequest in orderRequests)
         {
             var isPending = string.Equals(orderRequest.Status, OrderRequestStatus.Pending, StringComparison.OrdinalIgnoreCase);
@@ -147,7 +147,7 @@ public partial class IncomingRequestsWindow : Window
                             .TryResolveItemRequestAsync(row.ItemRequest.Id)
                             .ConfigureAwait(true))
                     {
-                        _services.DataStore.MarkItemRequestResolved(row.ItemRequest.Id);
+                        throw new InvalidOperationException("Не удалось отметить запрос товара обработанным через сервер.");
                     }
 
                     processedItems++;
@@ -235,12 +235,7 @@ public partial class IncomingRequestsWindow : Window
 
             if (!resolved)
             {
-                _services.DataStore.ResolveOrderRequest(
-                    orderRequest.Id,
-                    OrderRequestStatus.Rejected,
-                    resolvedBy,
-                    "Отклонено оператором WPF.",
-                    null);
+                throw new InvalidOperationException($"Не удалось отклонить заявку #{orderRequest.Id} через сервер.");
             }
         }
 

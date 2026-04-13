@@ -26,7 +26,7 @@ public partial class ItemPackagingWindow : Window
 
     private void LoadItem()
     {
-        _item = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : _services.Catalog.GetItems(null))
+        _item = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
             .FirstOrDefault(item => item.Id == _itemId);
         var title = _item == null ? "Товар не найден" : $"Товар: {_item.Name} (база: {_item.BaseUom})";
         ItemTitleText.Text = title;
@@ -40,7 +40,7 @@ public partial class ItemPackagingWindow : Window
         _packagings.Clear();
         var packagings = _services.WpfPackagingApi.TryGetPackagings(_itemId, includeInactive: true, out var apiPackagings)
             ? apiPackagings
-            : _services.Packagings.GetPackagings(_itemId, includeInactive: true);
+            : Array.Empty<ItemPackaging>();
         foreach (var packaging in packagings)
         {
             _packagings.Add(packaging);
@@ -83,12 +83,7 @@ public partial class ItemPackagingWindow : Window
                 .ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(result.Error))
-                {
-                    throw new InvalidOperationException(result.Error);
-                }
-
-                _services.Packagings.CreatePackaging(_itemId, code, name, factor, sortOrder);
+                throw new InvalidOperationException(result.Error ?? "Не удалось создать упаковку через сервер.");
             }
             LoadPackagings();
         }
@@ -119,12 +114,7 @@ public partial class ItemPackagingWindow : Window
                 .ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(result.Error))
-                {
-                    throw new InvalidOperationException(result.Error);
-                }
-
-                _services.Packagings.UpdatePackaging(_selectedPackaging.Id, _itemId, code, name, factor, sortOrder, isActive);
+                throw new InvalidOperationException(result.Error ?? "Не удалось обновить упаковку через сервер.");
             }
             LoadPackagings();
         }
@@ -155,12 +145,7 @@ public partial class ItemPackagingWindow : Window
                 .ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(result.Error))
-                {
-                    throw new InvalidOperationException(result.Error);
-                }
-
-                _services.Packagings.DeactivatePackaging(_selectedPackaging.Id);
+                throw new InvalidOperationException(result.Error ?? "Не удалось удалить упаковку через сервер.");
             }
             LoadPackagings();
         }
@@ -185,12 +170,7 @@ public partial class ItemPackagingWindow : Window
                 .ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(result.Error))
-                {
-                    throw new InvalidOperationException(result.Error);
-                }
-
-                _services.Packagings.SetDefaultPackaging(_itemId, _selectedPackaging.Id);
+                throw new InvalidOperationException(result.Error ?? "Не удалось установить упаковку по умолчанию через сервер.");
             }
             MessageBox.Show("Упаковка по умолчанию установлена.", "Упаковки", MessageBoxButton.OK, MessageBoxImage.Information);
             LoadItem();

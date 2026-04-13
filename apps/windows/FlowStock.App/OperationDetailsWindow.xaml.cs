@@ -101,7 +101,7 @@ public partial class OperationDetailsWindow : Window
         _locations.Clear();
         var locations = _services.WpfReadApi.TryGetLocations(out var apiLocations)
             ? apiLocations
-            : _services.Catalog.GetLocations();
+            : Array.Empty<Location>();
         foreach (var location in locations)
         {
             _locations.Add(location);
@@ -110,7 +110,7 @@ public partial class OperationDetailsWindow : Window
         _partnersAll.Clear();
         var partners = _services.WpfReadApi.TryGetPartners(out var apiPartners)
             ? apiPartners
-            : _services.Catalog.GetPartners();
+            : Array.Empty<Partner>();
         foreach (var partner in partners)
         {
             _partnersAll.Add(partner);
@@ -123,7 +123,7 @@ public partial class OperationDetailsWindow : Window
         _ordersAll.Clear();
         var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
             ? apiOrders
-            : _services.Orders.GetOrders();
+            : Array.Empty<Order>();
         foreach (var order in orders)
         {
             if (order.Status == OrderStatus.Shipped)
@@ -161,7 +161,7 @@ public partial class OperationDetailsWindow : Window
     {
         _doc = _services.WpfReadApi.TryGetDoc(_docId, out var apiDoc)
             ? apiDoc
-            : _services.Documents.GetDoc(_docId);
+            : null;
         if (_doc == null)
         {
             MessageBox.Show("Операция не найдена.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -183,12 +183,12 @@ public partial class OperationDetailsWindow : Window
         var packagingLookup = new Dictionary<long, IReadOnlyList<ItemPackaging>>();
         var itemsById = (_services.WpfReadApi.TryGetItems(null, out var apiItems)
                 ? apiItems
-                : _services.Catalog.GetItems(null))
+                : Array.Empty<Item>())
             .ToDictionary(item => item.Id, item => item);
 
         var lines = _services.WpfReadApi.TryGetDocLines(_docId, out var apiLines)
             ? apiLines
-            : _services.Documents.GetDocLines(_docId);
+            : Array.Empty<DocLineView>();
         var isOutbound = _doc?.Type == DocType.Outbound;
         var isInventory = _doc?.Type == DocType.Inventory;
         var isProductionReceipt = _doc?.Type == DocType.ProductionReceipt;
@@ -255,7 +255,7 @@ public partial class OperationDetailsWindow : Window
                     }
                     else
                     {
-                        inventoryDbQty = _services.DataStore.GetAvailableQty(line.ItemId, locationId.Value, huCode);
+                        inventoryDbQty = 0;
                     }
                     inventoryDiffQty = line.Qty - inventoryDbQty.Value;
                     hasInventoryDiff = Math.Abs(inventoryDiffQty.Value) > 0.000001;
@@ -405,7 +405,7 @@ public partial class OperationDetailsWindow : Window
         await TryCloseCurrentDocAsync();
     }
 
-    private void DocRecount_Click(object sender, RoutedEventArgs e)
+    private async void DocRecount_Click(object sender, RoutedEventArgs e)
     {
         if (_doc == null)
         {
@@ -436,16 +436,15 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        try
+        var result = await _services.WpfDocumentRuntimeApi.TryMarkDocForRecountAsync(_doc.Id);
+        if (!result.IsSuccess)
         {
-            _services.Documents.MarkDocForRecount(_doc.Id);
-            MessageBox.Show("Инвентаризация отправлена на пересчет.", "Инвентаризация", MessageBoxButton.OK, MessageBoxImage.Information);
-            Close();
+            MessageBox.Show(result.Error ?? "Не удалось отправить инвентаризацию на пересчет.", "Инвентаризация", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
         }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Инвентаризация", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+
+        MessageBox.Show("Инвентаризация отправлена на пересчет.", "Инвентаризация", MessageBoxButton.OK, MessageBoxImage.Information);
+        Close();
     }
 
     private async Task TryCloseCurrentDocAsync()
@@ -602,7 +601,7 @@ public partial class OperationDetailsWindow : Window
 
         var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
             ? apiPackagings
-            : _services.Packagings.GetPackagings(item.Id);
+            : Array.Empty<ItemPackaging>();
         var defaultUomCode = ResolveDefaultUomCode(item, packagings);
         var (availableQty, showAvailableLabel) = GetAvailableQtyForDialog(item.Id);
         var qtyDialog = new QuantityUomDialog(item.BaseUom, packagings, 1, defaultUomCode, availableQty, showAvailableLabel)
@@ -928,7 +927,7 @@ public partial class OperationDetailsWindow : Window
 
         var packagings = _services.WpfPackagingApi.TryGetPackagings(item.Id, includeInactive: false, out var apiPackagings)
             ? apiPackagings
-            : _services.Packagings.GetPackagings(item.Id);
+            : Array.Empty<ItemPackaging>();
         var defaultQty = _selectedDocLine.QtyInput ?? _selectedDocLine.QtyBase;
         var defaultUom = string.IsNullOrWhiteSpace(_selectedDocLine.UomCode) ? "BASE" : _selectedDocLine.UomCode;
         var (availableQty, showAvailableLabel) = GetAvailableQtyForDialog(item.Id);
@@ -1075,7 +1074,7 @@ public partial class OperationDetailsWindow : Window
         {
             try
             {
-                if (TryAssignProductionLineByCapacity(line, selectedHu, maxQtyPerHu))
+                if (await TryAssignProductionLineByCapacityAsync(line, selectedHu, maxQtyPerHu))
                 {
                     LoadDoc();
                 }
@@ -1129,15 +1128,14 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        try
+        var assignResult = await _services.WpfDocumentRuntimeApi.TryAssignDocLineHuAsync(_doc.Id, line.Id, qty, targetFromHu, targetToHu);
+        if (!assignResult.IsSuccess)
         {
-            _services.Documents.AssignDocLineHu(_doc.Id, line.Id, qty, targetFromHu, targetToHu);
-            LoadDoc();
+            MessageBox.Show(assignResult.Error ?? "Не удалось назначить HU через сервер.", "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
         }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+
+        LoadDoc();
     }
 
     private async void AutoHuButton_Click(object sender, RoutedEventArgs e)
@@ -1162,25 +1160,24 @@ public partial class OperationDetailsWindow : Window
             .Distinct()
             .ToList();
 
-        try
+        var result = await _services.WpfDocumentRuntimeApi.TryAutoDistributeProductionReceiptHusAsync(
+            _doc.Id,
+            selectedLineIds.Count > 0 ? selectedLineIds : null);
+        if (!result.IsSuccess)
         {
-            var usedHuCount = _services.Documents.AutoDistributeProductionReceiptHus(
-                _doc.Id,
-                selectedLineIds.Count > 0 ? selectedLineIds : null);
-            LoadDoc();
-            MessageBox.Show(
-                $"Автораспределение по HU выполнено. Назначено HU: {usedHuCount}.",
-                "Операция",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
+            MessageBox.Show(result.Error ?? "Не удалось выполнить автораспределение HU через сервер.", "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
         }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+
+        LoadDoc();
+        MessageBox.Show(
+            $"Автораспределение по HU выполнено. Назначено HU: {result.UsedHuCount}.",
+            "Операция",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
-    private bool TryAssignProductionLineByCapacity(DocLine line, string selectedHu, double maxQtyPerHu)
+    private async Task<bool> TryAssignProductionLineByCapacityAsync(DocLine line, string selectedHu, double maxQtyPerHu)
     {
         if (_doc == null)
         {
@@ -1219,7 +1216,13 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        _services.Documents.DistributeProductionLineByHuCapacity(_doc.Id, line.Id, maxQtyPerHu, huCodes);
+        var result = await _services.WpfDocumentRuntimeApi.TryDistributeProductionLineByHuCapacityAsync(_doc.Id, line.Id, maxQtyPerHu, huCodes);
+        if (!result.IsSuccess)
+        {
+            MessageBox.Show(result.Error ?? "Не удалось распределить строку по HU через сервер.", "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
+        }
+
         if (requiredHuCount > 1)
         {
             MessageBox.Show(
@@ -1414,7 +1417,7 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void PackSingleHuCheckBox_Click(object sender, RoutedEventArgs e)
+    private async void PackSingleHuCheckBox_Click(object sender, RoutedEventArgs e)
     {
         if (_doc == null || _doc.Type != DocType.ProductionReceipt)
         {
@@ -1432,16 +1435,15 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        try
-        {
-            _services.Documents.UpdateProductionLinePackSingleHu(_doc.Id, lineDisplay.Id, checkBox.IsChecked == true);
-            LoadDocLines();
-        }
-        catch (Exception ex)
+        var result = await _services.WpfDocumentRuntimeApi.TrySetProductionLinePackSingleHuAsync(_doc.Id, lineDisplay.Id, checkBox.IsChecked == true);
+        if (!result.IsSuccess)
         {
             LoadDocLines();
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(result.Error ?? "Не удалось сохранить настройку Pack single HU через сервер.", "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
         }
+
+        LoadDocLines();
     }
 
     private void ApplyReasonSelection(Doc doc)
@@ -1598,7 +1600,7 @@ public partial class OperationDetailsWindow : Window
         UpdateLineButtons();
     }
 
-    private void DocOrderCombo_KeyUp(object sender, KeyEventArgs e)
+    private async void DocOrderCombo_KeyUp(object sender, KeyEventArgs e)
     {
         if (_suppressOrderSync)
         {
@@ -1608,7 +1610,7 @@ public partial class OperationDetailsWindow : Window
         if (string.IsNullOrWhiteSpace(DocOrderCombo.Text))
         {
             DocOrderCombo.SelectedItem = null;
-            ClearDocOrderBinding();
+            await ClearDocOrderBindingAsync();
             ResetPartialMode();
             UpdatePartnerLock();
             UpdateLineButtons();
@@ -1620,13 +1622,13 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void DocOrderClear_Click(object sender, RoutedEventArgs e)
+    private async void DocOrderClear_Click(object sender, RoutedEventArgs e)
     {
         _suppressOrderSync = true;
         DocOrderCombo.SelectedItem = null;
         DocOrderCombo.Text = string.Empty;
         _suppressOrderSync = false;
-        ClearDocOrderBinding();
+        await ClearDocOrderBindingAsync();
         ResetPartialMode();
         UpdatePartnerLock();
         UpdateLineButtons();
@@ -2001,54 +2003,14 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        if (IsFullServerLineLifecycleEnabled())
-        {
-            await TryApplyOutboundHuMutationViaServerAsync(
-                line,
-                qty,
-                _selectedOutboundHu.LocationId,
-                _selectedOutboundHu.HuCode,
-                null,
-                "Отгрузка",
-                "outbound-hu-apply");
-            return;
-        }
-
-        var ratio = line.QtyInput.HasValue && line.Qty > 0
-            ? line.QtyInput.Value / line.Qty
-            : (double?)null;
-        var allocatedInput = ratio.HasValue ? ratio.Value * qty : (double?)null;
-        var remainingQty = line.Qty - qty;
-        var remainingInput = ratio.HasValue ? ratio.Value * remainingQty : (double?)null;
-
-        try
-        {
-            if (remainingQty <= 0.000001)
-            {
-                _services.Documents.DeleteDocLine(_doc.Id, line.Id);
-            }
-            else
-            {
-                _services.Documents.UpdateDocLineQty(_doc.Id, line.Id, remainingQty, remainingInput, line.UomCode);
-            }
-
-            _services.Documents.AddDocLine(
-                _doc.Id,
-                line.ItemId,
-                qty,
-                _selectedOutboundHu.LocationId,
-                null,
-                allocatedInput,
-                line.UomCode,
-                _selectedOutboundHu.HuCode,
-                null,
-                line.OrderLineId);
-            LoadDocLines();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Отгрузка", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        await TryApplyOutboundHuMutationViaServerAsync(
+            line,
+            qty,
+            _selectedOutboundHu.LocationId,
+            _selectedOutboundHu.HuCode,
+            null,
+            "Отгрузка",
+            "outbound-hu-apply");
     }
 
     private void UpdateActionButtons()
@@ -2243,14 +2205,16 @@ public partial class OperationDetailsWindow : Window
         var headerHu = GetSelectedHuCode(DocHuCombo);
         LogOutboundOrderBoundInfo($"fill from order server branch prepared: order_id={selected.Id}; contexts={contexts.Count}; from_location_id={fromLocation?.Id}; from_hu={NormalizeHuValue(fromHu) ?? "-"}");
 
-        try
+        var headerSaved = await TryPersistHeaderViaServerAsync(
+            selected.PartnerId,
+            selected.Id,
+            headerHu,
+            null,
+            null,
+            null,
+            "Операция");
+        if (!headerSaved)
         {
-            _services.Documents.UpdateDocHeader(_doc.Id, selected.PartnerId, selected.OrderRef, headerHu);
-            _services.Documents.UpdateDocOrderBinding(_doc.Id, selected.Id);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
 
@@ -2301,13 +2265,15 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        try
+        if (!await TryPersistHeaderViaServerAsync(
+                (DocPartnerCombo.SelectedItem as Partner)?.Id,
+                selected.Id,
+                null,
+                null,
+                DocBatchBox.Text,
+                DocCommentBox.Text,
+                "Операция"))
         {
-            _services.Documents.UpdateDocOrderBinding(_doc.Id, selected.Id);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
@@ -2390,13 +2356,15 @@ public partial class OperationDetailsWindow : Window
         if (IsServerBatchRebuildEnabled())
         {
             var contexts = BuildProductionReceiptBatchContexts(orderId, toLocation?.Id, toHu);
-            try
+            if (!await TryPersistHeaderViaServerAsync(
+                    (DocPartnerCombo.SelectedItem as Partner)?.Id,
+                    orderId,
+                    null,
+                    null,
+                    DocBatchBox.Text,
+                    DocCommentBox.Text,
+                    "Операция"))
             {
-                _services.Documents.UpdateDocOrderBinding(_doc.Id, orderId);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
@@ -2523,7 +2491,7 @@ public partial class OperationDetailsWindow : Window
         return $"{result.Message}{Environment.NewLine}{Environment.NewLine}Уже обработано строк: {result.AddedCount + result.ReplayCount}. Перед повтором обновите документ и проверьте текущие строки.";
     }
 
-    private void ClearDocOrderBinding()
+    private async Task ClearDocOrderBindingAsync()
     {
         if (_doc == null || _doc.Status != DocStatus.Draft)
         {
@@ -2531,43 +2499,45 @@ public partial class OperationDetailsWindow : Window
         }
 
         var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
-        try
+        var saved = await TryPersistHeaderViaServerAsync(
+            partnerId,
+            null,
+            _doc.Type == DocType.ProductionReceipt ? null : GetSelectedHuCode(DocHuCombo),
+            _doc.Type == DocType.WriteOff ? (DocReasonCombo.SelectedItem as WriteOffReasonOption)?.Code : null,
+            _doc.Type == DocType.ProductionReceipt ? DocBatchBox.Text : null,
+            _doc.Type == DocType.ProductionReceipt ? DocCommentBox.Text : null,
+            "Операция");
+        if (!saved)
         {
-            if (_doc.Type == DocType.Outbound)
-            {
-                _services.Documents.ClearDocOrder(_doc.Id, partnerId);
-                _orderedQtyByOrderLine.Clear();
-            }
-            else if (_doc.Type == DocType.ProductionReceipt)
-            {
-                _services.Documents.UpdateDocOrderBinding(_doc.Id, null);
-            }
-            LoadDoc();
+            return;
         }
-        catch (Exception ex)
+
+        if (_doc.Type == DocType.Outbound)
         {
-            MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
+            _orderedQtyByOrderLine.Clear();
         }
+
+        LoadDoc();
     }
 
-    private Task<bool> TrySaveHeaderAsync()
+    private async Task<bool> TrySaveHeaderAsync()
     {
         if (_doc == null)
         {
             MessageBox.Show("Операция не выбрана.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-            return Task.FromResult(false);
+            return false;
         }
 
         if (_doc.Status != DocStatus.Draft)
         {
             MessageBox.Show("Операция уже закрыта.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-            return Task.FromResult(false);
+            return false;
         }
 
         if (_doc.IsRecountRequested)
         {
             MessageBox.Show("Операция находится на перерасчете. Изменения недоступны до ответа от ТСД.", "Операция", MessageBoxButton.OK, MessageBoxImage.Information);
-            return Task.FromResult(false);
+            return false;
         }
 
         var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
@@ -2584,12 +2554,12 @@ public partial class OperationDetailsWindow : Window
                 && !string.IsNullOrWhiteSpace(huCode)
                 && !TryEnsureHuExists(huCode))
             {
-                return Task.FromResult(false);
+                return false;
             }
 
             if (!TryResolveOrder(out var orderOption))
             {
-                return Task.FromResult(false);
+                return false;
             }
 
             if (orderOption != null)
@@ -2599,8 +2569,10 @@ public partial class OperationDetailsWindow : Window
                 {
                     var orderChanged = _doc.OrderId != orderOption.Id
                         || !string.Equals(_doc.OrderRef, orderOption.OrderRef, StringComparison.OrdinalIgnoreCase);
-                    _services.Documents.UpdateDocHeader(_doc.Id, headerPartnerId, orderOption.OrderRef, huCode);
-                    _services.Documents.UpdateDocOrderBinding(_doc.Id, orderOption.Id);
+                    if (!await TryPersistHeaderViaServerAsync(headerPartnerId, orderOption.Id, huCode, null, null, null, "Операция"))
+                    {
+                        return false;
+                    }
                     LoadOrderQuantities(orderOption.Id);
                     if (orderChanged)
                     {
@@ -2610,37 +2582,30 @@ public partial class OperationDetailsWindow : Window
                 }
                 else if (_doc.Type == DocType.ProductionReceipt)
                 {
-                    _services.Documents.UpdateDocHeader(_doc.Id, headerPartnerId, orderOption.OrderRef, huCode);
-                    _services.Documents.UpdateDocOrderBinding(_doc.Id, orderOption.Id);
+                    if (!await TryPersistHeaderViaServerAsync(headerPartnerId, orderOption.Id, huCode, null, productionBatch, comment, "Операция"))
+                    {
+                        return false;
+                    }
                 }
                 else
                 {
-                    _services.Documents.UpdateDocHeader(_doc.Id, headerPartnerId, orderOption.OrderRef, huCode);
+                    if (!await TryPersistHeaderViaServerAsync(headerPartnerId, null, huCode, null, null, null, "Операция"))
+                    {
+                        return false;
+                    }
                 }
             }
             else
             {
+                if (!await TryPersistHeaderViaServerAsync(partnerId, null, huCode, reasonCode, productionBatch, comment, "Операция"))
+                {
+                    return false;
+                }
+
                 if (_doc.Type == DocType.Outbound)
                 {
-                    _services.Documents.ClearDocOrder(_doc.Id, partnerId);
                     ResetPartialMode();
                 }
-                else if (_doc.Type == DocType.ProductionReceipt)
-                {
-                    _services.Documents.UpdateDocOrderBinding(_doc.Id, null);
-                }
-
-                _services.Documents.UpdateDocHeader(_doc.Id, partnerId, null, huCode);
-            }
-
-            if (_doc.Type == DocType.WriteOff)
-            {
-                _services.Documents.UpdateDocReason(_doc.Id, reasonCode);
-            }
-            else if (_doc.Type == DocType.ProductionReceipt)
-            {
-                _services.Documents.UpdateDocProductionBatch(_doc.Id, productionBatch);
-                _services.Documents.UpdateDocComment(_doc.Id, comment);
             }
 
             LoadDoc();
@@ -2653,13 +2618,44 @@ public partial class OperationDetailsWindow : Window
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
             }
-            return Task.FromResult(true);
+            return true;
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Операция", MessageBoxButton.OK, MessageBoxImage.Error);
-            return Task.FromResult(false);
+            return false;
         }
+    }
+
+    private async Task<bool> TryPersistHeaderViaServerAsync(
+        long? partnerId,
+        long? orderId,
+        string? shippingRef,
+        string? reasonCode,
+        string? productionBatchNo,
+        string? comment,
+        string caption)
+    {
+        if (_doc == null)
+        {
+            return false;
+        }
+
+        var result = await _services.WpfDocumentRuntimeApi.TrySaveHeaderAsync(
+            _doc.Id,
+            partnerId,
+            orderId,
+            shippingRef,
+            reasonCode,
+            productionBatchNo,
+            comment);
+        if (result.IsSuccess)
+        {
+            return true;
+        }
+
+        MessageBox.Show(result.Error ?? "Не удалось сохранить шапку документа через сервер.", caption, MessageBoxButton.OK, MessageBoxImage.Error);
+        return false;
     }
 
     private bool TryEnsureHuExists(string? huCode)
@@ -2678,10 +2674,7 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        var existing = _services.WpfHuApi.TryGetHuByCode(normalized, out var apiHu)
-            ? apiHu
-            : _services.Hus.GetHuByCode(normalized);
-        if (existing != null)
+        if (_services.WpfHuApi.TryGetHuByCode(normalized, out var existing) && existing != null)
         {
             return true;
         }
@@ -2709,8 +2702,7 @@ public partial class OperationDetailsWindow : Window
                 {
                     throw new InvalidOperationException(result.Error);
                 }
-
-                _services.Hus.CreateHuWithCode(normalized);
+                throw new InvalidOperationException("Сервер не подтвердил создание HU.");
             }
             RefreshHuOptions();
             return true;
@@ -2749,17 +2741,6 @@ public partial class OperationDetailsWindow : Window
 
         foreach (var partner in _partnersAll)
         {
-            var status = _services.PartnerStatuses.GetStatus(partner.Id);
-            if (docType == DocType.Inbound && status == PartnerStatus.Client)
-            {
-                continue;
-            }
-
-            if (docType == DocType.Outbound && status == PartnerStatus.Supplier)
-            {
-                continue;
-            }
-
             _partners.Add(partner);
         }
     }
@@ -2782,28 +2763,28 @@ public partial class OperationDetailsWindow : Window
     {
         return _services.WpfReadApi.TryGetItemAvailability(out var availability)
             ? availability
-            : _services.Orders.GetItemAvailability();
+            : new Dictionary<long, double>();
     }
 
     private IReadOnlyList<OrderShipmentLine> GetOrderShipmentRemaining(long orderId)
     {
         return _services.WpfReadApi.TryGetOrderShipmentRemaining(orderId, out var lines)
             ? lines
-            : _services.Documents.GetOrderShipmentRemaining(orderId);
+            : Array.Empty<OrderShipmentLine>();
     }
 
     private IReadOnlyList<OrderReceiptLine> GetOrderReceiptRemaining(long orderId)
     {
         return _services.WpfReadApi.TryGetOrderReceiptRemaining(orderId, out var lines)
             ? lines
-            : _services.Documents.GetOrderReceiptRemaining(orderId);
+            : Array.Empty<OrderReceiptLine>();
     }
 
     private Item? FindItem(long itemId)
     {
         var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
             ? apiItems
-            : _services.Catalog.GetItems(null);
+            : Array.Empty<Item>();
         return items.FirstOrDefault(item => item.Id == itemId);
     }
 
@@ -2816,50 +2797,48 @@ public partial class OperationDetailsWindow : Window
     {
         return _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
             ? apiRows
-            : _services.Documents.GetStock(null);
+            : Array.Empty<StockRow>();
     }
 
     private double GetAvailableQty(long itemId, long locationId, string? huCode)
     {
         var locationCode = GetLocationCode(locationId);
         var normalizedHu = NormalizeHuValue(huCode);
-        if (!string.IsNullOrWhiteSpace(locationCode))
+        if (string.IsNullOrWhiteSpace(locationCode))
         {
-            var rows = GetStockRows();
-            if (rows.Count > 0)
-            {
-                return rows
-                    .Where(row => row.ItemId == itemId
-                                  && string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)
-                                  && string.Equals(NormalizeHuValue(row.Hu), normalizedHu, StringComparison.OrdinalIgnoreCase))
-                    .Sum(row => row.Qty);
-            }
+            return 0;
         }
 
-        return _services.DataStore.GetAvailableQty(itemId, locationId, normalizedHu);
+        return GetStockRows()
+            .Where(row => row.ItemId == itemId
+                          && string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)
+                          && string.Equals(NormalizeHuValue(row.Hu), normalizedHu, StringComparison.OrdinalIgnoreCase))
+            .Sum(row => row.Qty);
     }
 
     private IReadOnlyList<Item> GetAvailableItemsByLocationAndHu(long locationId, string? huCode)
     {
         var locationCode = GetLocationCode(locationId);
-        if (!string.IsNullOrWhiteSpace(locationCode))
+        if (string.IsNullOrWhiteSpace(locationCode))
         {
-            var rows = GetStockRows()
-                .Where(row => string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)
-                              && string.Equals(NormalizeHuValue(row.Hu), NormalizeHuValue(huCode), StringComparison.OrdinalIgnoreCase)
-                              && row.Qty > 0)
-                .ToList();
-            if (rows.Count > 0)
-            {
-                var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
-                    ? apiItems
-                    : _services.Catalog.GetItems(null);
-                var itemIds = rows.Select(row => row.ItemId).Distinct().ToHashSet();
-                return items.Where(item => itemIds.Contains(item.Id)).ToList();
-            }
+            return Array.Empty<Item>();
         }
 
-        return _services.DataStore.GetItemsByLocationAndHu(locationId, NormalizeHuValue(huCode)).ToList();
+        var rows = GetStockRows()
+            .Where(row => string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)
+                          && string.Equals(NormalizeHuValue(row.Hu), NormalizeHuValue(huCode), StringComparison.OrdinalIgnoreCase)
+                          && row.Qty > 0)
+            .ToList();
+        if (rows.Count == 0)
+        {
+            return Array.Empty<Item>();
+        }
+
+        var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
+        var itemIds = rows.Select(row => row.ItemId).Distinct().ToHashSet();
+        return items.Where(item => itemIds.Contains(item.Id)).ToList();
     }
 
     private DocLine? FindCurrentDocLine(long lineId)
@@ -2961,7 +2940,7 @@ public partial class OperationDetailsWindow : Window
     {
         var lines = _services.WpfReadApi.TryGetDocLines(docId, out var apiLines)
             ? apiLines
-            : _services.Documents.GetDocLines(docId);
+            : Array.Empty<DocLineView>();
         var requiredByItem = lines
             .Where(line => line.Qty > 0)
             .GroupBy(line => line.ItemId)
@@ -3009,7 +2988,7 @@ public partial class OperationDetailsWindow : Window
 
         var packagings = _services.WpfPackagingApi.TryGetPackagings(itemId, includeInactive: true, out var apiPackagings)
             ? apiPackagings
-            : _services.Packagings.GetPackagings(itemId, includeInactive: true);
+            : Array.Empty<ItemPackaging>();
         lookup[itemId] = packagings;
         return packagings;
     }
@@ -3173,7 +3152,7 @@ public partial class OperationDetailsWindow : Window
         {
             var hus = _services.WpfHuApi.TryGetHus(null, 2000, out var apiHus)
                 ? apiHus
-                : _services.Hus.GetHus(null, 2000);
+                : Array.Empty<HuRecord>();
             return hus
                 .Where(IsSelectableHu)
                 .Select(hu => hu.Code)

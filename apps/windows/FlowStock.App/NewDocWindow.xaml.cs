@@ -60,7 +60,7 @@ public partial class NewDocWindow : Window
 
         DocRefBox.Text = _services.WpfReadApi.TryGenerateNextDocRef(option.Type, out var apiDocRef)
             ? apiDocRef
-            : _services.Documents.GenerateDocRef(option.Type, DateTime.Now);
+            : BuildPreviewDocRef(option.Type);
     }
 
     private async void Create_Click(object sender, RoutedEventArgs e)
@@ -195,6 +195,11 @@ public partial class NewDocWindow : Window
     private static string? NormalizeValue(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string BuildPreviewDocRef(DocType type)
+    {
+        return $"PREVIEW-{DocTypeMapper.ToOpString(type)}-{DateTime.Now:yyyyMMddHHmmss}";
     }
 
     private sealed record DocTypeOption(DocType Type, string Name);

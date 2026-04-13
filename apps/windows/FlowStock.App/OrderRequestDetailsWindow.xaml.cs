@@ -23,10 +23,10 @@ public partial class OrderRequestDetailsWindow : Window
         LinesGrid.ItemsSource = _lines;
         _partners = _services.WpfPartnerApi.TryGetPartners(out var apiPartners)
             ? apiPartners.Select(entry => entry.Partner).ToList()
-            : _services.Catalog.GetPartners();
+            : Array.Empty<Partner>();
         _items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
             ? apiItems
-            : _services.Catalog.GetItems(null);
+            : Array.Empty<Item>();
         LoadRequest();
     }
 
@@ -134,7 +134,7 @@ public partial class OrderRequestDetailsWindow : Window
         }
 
         var order = payload.OrderId > 0
-            ? (_services.WpfReadApi.TryGetOrder(payload.OrderId, out var apiOrder) ? apiOrder : _services.Orders.GetOrder(payload.OrderId))
+            ? (_services.WpfReadApi.TryGetOrder(payload.OrderId, out var apiOrder) ? apiOrder : null)
             : null;
         OrderRefText.Text = order?.OrderRef ?? $"ID={payload.OrderId}";
         var partner = order?.PartnerId.HasValue == true

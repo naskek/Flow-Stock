@@ -592,12 +592,18 @@ public partial class ItemImportPreviewWindow : Window
                     .GetResult();
                 if (!result.IsSuccess)
                 {
+                    if (string.Equals(result.Error, "ITEM_ALREADY_EXISTS", StringComparison.OrdinalIgnoreCase))
+                    {
+                        duplicates++;
+                        continue;
+                    }
+
                     if (!string.IsNullOrWhiteSpace(result.Error))
                     {
                         throw new InvalidOperationException(result.Error);
                     }
 
-                    _services.Catalog.CreateItem(name, barcode, gtin, null, brand, volume, shelfLifeMonths, taraId, false);
+                    throw new InvalidOperationException("Не удалось создать товар через сервер.");
                 }
                 created++;
             }
@@ -635,14 +641,14 @@ public partial class ItemImportPreviewWindow : Window
     {
         return _services.WpfReadApi.TryGetItems(null, out var apiItems)
             ? apiItems
-            : _services.Catalog.GetItems(null);
+            : Array.Empty<Item>();
     }
 
     private IReadOnlyList<Tara> GetTaras()
     {
         return _services.WpfCatalogApi.TryGetTaras(out var apiTaras)
             ? apiTaras
-            : _services.Catalog.GetTaras();
+            : Array.Empty<Tara>();
     }
 
     private static void EnsureExcelEncoding()

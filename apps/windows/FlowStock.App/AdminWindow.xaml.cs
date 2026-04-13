@@ -80,7 +80,7 @@ public partial class AdminWindow : Window
                 .ConfigureAwait(true);
             if (!saved)
             {
-                _services.DataStore.SaveClientBlockSettings(settings);
+                throw new InvalidOperationException("Не удалось сохранить доступ к веб-блокам через сервер.");
             }
 
             ClientBlocksStatusText.Text = "Доступ к веб-блокам сохранен. Изменения применятся после обновления страницы у пользователей.";
@@ -99,7 +99,7 @@ public partial class AdminWindow : Window
         {
             var settings = _services.WpfAdminApi.TryGetClientBlocks(out var apiSettings)
                 ? apiSettings
-                : _services.DataStore.GetClientBlockSettings();
+                : Array.Empty<ClientBlockSetting>();
             var states = ClientBlockCatalog.MergeWithDefaults(settings);
             _clientBlockBoxes.Clear();
             PopulateClientBlockPanel(

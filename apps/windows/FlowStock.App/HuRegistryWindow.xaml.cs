@@ -38,7 +38,7 @@ public partial class HuRegistryWindow : Window
         {
             _items = _services.WpfHuApi.TryGetHus(null, MaxLoad, out var apiHus)
                 ? apiHus.ToList()
-                : _services.Hus.GetHus(null, MaxLoad).ToList();
+                : new List<HuRecord>();
         }
         catch (Exception ex)
         {
@@ -108,7 +108,7 @@ public partial class HuRegistryWindow : Window
 
         var rows = _services.WpfHuApi.TryGetHuLedgerRows(row.Code, out var apiRows)
             ? apiRows
-            : _services.Hus.GetHuLedgerRows(row.Code);
+            : Array.Empty<HuLedgerRow>();
         foreach (var entry in rows)
         {
             _composition.Add(new HuLedgerRowDisplay(entry));
@@ -131,12 +131,7 @@ public partial class HuRegistryWindow : Window
                 .ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(result.Error))
-                {
-                    throw new InvalidOperationException(result.Error);
-                }
-
-                _services.Hus.CloseHu(row.Code, string.IsNullOrWhiteSpace(note) ? null : note, DefaultCreatedBy);
+                throw new InvalidOperationException(result.Error ?? "Не удалось закрыть HU через сервер.");
             }
         }
         catch (Exception ex)
@@ -165,12 +160,7 @@ public partial class HuRegistryWindow : Window
                 .ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(result.Error))
-                {
-                    throw new InvalidOperationException(result.Error);
-                }
-
-                codes = _services.Hus.Generate(count, DefaultCreatedBy);
+                throw new InvalidOperationException(result.Error ?? "Не удалось сгенерировать HU через сервер.");
             }
             else
             {

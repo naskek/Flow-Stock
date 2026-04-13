@@ -51,6 +51,51 @@ public sealed class WpfImportApiService
             .ConfigureAwait(false);
     }
 
+    public async Task<(bool IsSuccess, ImportResult? Result, string? Error)> TryImportJsonlAsync(string content, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!TryLoadConfiguration(out var configuration))
+            {
+                _logger.Info("Import API skipped for import-jsonl: server base URL is not configured.");
+                return (false, null, null);
+            }
+
+            using var handler = CreateHandler(configuration);
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri(configuration.BaseUrl!, UriKind.Absolute),
+                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds)
+            };
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/imports/jsonl")
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(new { content }),
+                    Encoding.UTF8,
+                    "application/json")
+            };
+            using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadFromJsonAsync<ApiResultEnvelope>(JsonOptions, cancellationToken).ConfigureAwait(false);
+                return (false, null, TranslateApiError(error?.Error) ?? $"Server returned {(int)response.StatusCode} {response.ReasonPhrase}.");
+            }
+
+            var document = await response.Content.ReadFromJsonAsync<JsonDocument>(JsonOptions, cancellationToken).ConfigureAwait(false);
+            if (document == null)
+            {
+                return (false, null, "Server returned an empty import response.");
+            }
+
+            return (true, MapImportResult(document.RootElement), null);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Import API failed for import-jsonl", ex);
+            return (false, null, null);
+        }
+    }
+
     private bool TryRead<T>(string relativePath, Func<JsonElement, T> map, string operationName, out T value)
     {
         value = default!;
@@ -182,12 +227,39 @@ public sealed class WpfImportApiService
         };
     }
 
+    private static ImportResult MapImportResult(JsonElement element)
+    {
+        var result = new ImportResult
+        {
+            Imported = ReadInt32(element, "imported"),
+            Duplicates = ReadInt32(element, "duplicates"),
+            Errors = ReadInt32(element, "errors"),
+            DocumentsCreated = ReadInt32(element, "documents_created"),
+            OperationsImported = ReadInt32(element, "operations_imported"),
+            LinesImported = ReadInt32(element, "lines_imported"),
+            ItemsUpserted = ReadInt32(element, "items_upserted")
+        };
+
+        if (element.TryGetProperty("device_ids", out var deviceIdsElement)
+            && deviceIdsElement.ValueKind == JsonValueKind.Array)
+        {
+            result.DeviceIds = deviceIdsElement.EnumerateArray()
+                .Select(entry => entry.ValueKind == JsonValueKind.String ? entry.GetString() : entry.ToString())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!.Trim())
+                .ToList();
+        }
+
+        return result;
+    }
+
     private static string? TranslateApiError(string? error)
     {
         return error switch
         {
             "REAPPLY_FAILED" => "Не удалось переприменить. Проверьте, что штрихкод привязан к товару.",
             "INVALID_IMPORT_ERROR_ID" => "Некорректный идентификатор ошибки импорта.",
+            "EMPTY_CONTENT" => "Файл импорта пустой.",
             null or "" => null,
             _ => $"Server returned error: {error}"
         };
@@ -216,6 +288,21 @@ public sealed class WpfImportApiService
         {
             JsonValueKind.Number when property.TryGetInt64(out var value) => value,
             JsonValueKind.String when long.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) => value,
+            _ => 0
+        };
+    }
+
+    private static int ReadInt32(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return 0;
+        }
+
+        return property.ValueKind switch
+        {
+            JsonValueKind.Number when property.TryGetInt32(out var value) => value,
+            JsonValueKind.String when int.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) => value,
             _ => 0
         };
     }

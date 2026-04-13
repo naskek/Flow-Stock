@@ -52,7 +52,11 @@ public partial class LocationEditWindow : Window
 
                 var locationId = result.IsSuccess
                     ? (result.CreatedId ?? 0)
-                    : _services.Catalog.CreateLocation(code, name);
+                    : 0;
+                if (locationId <= 0)
+                {
+                    throw new InvalidOperationException("Сервер не вернул идентификатор нового места хранения.");
+                }
                 SavedLocationId = locationId;
             }
             else
@@ -60,12 +64,7 @@ public partial class LocationEditWindow : Window
                 var result = await _services.WpfCatalogApi.TryUpdateLocationAsync(_location.Id, code, name).ConfigureAwait(true);
                 if (!result.IsSuccess)
                 {
-                    if (!string.IsNullOrWhiteSpace(result.Error))
-                    {
-                        throw new InvalidOperationException(result.Error);
-                    }
-
-                    _services.Catalog.UpdateLocation(_location.Id, code, name);
+                    throw new InvalidOperationException(result.Error ?? "Не удалось обновить место хранения через сервер.");
                 }
 
                 SavedLocationId = _location.Id;

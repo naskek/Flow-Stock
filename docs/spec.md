@@ -14,8 +14,8 @@
 - FlowStock.App: WPF desktop operator UI with direct PostgreSQL connection (FLOWSTOCK_PG_* env or settings.json postgres).
   - If PostgreSQL is not configured or unavailable at app startup, WPF opens the DB connection window first and does not open the main operator UI until the connection is configured successfully.
   - DB connection setup defaults to local/LAN autodiscovery of PostgreSQL host:port candidates; manual host/port input remains available as a fallback.
-  - In DB connection settings, the FlowStock Server section configures API endpoints and diagnostics only. For migrated WPF write-paths (orders, incoming web approvals, document draft/create-close, document line add/update/delete), legacy per-operation toggles are removed and the server path is always used.
-  - WPF read-path migration is incremental: main list loads for items/docs/orders/stock/locations/partners, order/doc detail loads, order/doc line loads, order remaining snapshots, and document/order ref generation may read through FlowStock.Server when it is configured and reachable; otherwise WPF temporarily falls back to direct PostgreSQL reads.
+  - In DB connection settings, the FlowStock Server section configures API endpoints and diagnostics only. For non-KM WPF runtime flows, legacy per-operation toggles are removed and the server path is always used.
+  - Non-KM WPF runtime read/write flows use FlowStock.Server for lists, details, request inbox, dictionaries, partners, HU, packaging, and import tooling. Direct PostgreSQL access in WPF remains only for startup connection/bootstrap and frozen KM-specific code paths.
 - TSD PWA: online data capture via API (no direct DB access).
 - PC web client: stock is read-only; order create/status changes are submitted as requests and applied only after WPF confirmation.
   - Request submission is allowed only for active accounts with PC access (`tsd_devices.platform=PC` or `BOTH`).
@@ -70,23 +70,23 @@
 - Status: stock list + search.
 - Documents: list + details + close action.
 - Items: list with ID + modal create/edit (name, barcode/SKU, gtin, brand, volume, shelf life months, max qty per HU, tara, uom, is_marked) + Excel import with preview and column mapping.
-- Item packagings: item card packaging editor and shared packaging manager should use server API first for list/create/update/deactivate/set-default; direct DB access is kept only as compatibility fallback.
+- Item packagings: item card packaging editor and shared packaging manager use server API for list/create/update/deactivate/set-default.
 - Tara: dictionary editor in “Справочники”.
 - Locations: list with ID + modal create/edit (code, name).
-- When FlowStock Server is configured, simple dictionary CRUD for `items`, `locations`, `uoms`, and `taras` should use server API first; direct DB access is kept only as compatibility fallback.
+- Simple dictionary CRUD for `items`, `locations`, `uoms`, and `taras` uses server API.
 - Partners: list with ID + modal create/edit.
-  - When FlowStock Server is configured, partner CRUD and partner role/status (`Supplier` / `Client` / `Both`) should use server API first; local `partner_statuses` storage is kept only as compatibility fallback.
+  - Partner CRUD and partner role/status (`Supplier` / `Client` / `Both`) use server API.
 - Orders: list + details (see spec_orders.md).
 - Incoming requests: single WPF inbox window (from bell/menu) for item requests and order web requests, with processing actions in one place.
-  - When FlowStock Server is configured, the inbox list, pending badge, and request resolve/reject actions should go through server API first; direct DB access is kept only as compatibility fallback.
+  - The inbox list, pending badge, and request resolve/reject actions go through server API.
   - For order requests, WPF provides a details modal with full order payload before approval.
-- Import error handling in WPF should use server API first for reading and reapplying `import_errors`; item lookup/creation during import cleanup should use the same server-first catalog/read paths as the rest of WPF, with direct DB access kept only as compatibility fallback.
+- Import error handling in WPF uses server API for reading and reapplying `import_errors`; item lookup/creation during import cleanup uses the same server-backed catalog/read paths as the rest of WPF.
 - WPF data grids use shared adaptive sizing rules: short columns fit header/content, long text columns are capped and trimmed, and visible columns redistribute width when the window is resized.
 - WPF dialog windows auto-grow to content within screen bounds; if the content still does not fit, the dialog becomes scrollable so footer actions remain reachable.
 - Admin: no direct table reset/edit from WPF; admin window exposes DB connection setup, web login account management, global web block access, and a test cleanup action.
-  - When FlowStock Server is configured, web-login account management (`tsd_devices`) and global web block settings (`client_blocks`) should be read/saved through server API first; direct DB access is kept only as compatibility fallback.
-- HU registry in WPF (`HU Реестр`) should read/generate/close HU through server API first; direct DB access is kept only as compatibility fallback.
-- WPF HU selectors and stock-by-HU helpers should derive available HU from the same stock/HU server read-models first; direct DB access is kept only as compatibility fallback.
+  - Web-login account management (`tsd_devices`) and global web block settings (`client_blocks`) are read/saved through server API.
+- HU registry in WPF (`HU Реестр`) reads/generates/closes HU through server API.
+- WPF HU selectors and stock-by-HU helpers derive available HU from the same stock/HU server read-models.
 - Row deletion in tabs (orders/items/locations/partners) remains blocked in the current WPF UI.
 - Admin includes a dedicated "clear operations" action for test cleanup (docs/doc_lines/ledger/orders/order_lines/import events/errors). Dictionaries stay intact.
 - Admin includes a dedicated section for global web block access:

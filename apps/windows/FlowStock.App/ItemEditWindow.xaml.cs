@@ -29,14 +29,14 @@ public partial class ItemEditWindow : Window
         _uoms.Clear();
         _uoms.AddRange(_services.WpfCatalogApi.TryGetUoms(out var apiUoms)
             ? apiUoms
-            : _services.Catalog.GetUoms());
+            : Array.Empty<Uom>());
         UomCombo.ItemsSource = _uoms;
 
         _taras.Clear();
         _taras.Add(TaraOption.Empty);
         var taras = _services.WpfCatalogApi.TryGetTaras(out var apiTaras)
             ? apiTaras
-            : _services.Catalog.GetTaras();
+            : Array.Empty<Tara>();
         foreach (var tara in taras)
         {
             _taras.Add(new TaraOption(tara.Id, tara.Name));
@@ -146,7 +146,11 @@ public partial class ItemEditWindow : Window
 
                 var itemId = result.IsSuccess
                     ? (result.CreatedId ?? 0)
-                    : _services.Catalog.CreateItem(name, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked, maxQtyPerHu);
+                    : 0;
+                if (itemId <= 0)
+                {
+                    throw new InvalidOperationException("Сервер не вернул идентификатор нового товара.");
+                }
                 SavedItemId = itemId;
             }
             else
@@ -168,12 +172,7 @@ public partial class ItemEditWindow : Window
                 var result = await _services.WpfCatalogApi.TryUpdateItemAsync(updateCandidate).ConfigureAwait(true);
                 if (!result.IsSuccess)
                 {
-                    if (!string.IsNullOrWhiteSpace(result.Error))
-                    {
-                        throw new InvalidOperationException(result.Error);
-                    }
-
-                    _services.Catalog.UpdateItem(_item.Id, name, barcode, gtin, baseUom, brand, volume, shelfLifeMonths, taraId, isMarked, maxQtyPerHu);
+                    throw new InvalidOperationException(result.Error ?? "Не удалось обновить товар через сервер.");
                 }
 
                 SavedItemId = _item.Id;
@@ -248,7 +247,7 @@ public partial class ItemEditWindow : Window
     {
         var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
             ? apiItems
-            : _services.Catalog.GetItems(null);
+            : Array.Empty<Item>();
 
         if (!string.IsNullOrWhiteSpace(barcode))
         {
@@ -286,7 +285,7 @@ public partial class ItemEditWindow : Window
             return false;
         }
 
-        var duplicate = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : _services.Catalog.GetItems(null))
+        var duplicate = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
             .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Barcode)
                                     && string.Equals(item.Barcode, barcode, StringComparison.OrdinalIgnoreCase)
                                     && (!currentItemId.HasValue || item.Id != currentItemId.Value));

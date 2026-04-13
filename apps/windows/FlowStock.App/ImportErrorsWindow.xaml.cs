@@ -34,7 +34,7 @@ public partial class ImportErrorsWindow : Window
         _errors.Clear();
         var errors = _services.WpfImportApi.TryGetImportErrors(null, out var apiErrors)
             ? apiErrors
-            : _services.Import.GetImportErrors(null);
+            : Array.Empty<ImportErrorView>();
         foreach (var error in errors)
         {
             _errors.Add(error);
@@ -50,7 +50,7 @@ public partial class ImportErrorsWindow : Window
         _items.Clear();
         var items = _services.WpfReadApi.TryGetItems(null, out var apiItems)
             ? apiItems
-            : _services.Catalog.GetItems(null);
+            : Array.Empty<Item>();
         foreach (var item in items)
         {
             _items.Add(item);
@@ -62,7 +62,7 @@ public partial class ImportErrorsWindow : Window
         _uoms.Clear();
         var uoms = _services.WpfCatalogApi.TryGetUoms(out var apiUoms)
             ? apiUoms
-            : _services.Catalog.GetUoms();
+            : Array.Empty<Uom>();
         foreach (var uom in uoms)
         {
             _uoms.Add(uom);
@@ -120,12 +120,7 @@ public partial class ImportErrorsWindow : Window
             var result = await _services.WpfCatalogApi.TryUpdateItemAsync(updatedItem).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(result.Error))
-                {
-                    throw new InvalidOperationException(result.Error);
-                }
-
-                _services.Catalog.AssignBarcode(item.Id, _selectedError.Barcode);
+                throw new InvalidOperationException(result.Error ?? "Не удалось привязать штрихкод через сервер.");
             }
             LoadItems();
         }
@@ -157,12 +152,7 @@ public partial class ImportErrorsWindow : Window
             var result = await _services.WpfCatalogApi.TryCreateItemAsync(candidate).ConfigureAwait(true);
             if (!result.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(result.Error))
-                {
-                    throw new InvalidOperationException(result.Error);
-                }
-
-                _services.Catalog.CreateItem(candidate.Name, _selectedError.Barcode, candidate.Gtin, uom, null, null, null, null, false);
+                throw new InvalidOperationException(result.Error ?? "Не удалось создать товар через сервер.");
             }
             NewItemNameBox.Text = string.Empty;
             NewItemGtinBox.Text = string.Empty;
@@ -188,7 +178,7 @@ public partial class ImportErrorsWindow : Window
         }
 
         var result = await _services.WpfImportApi.TryReapplyErrorAsync(_selectedError.Id).ConfigureAwait(true);
-        var applied = result.IsSuccess || _services.Import.ReapplyError(_selectedError.Id);
+        var applied = result.IsSuccess;
         if (!applied)
         {
             MessageBox.Show(

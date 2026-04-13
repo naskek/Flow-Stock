@@ -322,7 +322,7 @@ public partial class MainWindow : Window
         var normalized = NormalizeIdentifier(query);
         var items = _services.WpfReadApi.TryGetItems(normalized, out var apiItems)
             ? apiItems
-            : _services.Catalog.GetItems(normalized);
+            : Array.Empty<Item>();
         foreach (var item in items)
         {
             _items.Add(item);
@@ -335,7 +335,7 @@ public partial class MainWindow : Window
         _uoms.Clear();
         var uoms = _services.WpfCatalogApi.TryGetUoms(out var apiUoms)
             ? apiUoms
-            : _services.Catalog.GetUoms();
+            : Array.Empty<Uom>();
         foreach (var uom in uoms)
         {
             _uoms.Add(uom);
@@ -347,7 +347,7 @@ public partial class MainWindow : Window
         _taras.Clear();
         var taras = _services.WpfCatalogApi.TryGetTaras(out var apiTaras)
             ? apiTaras
-            : _services.Catalog.GetTaras();
+            : Array.Empty<Tara>();
         foreach (var tara in taras)
         {
             _taras.Add(tara);
@@ -360,7 +360,7 @@ public partial class MainWindow : Window
         _locations.Clear();
         var locations = _services.WpfReadApi.TryGetLocations(out var apiLocations)
             ? apiLocations
-            : _services.Catalog.GetLocations();
+            : Array.Empty<Location>();
         foreach (var location in locations)
         {
             _locations.Add(location);
@@ -406,39 +406,12 @@ public partial class MainWindow : Window
     private IEnumerable<string> GetAvailableHuCodesForFilter()
     {
         var locationCode = GetSelectedStockLocationCode();
-        if (_services.WpfReadApi.TryGetStockRows(null, out var apiRows))
-        {
-            var filteredRows = string.IsNullOrWhiteSpace(locationCode)
-                ? apiRows
-                : apiRows.Where(row => string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)).ToList();
-
-            var codes = filteredRows
-                .Select(row => row.Hu?.Trim())
-                .Where(code => !string.IsNullOrWhiteSpace(code))
-                .Select(code => code!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (codes.Count > 0)
-            {
-                return codes;
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(locationCode))
-        {
-            var rows = _services.Documents.GetStock(null);
-            return rows
-                .Where(row => string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase))
-                .Select(row => row.Hu?.Trim())
-                .Where(code => !string.IsNullOrWhiteSpace(code))
-                .Select(code => code!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-
-        return _services.Documents.GetStock(null)
+        var rows = _services.WpfReadApi.TryGetStockRows(null, out var apiRows)
+            ? apiRows
+            : Array.Empty<StockRow>();
+        return (string.IsNullOrWhiteSpace(locationCode)
+                ? rows
+                : rows.Where(row => string.Equals(row.LocationCode, locationCode, StringComparison.OrdinalIgnoreCase)))
             .Select(row => row.Hu?.Trim())
             .Where(code => !string.IsNullOrWhiteSpace(code))
             .Select(code => code!)
@@ -462,11 +435,10 @@ public partial class MainWindow : Window
         {
             var partners = _services.WpfReadApi.TryGetPartners(out var readApiPartners)
                 ? readApiPartners
-                : _services.Catalog.GetPartners();
+                : Array.Empty<Partner>();
             foreach (var partner in partners)
             {
-                var status = _services.PartnerStatuses.GetStatus(partner.Id);
-                _partners.Add(new PartnerRow(partner, GetPartnerStatusLabel(status)));
+                _partners.Add(new PartnerRow(partner, string.Empty));
             }
         }
         RestorePartnerSelection(selectedId);
@@ -481,7 +453,7 @@ public partial class MainWindow : Window
             (DocsStatusFilter.SelectedItem as DocStatusFilterOption)?.Status,
             out var apiDocs)
             ? apiDocs
-            : _services.Documents.GetDocs();
+            : Array.Empty<Doc>();
         foreach (var doc in ApplyDocFilters(docs))
         {
             _docs.Add(doc);
@@ -535,7 +507,7 @@ public partial class MainWindow : Window
         _orders.Clear();
         var orders = _services.WpfReadApi.TryGetOrders(includeInternal: true, search: null, out var apiOrders)
             ? apiOrders
-            : _services.Orders.GetOrders();
+            : Array.Empty<Order>();
         foreach (var order in orders)
         {
             _orders.Add(order);
@@ -551,7 +523,7 @@ public partial class MainWindow : Window
         var huCode = GetSelectedStockHuCode();
         var rows = _services.WpfReadApi.TryGetStockRows(search, out var apiRows)
             ? apiRows
-            : _services.Documents.GetStock(search);
+            : Array.Empty<StockRow>();
         foreach (var row in rows)
         {
             if (!string.IsNullOrWhiteSpace(locationCode)
@@ -694,7 +666,7 @@ public partial class MainWindow : Window
             window.ShowDialog();
 
             LoadDocs();
-            var refreshed = _services.Documents.GetDoc(doc.Id);
+            var refreshed = _services.WpfReadApi.TryGetDoc(doc.Id, out var apiDoc) ? apiDoc : null;
             if (!wasClosed && refreshed?.Status == DocStatus.Closed)
             {
                 LoadStock(StatusSearchBox.Text);
@@ -865,7 +837,7 @@ public partial class MainWindow : Window
         LoadDocs();
         LoadStock(StatusSearchBox.Text);
 
-        var refreshed = _services.Documents.GetDoc(docId);
+        var refreshed = _services.WpfReadApi.TryGetDoc(docId, out var apiDoc) ? apiDoc : null;
         if (refreshed?.Type is DocType.Outbound or DocType.ProductionReceipt)
         {
             LoadOrders();
@@ -908,7 +880,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var current = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : _services.Catalog.GetItems(null))
+        var current = (_services.WpfReadApi.TryGetItems(null, out var apiItems) ? apiItems : Array.Empty<Item>())
             .FirstOrDefault(item => item.Id == _selectedItem.Id) ?? _selectedItem;
         var window = new ItemEditWindow(_services, current)
         {
@@ -1028,7 +1000,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var current = (_services.WpfReadApi.TryGetLocations(out var apiLocations) ? apiLocations : _services.Catalog.GetLocations())
+        var current = (_services.WpfReadApi.TryGetLocations(out var apiLocations) ? apiLocations : Array.Empty<Location>())
             .FirstOrDefault(location => location.Id == _selectedLocation.Id) ?? _selectedLocation;
         var window = new LocationEditWindow(_services, current)
         {
@@ -1070,7 +1042,9 @@ public partial class MainWindow : Window
 
         var current = (_services.WpfPartnerApi.TryGetPartners(out var apiPartners)
                 ? apiPartners.Select(entry => entry.Partner)
-                : _services.Catalog.GetPartners())
+                : _services.WpfReadApi.TryGetPartners(out var apiReadPartners)
+                    ? apiReadPartners
+                    : Array.Empty<Partner>())
             .FirstOrDefault(p => p.Id == _selectedPartner.Id) ?? _selectedPartner;
         var window = new PartnerEditWindow(_services, current)
         {
@@ -1124,7 +1098,9 @@ public partial class MainWindow : Window
     {
         EnsureExcelEncoding();
 
-        var existingItems = _services.Catalog.GetItems(null);
+        var existingItems = _services.WpfReadApi.TryGetItems(null, out var apiItems)
+            ? apiItems
+            : Array.Empty<Item>();
         var existingCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in existingItems)
         {
@@ -1186,7 +1162,27 @@ public partial class MainWindow : Window
                 {
                     AddBarcodeVariants(seenCodes, code);
                     var gtin = IsDigitsOnly(code) ? code : null;
-                    _services.Catalog.CreateItem(name, code, gtin, null, null, null, null, null, false);
+                    var createdResult = _services.WpfCatalogApi.TryCreateItemAsync(new Item
+                        {
+                            Name = name,
+                            Barcode = code,
+                            Gtin = gtin,
+                            BaseUom = "шт",
+                            IsMarked = false
+                        })
+                        .ConfigureAwait(false)
+                        .GetAwaiter()
+                        .GetResult();
+                    if (!createdResult.IsSuccess)
+                    {
+                        if (string.Equals(createdResult.Error, "ITEM_ALREADY_EXISTS", StringComparison.OrdinalIgnoreCase))
+                        {
+                            duplicates++;
+                            continue;
+                        }
+
+                        throw new InvalidOperationException(createdResult.Error ?? "Не удалось создать товар через сервер.");
+                    }
                     created++;
                     AddBarcodeVariants(existingCodes, code);
                     AddBarcodeVariants(existingCodes, gtin);
@@ -1373,12 +1369,7 @@ public partial class MainWindow : Window
                     var deleted = await _services.WpfCatalogApi.TryDeleteItemAsync(item.Id).ConfigureAwait(true);
                     if (!deleted.IsSuccess)
                     {
-                        if (!string.IsNullOrWhiteSpace(deleted.Error))
-                        {
-                            throw new InvalidOperationException(deleted.Error);
-                        }
-
-                        _services.Catalog.DeleteItem(item.Id);
+                        throw new InvalidOperationException(deleted.Error ?? "Не удалось удалить товар через сервер.");
                     }
                 }
                 catch (Exception ex)
@@ -1459,12 +1450,7 @@ public partial class MainWindow : Window
             var deleted = await _services.WpfCatalogApi.TryDeleteLocationAsync(_selectedLocation.Id).ConfigureAwait(true);
             if (!deleted.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(deleted.Error))
-                {
-                    throw new InvalidOperationException(deleted.Error);
-                }
-
-                _services.Catalog.DeleteLocation(_selectedLocation.Id);
+                throw new InvalidOperationException(deleted.Error ?? "Не удалось удалить место хранения через сервер.");
             }
 
             LoadLocations();
@@ -1558,13 +1544,7 @@ public partial class MainWindow : Window
             var deleted = await _services.WpfPartnerApi.TryDeletePartnerAsync(_selectedPartner.Id).ConfigureAwait(true);
             if (!deleted.IsSuccess)
             {
-                if (!string.IsNullOrWhiteSpace(deleted.Error))
-                {
-                    throw new InvalidOperationException(deleted.Error);
-                }
-
-                _services.Catalog.DeletePartner(_selectedPartner.Id);
-                _services.PartnerStatuses.RemoveStatus(_selectedPartner.Id);
+                throw new InvalidOperationException(deleted.Error ?? "Не удалось удалить контрагента через сервер.");
             }
 
             LoadPartners();
@@ -1592,7 +1572,7 @@ public partial class MainWindow : Window
 
         LoadDocs();
         var created = _docs.FirstOrDefault(d => d.Id == window.CreatedDocId.Value)
-                      ?? _services.Documents.GetDoc(window.CreatedDocId.Value);
+                      ?? (_services.WpfReadApi.TryGetDoc(window.CreatedDocId.Value, out var apiDoc) ? apiDoc : null);
         if (created != null)
         {
             OpenDocDetails(created);
@@ -1625,7 +1605,22 @@ public partial class MainWindow : Window
             return;
         }
 
-        var result = _services.Import.ImportJsonl(path);
+        var content = File.ReadAllText(path);
+        var importCall = _services.WpfImportApi.TryImportJsonlAsync(content)
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
+        if (!importCall.IsSuccess || importCall.Result == null)
+        {
+            MessageBox.Show(
+                importCall.Error ?? "Не удалось выполнить импорт через сервер.",
+                "Импорт",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var result = importCall.Result;
         var message = $"Импорт завершен.\nИмпортировано: {result.Imported}\nДубли: {result.Duplicates}\nОшибки: {result.Errors}";
         var icon = MessageBoxImage.Information;
 
@@ -1920,9 +1915,7 @@ public partial class MainWindow : Window
         {
             var summary = _services.WpfIncomingRequestsApi.TryGetSummary(out var apiSummary)
                 ? apiSummary
-                : new IncomingRequestsSummary(
-                    _services.DataStore.GetItemRequests(false).Count,
-                    _services.DataStore.GetOrderRequests(false).Count);
+                : new IncomingRequestsSummary(0, 0);
 
             var itemCount = summary.ItemRequestsPending;
             var orderCount = summary.OrderRequestsPending;
