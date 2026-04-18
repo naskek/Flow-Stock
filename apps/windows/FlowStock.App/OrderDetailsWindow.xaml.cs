@@ -3,6 +3,8 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using FlowStock.Core.Models;
 
@@ -12,6 +14,7 @@ public partial class OrderDetailsWindow : Window
 {
     private readonly AppServices _services;
     private readonly ObservableCollection<Partner> _partners = new();
+    private readonly List<Partner> _partnersAll = new();
     private readonly ObservableCollection<OrderLineView> _lines = new();
     private readonly List<OrderTypeOption> _typeOptions = new()
     {
@@ -25,6 +28,7 @@ public partial class OrderDetailsWindow : Window
     private bool _isLoading;
     private bool _hasUnsavedChanges;
     private bool _allowCloseWithoutPrompt;
+    private bool _suppressPartnerFilter;
 
     public OrderDetailsWindow(AppServices services)
     {
@@ -54,6 +58,7 @@ public partial class OrderDetailsWindow : Window
         OrderRefBox.TextChanged += OrderHeaderChanged;
         TypeCombo.SelectionChanged += TypeCombo_SelectionChanged;
         PartnerCombo.SelectionChanged += OrderHeaderChanged;
+        PartnerCombo.AddHandler(System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent, new TextChangedEventHandler(PartnerCombo_TextChanged));
         DueDatePicker.SelectedDateChanged += OrderHeaderChanged;
         StatusCombo.SelectionChanged += OrderHeaderChanged;
         CommentBox.TextChanged += OrderHeaderChanged;
@@ -61,6 +66,7 @@ public partial class OrderDetailsWindow : Window
 
     private void LoadPartners()
     {
+        _partnersAll.Clear();
         _partners.Clear();
         if (_services.WpfPartnerApi.TryGetPartners(out var apiPartners))
         {
@@ -71,8 +77,9 @@ public partial class OrderDetailsWindow : Window
                     continue;
                 }
 
-                _partners.Add(entry.Partner);
+                _partnersAll.Add(entry.Partner);
             }
+            ApplyPartnerFilter();
             return;
         }
 
@@ -81,8 +88,47 @@ public partial class OrderDetailsWindow : Window
             : Array.Empty<Partner>();
         foreach (var partner in partners)
         {
-            _partners.Add(partner);
+            _partnersAll.Add(partner);
         }
+
+        ApplyPartnerFilter();
+    }
+
+    private void ApplyPartnerFilter(string? query = null, long? forceIncludePartnerId = null)
+    {
+        var normalized = NormalizePartnerSearch(query);
+        var selectedPartnerId = forceIncludePartnerId ?? (PartnerCombo.SelectedItem as Partner)?.Id;
+
+        _suppressPartnerFilter = true;
+        try
+        {
+            _partners.Clear();
+            foreach (var partner in _partnersAll)
+            {
+                if (selectedPartnerId.HasValue && partner.Id == selectedPartnerId.Value
+                    || PartnerMatchesSearch(partner, normalized))
+                {
+                    _partners.Add(partner);
+                }
+            }
+        }
+        finally
+        {
+            _suppressPartnerFilter = false;
+        }
+    }
+
+    private void PartnerCombo_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_isLoading || _suppressPartnerFilter || !PartnerCombo.IsKeyboardFocusWithin)
+        {
+            return;
+        }
+
+        var text = PartnerCombo.Text ?? string.Empty;
+        ApplyPartnerFilter(text);
+        PartnerCombo.IsDropDownOpen = !string.IsNullOrWhiteSpace(text) && _partners.Count > 0;
+        RestoreComboText(PartnerCombo, text);
     }
 
     private void PrepareNewOrder()
@@ -132,7 +178,7 @@ public partial class OrderDetailsWindow : Window
         TypeCombo.SelectedItem = _typeOptions.FirstOrDefault(option => option.Type == _order.Type)
                                 ?? _typeOptions.First();
         PartnerCombo.SelectedItem = _order.PartnerId.HasValue
-            ? _partners.FirstOrDefault(p => p.Id == _order.PartnerId.Value)
+            ? _partnersAll.FirstOrDefault(p => p.Id == _order.PartnerId.Value)
             : null;
         DueDatePicker.SelectedDate = _order.DueDate;
         CommentBox.Text = _order.Comment ?? string.Empty;
@@ -689,8 +735,8 @@ public partial class OrderDetailsWindow : Window
 
         if (type == OrderType.Customer)
         {
-            var partner = PartnerCombo.SelectedItem as Partner
-                          ?? FindPartnerByQuery(PartnerCombo.Text);
+            var partner = FindPartnerByQuery(PartnerCombo.Text)
+                          ?? (string.IsNullOrWhiteSpace(PartnerCombo.Text) ? PartnerCombo.SelectedItem as Partner : null);
             if (partner == null)
             {
                 if (_order?.PartnerId is long existingPartnerId && IsSupplierPartner(existingPartnerId))
@@ -736,12 +782,56 @@ public partial class OrderDetailsWindow : Window
         }
 
         var matches = _partners
+            .Concat(_partnersAll)
+            .GroupBy(partner => partner.Id)
+            .Select(group => group.First())
             .Where(partner => string.Equals(partner.DisplayName, normalized, StringComparison.OrdinalIgnoreCase)
                               || string.Equals(partner.Name, normalized, StringComparison.OrdinalIgnoreCase)
                               || string.Equals(partner.Code, normalized, StringComparison.OrdinalIgnoreCase))
             .Take(2)
             .ToList();
         return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private static string NormalizePartnerSearch(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim().ToLowerInvariant();
+    }
+
+    private static bool PartnerMatchesSearch(Partner partner, string normalizedQuery)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedQuery))
+        {
+            return true;
+        }
+
+        return ContainsPartnerText(partner.DisplayName, normalizedQuery)
+               || ContainsPartnerText(partner.Name, normalizedQuery)
+               || ContainsPartnerText(partner.Code, normalizedQuery);
+    }
+
+    private static bool ContainsPartnerText(string? value, string normalizedQuery)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+               && value.Trim().ToLowerInvariant().Contains(normalizedQuery, StringComparison.Ordinal);
+    }
+
+    private static void RestoreComboText(System.Windows.Controls.ComboBox comboBox, string text)
+    {
+        comboBox.Dispatcher.BeginInvoke(() =>
+        {
+            if (comboBox.Template.FindName("PART_EditableTextBox", comboBox) is System.Windows.Controls.TextBox textBox)
+            {
+                if (!string.Equals(textBox.Text, text, StringComparison.Ordinal))
+                {
+                    textBox.Text = text;
+                }
+
+                textBox.CaretIndex = textBox.Text.Length;
+            }
+        });
     }
 
     private bool IsSupplierPartner(long partnerId)

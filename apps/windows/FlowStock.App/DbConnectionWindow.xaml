@@ -18,6 +18,11 @@
                        Foreground="DarkOrange"
                        TextWrapping="Wrap"
                        Visibility="Collapsed" />
+            <TextBlock x:Name="DatabaseEnvironmentOverrideText"
+                       Margin="0,6,0,0"
+                       Foreground="DarkOrange"
+                       TextWrapping="Wrap"
+                       Visibility="Collapsed" />
         </StackPanel>
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <StackPanel>

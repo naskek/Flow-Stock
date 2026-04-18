@@ -32,7 +32,7 @@
 
                 <TextBlock Text="Контрагент" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <ComboBox x:Name="PartnerCombo" Grid.Row="1" Grid.Column="1" DisplayMemberPath="DisplayName"
-                          IsEditable="True" IsTextSearchEnabled="True" TextSearch.TextPath="DisplayName"
+                          IsEditable="True" IsTextSearchEnabled="False" TextSearch.TextPath="DisplayName"
                           StaysOpenOnEdit="True" Margin="0,0,16,6" TabIndex="3" />
                 <TextBlock Text="Статус" Grid.Row="1" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <ComboBox x:Name="StatusCombo" Grid.Row="1" Grid.Column="3" DisplayMemberPath="Name" Margin="0,0,0,6" TabIndex="4" />

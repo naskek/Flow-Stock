@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using FlowStock.Core.Models;
 
@@ -18,6 +19,7 @@ public partial class OperationDetailsWindow : Window
     private readonly ObservableCollection<Location> _locations = new();
     private readonly ObservableCollection<Partner> _partners = new();
     private readonly List<Partner> _partnersAll = new();
+    private readonly Dictionary<long, PartnerStatus> _partnerStatusesById = new();
     private readonly ObservableCollection<DocLineDisplay> _docLines = new();
     private readonly ObservableCollection<OrderOption> _orders = new();
     private readonly List<OrderOption> _ordersAll = new();
@@ -31,6 +33,7 @@ public partial class OperationDetailsWindow : Window
     private DocLineDisplay? _selectedDocLine;
     private OutboundHuCandidate? _selectedOutboundHu;
     private bool _suppressOrderSync;
+    private bool _suppressPartnerFilter;
     private bool _suppressPartialSync;
     private bool _suppressDirtyTracking;
     private bool _isPartialShipment;
@@ -49,6 +52,7 @@ public partial class OperationDetailsWindow : Window
         DocToCombo.ItemsSource = _locations;
         DocPartnerCombo.ItemsSource = _partners;
         DocPartnerCombo.SelectionChanged += DocPartnerCombo_SelectionChanged;
+        DocPartnerCombo.AddHandler(System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent, new TextChangedEventHandler(DocPartnerCombo_TextChanged));
         DocOrderCombo.ItemsSource = _orders;
         DocHuCombo.ItemsSource = _huToOptions;
         DocHuFromCombo.ItemsSource = _huFromOptions;
@@ -108,12 +112,24 @@ public partial class OperationDetailsWindow : Window
         }
 
         _partnersAll.Clear();
+        _partnerStatusesById.Clear();
         var partners = _services.WpfReadApi.TryGetPartners(out var apiPartners)
             ? apiPartners
             : Array.Empty<Partner>();
         foreach (var partner in partners)
         {
             _partnersAll.Add(partner);
+        }
+        if (_services.WpfPartnerApi.TryGetPartners(out var partnerStatusEntries))
+        {
+            foreach (var entry in partnerStatusEntries)
+            {
+                _partnerStatusesById[entry.Partner.Id] = entry.Status;
+                if (_partnersAll.All(partner => partner.Id != entry.Partner.Id))
+                {
+                    _partnersAll.Add(entry.Partner);
+                }
+            }
         }
         ApplyPartnerFilter();
     }
@@ -140,7 +156,7 @@ public partial class OperationDetailsWindow : Window
     private void RefreshOrderList()
     {
         _orders.Clear();
-        var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
+        var partnerId = ResolveDocPartnerFromInput()?.Id;
         foreach (var order in _ordersAll)
         {
             if (_doc?.Type == DocType.Outbound && order.Type != OrderType.Customer)
@@ -193,25 +209,26 @@ public partial class OperationDetailsWindow : Window
         var isInventory = _doc?.Type == DocType.Inventory;
         var isProductionReceipt = _doc?.Type == DocType.ProductionReceipt;
         var isEditable = IsDocEditable();
+        var checkOutboundAvailability = isOutbound && isEditable;
         var receiptRemaining = new Dictionary<long, double>();
         if (isProductionReceipt && _doc?.OrderId.HasValue == true)
         {
             receiptRemaining = GetOrderReceiptRemaining(_doc.OrderId.Value)
                 .ToDictionary(entry => entry.OrderLineId, entry => entry.QtyRemaining);
         }
-        var availableByItem = isOutbound
+        var availableByItem = checkOutboundAvailability
             ? GetItemAvailability()
             : new Dictionary<long, double>();
         var stockRows = isInventory && _services.WpfReadApi.TryGetStockRows(null, out var apiStockRows)
             ? apiStockRows
             : Array.Empty<StockRow>();
-        var requiredByItem = isOutbound
+        var requiredByItem = checkOutboundAvailability
             ? lines.Where(line => line.Qty > 0)
                 .GroupBy(line => line.ItemId)
                 .ToDictionary(group => group.Key, group => group.Sum(line => line.Qty))
             : new Dictionary<long, double>();
         var shortageByItem = new Dictionary<long, double>();
-        if (isOutbound)
+        if (checkOutboundAvailability)
         {
             foreach (var entry in requiredByItem)
             {
@@ -230,7 +247,7 @@ public partial class OperationDetailsWindow : Window
             var packagings = GetPackagings(line.ItemId, packagingLookup);
             var selectedPackaging = ResolvePackaging(packagings, line.UomCode);
             var inputQty = ResolveInputQty(line, selectedPackaging);
-            var hasShortage = isOutbound && shortageByItem.ContainsKey(line.ItemId);
+            var hasShortage = checkOutboundAvailability && shortageByItem.ContainsKey(line.ItemId);
             var huDisplay = ResolveLineHuDisplay(_doc?.Type ?? DocType.Inbound, line);
             var isMarked = KmUiEnabled && itemsById.TryGetValue(line.ItemId, out var item) && item.IsMarked;
             var kmDisplay = string.Empty;
@@ -283,7 +300,7 @@ public partial class OperationDetailsWindow : Window
                 InputQtyDisplay = FormatQty(inputQty),
                 InputUomDisplay = FormatInputUomDisplay(line.UomCode, baseUom, selectedPackaging),
                 BaseQtyDisplay = FormatBaseQty(line),
-                AvailableQty = isOutbound
+                AvailableQty = checkOutboundAvailability
                     ? (availableByItem.TryGetValue(line.ItemId, out var qty) ? qty : 0)
                     : null,
                 HasShortage = hasShortage,
@@ -309,8 +326,8 @@ public partial class OperationDetailsWindow : Window
             });
         }
 
-        _hasOutboundShortage = isOutbound && shortageByItem.Count > 0;
-        _outboundShortageCount = isOutbound ? shortageByItem.Count : 0;
+        _hasOutboundShortage = checkOutboundAvailability && shortageByItem.Count > 0;
+        _outboundShortageCount = checkOutboundAvailability ? shortageByItem.Count : 0;
         _selectedDocLine = null;
         UpdateLineButtons();
         UpdateAvailabilityStatus();
@@ -1308,7 +1325,7 @@ public partial class OperationDetailsWindow : Window
         DocBatchBox.Text = _doc.ProductionBatchNo ?? string.Empty;
         DocCommentBox.Text = _doc.Comment ?? string.Empty;
         UpdatePartialUi();
-        ApplyPartnerFilter();
+        ApplyPartnerFilter(forceIncludePartnerId: _doc.PartnerId);
         DocPartnerCombo.SelectedItem = _partners.FirstOrDefault(p => p.Id == _doc.PartnerId);
         SelectOrderFromDoc(_doc);
         ApplyHeaderLocationsFromLines();
@@ -1478,7 +1495,7 @@ public partial class OperationDetailsWindow : Window
 
     private void DocPartnerCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        if (_suppressOrderSync)
+        if (_suppressOrderSync || _suppressPartnerFilter)
         {
             return;
         }
@@ -1915,7 +1932,7 @@ public partial class OperationDetailsWindow : Window
         _selectedOutboundHu = null;
         UpdateOutboundHuButton();
 
-        if (_doc?.Type != DocType.Outbound || _selectedDocLine == null)
+        if (_doc?.Type != DocType.Outbound || !IsDocEditable() || _selectedDocLine == null)
         {
             OutboundHuPanel.Visibility = Visibility.Collapsed;
             return;
@@ -2017,7 +2034,7 @@ public partial class OperationDetailsWindow : Window
     {
         var isEditable = IsDocEditable();
         var hasId = _doc?.Id > 0;
-        var hasPartner = !IsPartnerRequired() || _doc?.PartnerId != null || DocPartnerCombo.SelectedItem != null;
+        var hasPartner = !IsPartnerRequired() || _doc?.PartnerId != null || ResolveDocPartnerFromInput() != null;
         var hasShortage = _doc?.Type == DocType.Outbound && _hasOutboundShortage;
         DocCloseButton.IsEnabled = isEditable && hasId && hasPartner && !hasShortage;
         DocHeaderSaveButton.IsEnabled = isEditable && _hasUnsavedChanges;
@@ -2265,7 +2282,7 @@ public partial class OperationDetailsWindow : Window
         }
 
         if (!await TryPersistHeaderViaServerAsync(
-                (DocPartnerCombo.SelectedItem as Partner)?.Id,
+                ResolveDocPartnerFromInput()?.Id,
                 selected.Id,
                 null,
                 null,
@@ -2356,7 +2373,7 @@ public partial class OperationDetailsWindow : Window
         {
             var contexts = BuildProductionReceiptBatchContexts(orderId, toLocation?.Id, toHu);
             if (!await TryPersistHeaderViaServerAsync(
-                    (DocPartnerCombo.SelectedItem as Partner)?.Id,
+                    ResolveDocPartnerFromInput()?.Id,
                     orderId,
                     null,
                     null,
@@ -2497,7 +2514,7 @@ public partial class OperationDetailsWindow : Window
             return;
         }
 
-        var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
+        var partnerId = ResolveDocPartnerFromInput()?.Id;
         var saved = await TryPersistHeaderViaServerAsync(
             partnerId,
             null,
@@ -2539,7 +2556,7 @@ public partial class OperationDetailsWindow : Window
             return false;
         }
 
-        var partnerId = (DocPartnerCombo.SelectedItem as Partner)?.Id;
+        var partnerId = ResolveDocPartnerFromInput()?.Id;
         var huCode = _doc.Type == DocType.ProductionReceipt
             ? null
             : GetSelectedHuCode(DocHuCombo);
@@ -2713,35 +2730,126 @@ public partial class OperationDetailsWindow : Window
         }
     }
 
-    private void ApplyPartnerFilter()
+    private void ApplyPartnerFilter(string? query = null, long? forceIncludePartnerId = null)
     {
+        var normalizedQuery = NormalizePartnerSearch(query);
+        var selectedPartnerId = forceIncludePartnerId ?? (DocPartnerCombo.SelectedItem as Partner)?.Id;
+
+        _suppressPartnerFilter = true;
         _partners.Clear();
-        var docType = _doc?.Type;
-        if (_services.WpfPartnerApi.TryGetPartners(out var apiPartners))
+        try
         {
-            foreach (var entry in apiPartners)
+            var docType = _doc?.Type;
+            foreach (var partner in _partnersAll)
             {
-                var partner = _partnersAll.FirstOrDefault(candidate => candidate.Id == entry.Partner.Id) ?? entry.Partner;
-                if (docType == DocType.Inbound && entry.Status == PartnerStatus.Client)
+                var status = _partnerStatusesById.TryGetValue(partner.Id, out var value)
+                    ? value
+                    : PartnerStatus.Both;
+                if (selectedPartnerId.HasValue && partner.Id == selectedPartnerId.Value)
+                {
+                    _partners.Add(partner);
+                    continue;
+                }
+
+                if (docType == DocType.Inbound && status == PartnerStatus.Client)
                 {
                     continue;
                 }
 
-                if (docType == DocType.Outbound && entry.Status == PartnerStatus.Supplier)
+                if (docType == DocType.Outbound && status == PartnerStatus.Supplier)
+                {
+                    continue;
+                }
+
+                if (!PartnerMatchesSearch(partner, normalizedQuery))
                 {
                     continue;
                 }
 
                 _partners.Add(partner);
             }
+        }
+        finally
+        {
+            _suppressPartnerFilter = false;
+        }
+    }
 
+    private void DocPartnerCombo_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressPartnerFilter || _suppressDirtyTracking || !DocPartnerCombo.IsKeyboardFocusWithin)
+        {
             return;
         }
 
-        foreach (var partner in _partnersAll)
+        var text = DocPartnerCombo.Text ?? string.Empty;
+        ApplyPartnerFilter(text);
+        DocPartnerCombo.IsDropDownOpen = !string.IsNullOrWhiteSpace(text) && _partners.Count > 0;
+        RestoreComboText(DocPartnerCombo, text);
+    }
+
+    private Partner? ResolveDocPartnerFromInput()
+    {
+        return FindPartnerByQuery(DocPartnerCombo.Text)
+               ?? (string.IsNullOrWhiteSpace(DocPartnerCombo.Text) ? DocPartnerCombo.SelectedItem as Partner : null);
+    }
+
+    private Partner? FindPartnerByQuery(string? query)
+    {
+        var normalized = (query ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
         {
-            _partners.Add(partner);
+            return null;
         }
+
+        var matches = _partnersAll
+            .Where(partner => string.Equals(partner.DisplayName, normalized, StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(partner.Name, normalized, StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(partner.Code, normalized, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private static string NormalizePartnerSearch(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim().ToLowerInvariant();
+    }
+
+    private static bool PartnerMatchesSearch(Partner partner, string normalizedQuery)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedQuery))
+        {
+            return true;
+        }
+
+        return ContainsPartnerText(partner.DisplayName, normalizedQuery)
+               || ContainsPartnerText(partner.Name, normalizedQuery)
+               || ContainsPartnerText(partner.Code, normalizedQuery);
+    }
+
+    private static bool ContainsPartnerText(string? value, string normalizedQuery)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+               && value.Trim().ToLowerInvariant().Contains(normalizedQuery, StringComparison.Ordinal);
+    }
+
+    private static void RestoreComboText(System.Windows.Controls.ComboBox comboBox, string text)
+    {
+        comboBox.Dispatcher.BeginInvoke(() =>
+        {
+            if (comboBox.Template.FindName("PART_EditableTextBox", comboBox) is System.Windows.Controls.TextBox textBox)
+            {
+                if (!string.Equals(textBox.Text, text, StringComparison.Ordinal))
+                {
+                    textBox.Text = text;
+                }
+
+                textBox.CaretIndex = textBox.Text.Length;
+            }
+        });
     }
 
     private void LoadOrderQuantities(long orderId)

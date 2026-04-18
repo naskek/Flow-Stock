@@ -983,7 +983,7 @@
         var isPending = order && order.is_pending_confirmation;
         return (
           "<tr" +
-          (isPending ? "" : ' data-order="' + escapeHtml(String(order.id)) + '"') +
+          ' data-order="' + escapeHtml(String(order.id)) + '"' +
           ">" +
           "<td>" +
           escapeHtml(order.order_ref || "-") +
@@ -1026,7 +1026,7 @@
 
   function loadOrders(query) {
     var q = String(query || "").trim();
-    var url = "/api/orders?include_internal=1";
+    var url = "/api/orders?include_internal=1&include_pending_requests=1";
     if (q) {
       url += "&q=" + encodeURIComponent(q);
     }
@@ -1086,8 +1086,7 @@
       "    </div>" +
       '    <div class="form-field">' +
       '      <label class="form-label" for="newOrderPartnerInput">Контрагент</label>' +
-      '      <input class="form-input" id="newOrderPartnerInput" type="text" list="newOrderPartnerList" autocomplete="off" placeholder="Введите имя или код" />' +
-      '      <datalist id="newOrderPartnerList"></datalist>' +
+      '      <input class="form-input" id="newOrderPartnerInput" type="text" autocomplete="off" placeholder="Введите имя или код" />' +
       '      <div class="pc-order-line-hint" id="newOrderPartnerHint"></div>' +
       "    </div>" +
       '    <div class="form-field">' +
@@ -1116,7 +1115,6 @@
       closeBtn: modal.querySelector("#newOrderCloseBtn"),
       orderRefInput: modal.querySelector("#newOrderRefInput"),
       partnerInput: modal.querySelector("#newOrderPartnerInput"),
-      partnerDatalist: modal.querySelector("#newOrderPartnerList"),
       partnerHint: modal.querySelector("#newOrderPartnerHint"),
       dueDateInput: modal.querySelector("#newOrderDueDateInput"),
       commentInput: modal.querySelector("#newOrderCommentInput"),
@@ -1128,10 +1126,14 @@
     var items = [];
     var partners = [];
     var linesState = [];
+    var selectedPartnerId = 0;
     var activeSuggestIndex = -1;
     var suggestionOverlay = document.createElement("div");
     suggestionOverlay.className = "pc-order-suggest pc-order-suggest-floating";
     document.body.appendChild(suggestionOverlay);
+    var partnerSuggestionOverlay = document.createElement("div");
+    partnerSuggestionOverlay.className = "pc-order-suggest pc-order-suggest-floating";
+    document.body.appendChild(partnerSuggestionOverlay);
 
     function setStatus(text) {
       if (refs.statusEl) {
@@ -1150,11 +1152,21 @@
       suggestionOverlay.style.maxHeight = "";
     }
 
-    function positionSuggestionOverlay(queryEl) {
+    function hidePartnerSuggestionOverlay() {
+      partnerSuggestionOverlay.classList.remove("is-open");
+      partnerSuggestionOverlay.innerHTML = "";
+      partnerSuggestionOverlay.style.left = "";
+      partnerSuggestionOverlay.style.top = "";
+      partnerSuggestionOverlay.style.width = "";
+      partnerSuggestionOverlay.style.maxHeight = "";
+    }
+
+    function positionSuggestionOverlay(queryEl, overlay) {
       if (!queryEl) {
         return;
       }
 
+      var targetOverlay = overlay || suggestionOverlay;
       var rect = queryEl.getBoundingClientRect();
       var viewportMargin = 12;
       var maxWidth = Math.max(180, window.innerWidth - viewportMargin * 2);
@@ -1178,10 +1190,10 @@
       }
       top = Math.max(viewportMargin, top);
 
-      suggestionOverlay.style.left = left + "px";
-      suggestionOverlay.style.top = top + "px";
-      suggestionOverlay.style.width = width + "px";
-      suggestionOverlay.style.maxHeight = maxHeight + "px";
+      targetOverlay.style.left = left + "px";
+      targetOverlay.style.top = top + "px";
+      targetOverlay.style.width = width + "px";
+      targetOverlay.style.maxHeight = maxHeight + "px";
     }
 
     function showSuggestionOverlay(index, queryEl, filteredItems, selectedId) {
@@ -1196,6 +1208,18 @@
       suggestionOverlay.innerHTML = buildItemSuggestionList(source, selectedId);
       suggestionOverlay.classList.add("is-open");
       positionSuggestionOverlay(queryEl);
+    }
+
+    function showPartnerSuggestionOverlay(queryEl, filteredPartners) {
+      var source = Array.isArray(filteredPartners) ? filteredPartners : [];
+      if (!queryEl || !source.length) {
+        hidePartnerSuggestionOverlay();
+        return;
+      }
+
+      partnerSuggestionOverlay.innerHTML = buildPartnerSuggestionList(source, selectedPartnerId);
+      partnerSuggestionOverlay.classList.add("is-open");
+      positionSuggestionOverlay(queryEl, partnerSuggestionOverlay);
     }
 
     function syncSuggestionOverlay() {
@@ -1221,6 +1245,22 @@
       showSuggestionOverlay(activeSuggestIndex, queryEl, filtered, line.item_id);
     }
 
+    function syncPartnerSuggestionOverlay() {
+      if (!refs.partnerInput || document.activeElement !== refs.partnerInput) {
+        hidePartnerSuggestionOverlay();
+        return;
+      }
+
+      var query = String(refs.partnerInput.value || "").trim();
+      var filtered = query ? filterPartners(query) : [];
+      if (!query || !filtered.length || findPartnerByQuery(query)) {
+        hidePartnerSuggestionOverlay();
+        return;
+      }
+
+      showPartnerSuggestionOverlay(refs.partnerInput, filtered);
+    }
+
     function applySuggestedItem(index, selectedId) {
       if (!linesState[index]) {
         return;
@@ -1243,12 +1283,18 @@
 
     function close() {
       window.removeEventListener("resize", syncSuggestionOverlay);
+      window.removeEventListener("resize", syncPartnerSuggestionOverlay);
       if (refs.card) {
         refs.card.removeEventListener("scroll", syncSuggestionOverlay);
+        refs.card.removeEventListener("scroll", syncPartnerSuggestionOverlay);
       }
       hideSuggestionOverlay();
+      hidePartnerSuggestionOverlay();
       if (suggestionOverlay && suggestionOverlay.parentNode) {
         suggestionOverlay.parentNode.removeChild(suggestionOverlay);
+      }
+      if (partnerSuggestionOverlay && partnerSuggestionOverlay.parentNode) {
+        partnerSuggestionOverlay.parentNode.removeChild(partnerSuggestionOverlay);
       }
       if (modal && modal.parentNode) {
         modal.parentNode.removeChild(modal);
@@ -1260,17 +1306,6 @@
         return "";
       }
       return partner.code ? partner.code + " — " + (partner.name || "") : partner.name || "";
-    }
-
-    function buildPartnerOptions() {
-      if (!refs.partnerDatalist) {
-        return;
-      }
-      refs.partnerDatalist.innerHTML = partners
-        .map(function (partner) {
-          return '<option value="' + escapeHtml(buildPartnerLabel(partner)) + '"></option>';
-        })
-        .join("");
     }
 
     function findPartnerByQuery(query) {
@@ -1294,16 +1329,126 @@
       return exactCount === 1 ? exact : null;
     }
 
+    function getPartnerById(partnerId) {
+      var targetId = Number(partnerId);
+      if (!targetId) {
+        return null;
+      }
+
+      for (var i = 0; i < partners.length; i += 1) {
+        if (Number(partners[i].id) === targetId) {
+          return partners[i];
+        }
+      }
+      return null;
+    }
+
+    function getPartnerMatchRank(partner, normalizedQuery) {
+      var code = normalizeText(partner.code);
+      var name = normalizeText(partner.name);
+      var label = normalizeText(buildPartnerLabel(partner));
+
+      if (code && code === normalizedQuery) {
+        return 0;
+      }
+      if (name && name === normalizedQuery) {
+        return 1;
+      }
+      if (code && code.indexOf(normalizedQuery) === 0) {
+        return 2;
+      }
+      if (name && name.indexOf(normalizedQuery) === 0) {
+        return 3;
+      }
+      if (label && label.indexOf(normalizedQuery) !== -1) {
+        return 4;
+      }
+      return -1;
+    }
+
+    function filterPartners(query) {
+      var normalized = normalizeText(query);
+      if (!normalized) {
+        return partners.slice(0, 50);
+      }
+
+      var ranked = [];
+      partners.forEach(function (partner) {
+        var rank = getPartnerMatchRank(partner, normalized);
+        if (rank < 0) {
+          return;
+        }
+        ranked.push({
+          partner: partner,
+          rank: rank,
+          code: normalizeText(partner.code),
+          name: normalizeText(partner.name),
+        });
+      });
+
+      ranked.sort(function (left, right) {
+        if (left.rank !== right.rank) {
+          return left.rank - right.rank;
+        }
+        if (left.name !== right.name) {
+          return left.name < right.name ? -1 : 1;
+        }
+        if (left.code !== right.code) {
+          return left.code < right.code ? -1 : 1;
+        }
+        return (Number(left.partner.id) || 0) - (Number(right.partner.id) || 0);
+      });
+
+      return ranked.slice(0, 50).map(function (entry) {
+        return entry.partner;
+      });
+    }
+
+    function buildPartnerSuggestionList(filteredPartners, selectedId) {
+      var source = Array.isArray(filteredPartners) ? filteredPartners.slice(0, 30) : [];
+      return source
+        .map(function (partner) {
+          var selected = Number(selectedId) === Number(partner.id) ? " is-selected" : "";
+          return (
+            '<button class="pc-order-suggest-partner' +
+            selected +
+            '" type="button" data-partner-id="' +
+            escapeHtml(String(partner.id)) +
+            '">' +
+            escapeHtml(buildPartnerLabel(partner)) +
+            "</button>"
+          );
+        })
+        .join("");
+    }
+
     function updatePartnerHint() {
       if (!refs.partnerInput || !refs.partnerHint) {
         return;
       }
       var value = String(refs.partnerInput.value || "").trim();
       if (!value) {
+        selectedPartnerId = 0;
+        hidePartnerSuggestionOverlay();
         refs.partnerHint.textContent = "";
         return;
       }
       var partner = findPartnerByQuery(value);
+      if (partner) {
+        selectedPartnerId = Number(partner.id) || 0;
+        hidePartnerSuggestionOverlay();
+        refs.partnerHint.textContent = "";
+        return;
+      }
+
+      var filtered = filterPartners(value);
+      var shouldOpen = filtered.length > 0 && document.activeElement === refs.partnerInput;
+      if (shouldOpen) {
+        showPartnerSuggestionOverlay(refs.partnerInput, filtered);
+      } else {
+        hidePartnerSuggestionOverlay();
+      }
+
       refs.partnerHint.textContent = partner ? "" : "Выберите контрагента из выпадающего списка.";
     }
 
@@ -1314,9 +1459,23 @@
 
       var partner = findPartnerByQuery(refs.partnerInput.value);
       if (partner) {
+        selectedPartnerId = Number(partner.id) || 0;
         refs.partnerInput.value = buildPartnerLabel(partner);
       }
       updatePartnerHint();
+    }
+
+    function applySuggestedPartner(selectedId) {
+      var partner = getPartnerById(selectedId);
+      if (!partner || !refs.partnerInput) {
+        return;
+      }
+
+      selectedPartnerId = Number(partner.id) || 0;
+      refs.partnerInput.value = buildPartnerLabel(partner);
+      hidePartnerSuggestionOverlay();
+      updatePartnerHint();
+      refs.partnerInput.focus();
     }
 
     function buildItemLabel(item) {
@@ -1630,7 +1789,10 @@
 
     function submit() {
       var orderRef = refs.orderRefInput && refs.orderRefInput.value ? refs.orderRefInput.value.trim() : "";
-      var selectedPartner = refs.partnerInput ? findPartnerByQuery(refs.partnerInput.value) : null;
+      var selectedPartner = selectedPartnerId ? getPartnerById(selectedPartnerId) : null;
+      if (!selectedPartner && refs.partnerInput) {
+        selectedPartner = findPartnerByQuery(refs.partnerInput.value);
+      }
       var partnerId = selectedPartner ? Number(selectedPartner.id) : 0;
       var dueDate = refs.dueDateInput ? String(refs.dueDateInput.value || "").trim() : "";
       var comment = refs.commentInput ? String(refs.commentInput.value || "").trim() : "";
@@ -1727,10 +1889,11 @@
       refs.partnerInput.addEventListener("input", updatePartnerHint);
       refs.partnerInput.addEventListener("change", applyPartnerInputSelection);
       refs.partnerInput.addEventListener("blur", applyPartnerInputSelection);
+      refs.partnerInput.addEventListener("focus", updatePartnerHint);
     }
-      if (refs.submitBtn) {
-        refs.submitBtn.addEventListener("click", submit);
-      }
+    if (refs.submitBtn) {
+      refs.submitBtn.addEventListener("click", submit);
+    }
     suggestionOverlay.addEventListener("mousedown", function (event) {
       var target = event.target;
       while (
@@ -1753,9 +1916,32 @@
 
       applySuggestedItem(index, selectedId);
     });
+    partnerSuggestionOverlay.addEventListener("mousedown", function (event) {
+      var target = event.target;
+      while (
+        target &&
+        target !== partnerSuggestionOverlay &&
+        !(target.classList && target.classList.contains("pc-order-suggest-partner"))
+      ) {
+        target = target.parentNode;
+      }
+      if (!target || target === partnerSuggestionOverlay) {
+        return;
+      }
+
+      event.preventDefault();
+      var selectedId = Number(target.getAttribute("data-partner-id")) || 0;
+      if (!selectedId) {
+        return;
+      }
+
+      applySuggestedPartner(selectedId);
+    });
     window.addEventListener("resize", syncSuggestionOverlay);
+    window.addEventListener("resize", syncPartnerSuggestionOverlay);
     if (refs.card) {
       refs.card.addEventListener("scroll", syncSuggestionOverlay);
+      refs.card.addEventListener("scroll", syncPartnerSuggestionOverlay);
     }
 
     if (refs.orderRefInput) {
@@ -1775,7 +1961,7 @@
           return left < right ? -1 : left > right ? 1 : 0;
         });
 
-        buildPartnerOptions();
+        updatePartnerHint();
         linesState = [{ item_id: 0, qty_ordered: 1, query: "" }];
         if (refs.orderRefInput) {
           refs.orderRefInput.value = nextOrderRef || "";
@@ -1793,8 +1979,9 @@
   }
 
   function openOrderModal(order, onSubmitted) {
+    var isPending = order && order.is_pending_confirmation;
     var currentStatusCode = toOrderStatusCode(order.status);
-    var canChangeStatus = currentStatusCode === "ACCEPTED" || currentStatusCode === "IN_PROGRESS";
+    var canChangeStatus = !isPending && (currentStatusCode === "ACCEPTED" || currentStatusCode === "IN_PROGRESS");
     var isInternalOrder = String(order.order_type || "").trim().toUpperCase() === "INTERNAL";
     var modal = document.createElement("div");
     modal.className = "pc-modal";
@@ -1830,7 +2017,9 @@
           "      </select>" +
           '      <button class="btn" type="button" id="orderStatusRequestBtn">Отправить заявку</button>' +
           "    </div>"
-        : '    <div class="pc-status">Статус этого заказа нельзя менять из веб-интерфейса.</div>') +
+        : '    <div class="pc-status">' +
+          (isPending ? "Заказ ожидает подтверждения в WPF." : "Статус этого заказа нельзя менять из веб-интерфейса.") +
+          "</div>") +
       '    <div id="orderRequestStatus" class="status"></div>' +
       "  </div>" +
       '  <div id="orderLinesWrap" class="pc-status" style="margin-top:12px;">Загрузка строк...</div>' +
@@ -1903,7 +2092,11 @@
       });
     }
 
-    fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines")
+    var linesPromise = isPending
+      ? Promise.resolve(Array.isArray(order.lines) ? order.lines : [])
+      : fetchJson("/api/orders/" + encodeURIComponent(order.id) + "/lines");
+
+    linesPromise
       .then(function (lines) {
         var wrap = modal.querySelector("#orderLinesWrap");
         if (!wrap) {

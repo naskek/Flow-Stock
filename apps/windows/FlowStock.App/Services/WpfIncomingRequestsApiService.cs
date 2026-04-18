@@ -310,7 +310,7 @@ public sealed class WpfIncomingRequestsApiService
         {
             Id = ReadInt64(element, "id"),
             RequestType = ReadString(element, "request_type") ?? OrderRequestType.CreateOrder,
-            PayloadJson = ReadString(element, "payload_json") ?? "{}",
+            PayloadJson = ReadPayloadJson(element, "payload_json"),
             Status = ReadString(element, "status") ?? OrderRequestStatus.Pending,
             CreatedAt = ReadDateTime(element, "created_at"),
             CreatedByLogin = ReadString(element, "created_by_login"),
@@ -329,18 +329,47 @@ public sealed class WpfIncomingRequestsApiService
             : null;
     }
 
+    private static string ReadPayloadJson(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return "{}";
+        }
+
+        return value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? "{}"
+            : value.GetRawText();
+    }
+
     private static long ReadInt64(JsonElement element, string propertyName)
     {
-        return element.TryGetProperty(propertyName, out var value) && value.TryGetInt64(out var parsed)
+        return TryReadInt64(element, propertyName, out var parsed)
             ? parsed
             : 0L;
     }
 
     private static long? ReadNullableInt64(JsonElement element, string propertyName)
     {
-        return element.TryGetProperty(propertyName, out var value) && value.TryGetInt64(out var parsed)
+        return TryReadInt64(element, propertyName, out var parsed)
             ? parsed
             : null;
+    }
+
+    private static bool TryReadInt64(JsonElement element, string propertyName, out long value)
+    {
+        value = 0L;
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind == JsonValueKind.Null)
+        {
+            return false;
+        }
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out value))
+        {
+            return true;
+        }
+
+        return property.ValueKind == JsonValueKind.String
+               && long.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
     }
 
     private static int ReadInt32(JsonElement element, string propertyName)

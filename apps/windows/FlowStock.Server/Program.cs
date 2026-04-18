@@ -1571,6 +1571,8 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
     var normalized = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
     var includeInternal = string.Equals(request.Query["include_internal"], "1", StringComparison.OrdinalIgnoreCase)
                           || string.Equals(request.Query["include_internal"], "true", StringComparison.OrdinalIgnoreCase);
+    var includePendingRequests = string.Equals(request.Query["include_pending_requests"], "1", StringComparison.OrdinalIgnoreCase)
+                                 || string.Equals(request.Query["include_pending_requests"], "true", StringComparison.OrdinalIgnoreCase);
 
     var orderService = new OrderService(store);
     var orders = orderService.GetOrders();
@@ -1592,8 +1594,11 @@ app.MapGet("/api/orders", (HttpRequest request, IDataStore store) =>
     }
 
     var list = orders.Select(MapOrder).ToList();
-    var pendingCreateOrders = GetPendingCreateOrderRows(store, normalized);
-    list.AddRange(pendingCreateOrders);
+    if (includePendingRequests)
+    {
+        var pendingCreateOrders = GetPendingCreateOrderRows(store, normalized);
+        list.AddRange(pendingCreateOrders);
+    }
     return Results.Ok(list);
 });
 
@@ -2849,6 +2854,7 @@ static List<object> GetPendingCreateOrderRows(IDataStore store, string? normaliz
         var dueDate = TryReadJsonString(request.PayloadJson, "due_date");
         var partnerName = partner?.Name ?? string.Empty;
         var partnerCode = partner?.Code ?? string.Empty;
+        var lines = TryReadPendingCreateOrderLines(store, request.PayloadJson);
 
         if (!string.IsNullOrWhiteSpace(normalizedQuery)
             && !orderRef.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)
@@ -2872,11 +2878,54 @@ static List<object> GetPendingCreateOrderRows(IDataStore store, string? normaliz
             status_code = "PENDING_CONFIRMATION",
             created_at = request.CreatedAt.ToString("O", CultureInfo.InvariantCulture),
             shipped_at = (string?)null,
-            is_pending_confirmation = true
+            is_pending_confirmation = true,
+            lines
         });
     }
 
     return rows;
+}
+
+static List<object> TryReadPendingCreateOrderLines(IDataStore store, string json)
+{
+    var result = new List<object>();
+    try
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty("lines", out var linesElement)
+            || linesElement.ValueKind != JsonValueKind.Array)
+        {
+            return result;
+        }
+
+        foreach (var lineElement in linesElement.EnumerateArray())
+        {
+            var itemId = TryReadJsonElementInt64(lineElement, "item_id");
+            if (!itemId.HasValue || itemId.Value <= 0)
+            {
+                continue;
+            }
+
+            var item = store.FindItemById(itemId.Value);
+            result.Add(new
+            {
+                item_id = itemId.Value,
+                item_name = item?.Name ?? $"ID={itemId.Value}",
+                barcode = item?.Barcode,
+                gtin = item?.Gtin,
+                qty_ordered = TryReadJsonElementDouble(lineElement, "qty_ordered") ?? 0d,
+                qty_shipped = 0d,
+                qty_produced = 0d,
+                qty_left = TryReadJsonElementDouble(lineElement, "qty_ordered") ?? 0d
+            });
+        }
+    }
+    catch (JsonException)
+    {
+        return result;
+    }
+
+    return result;
 }
 
 static string? TryReadJsonString(string json, string propertyName)
@@ -2921,6 +2970,48 @@ static long? TryReadJsonInt64(string json, string propertyName)
     catch (JsonException)
     {
         return null;
+    }
+
+    return null;
+}
+
+static long? TryReadJsonElementInt64(JsonElement element, string propertyName)
+{
+    if (!element.TryGetProperty(propertyName, out var property))
+    {
+        return null;
+    }
+
+    if (property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out var number))
+    {
+        return number;
+    }
+
+    if (property.ValueKind == JsonValueKind.String
+        && long.TryParse(property.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed))
+    {
+        return parsed;
+    }
+
+    return null;
+}
+
+static double? TryReadJsonElementDouble(JsonElement element, string propertyName)
+{
+    if (!element.TryGetProperty(propertyName, out var property))
+    {
+        return null;
+    }
+
+    if (property.ValueKind == JsonValueKind.Number && property.TryGetDouble(out var number))
+    {
+        return number;
+    }
+
+    if (property.ValueKind == JsonValueKind.String
+        && double.TryParse(property.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+    {
+        return parsed;
     }
 
     return null;

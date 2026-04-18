@@ -31,6 +31,14 @@ public partial class DbConnectionWindow : Window
         "FLOWSTOCK_SERVER_CLOSE_TIMEOUT_SECONDS",
         "FLOWSTOCK_SERVER_ALLOW_INVALID_TLS"
     };
+    private static readonly string[] PostgresEnvironmentKeys =
+    {
+        "FLOWSTOCK_PG_HOST",
+        "FLOWSTOCK_PG_PORT",
+        "FLOWSTOCK_PG_DB",
+        "FLOWSTOCK_PG_USER",
+        "FLOWSTOCK_PG_PASSWORD"
+    };
     private const string LoopbackHost = "127.0.0.1";
 
     public DbConnectionWindow(AppServices services, bool requireConnectionOnStartup = false)
@@ -45,6 +53,7 @@ public partial class DbConnectionWindow : Window
         CurrentTargetText.Text = effective.IsConfigured
             ? $"{effective.Host}:{effective.Port}/{effective.Database} ({effective.Username})"
             : "не настроено";
+        RefreshDatabaseOverrideStatus(effective);
         StartupModeText.Visibility = _requireConnectionOnStartup ? Visibility.Visible : Visibility.Collapsed;
         if (_requireConnectionOnStartup)
         {
@@ -91,6 +100,21 @@ public partial class DbConnectionWindow : Window
             return;
         }
 
+        if (HasBlockingPostgresEnvironmentOverride(input, out var overrideMessage))
+        {
+            MessageBox.Show(
+                overrideMessage,
+                "Подключение к БД",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!ConfirmApiTargetMatchesDatabase(input))
+        {
+            return;
+        }
+
         _settings.Postgres ??= new PostgresSettings();
         _settings.Postgres.Host = input.Host;
         _settings.Postgres.Port = input.Port.ToString(CultureInfo.InvariantCulture);
@@ -100,38 +124,13 @@ public partial class DbConnectionWindow : Window
 
         _services.Settings.Save(_settings);
 
-        if (_requireConnectionOnStartup)
-        {
-            MessageBox.Show(
-                "Настройки сохранены. Приложение будет перезапущено.",
-                "Подключение к БД",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            RestartApplication();
-            return;
-        }
-
-        var message = BuildSuccessMessage(diagnostics)
-                      + $"{Environment.NewLine}{Environment.NewLine}Применить сейчас? Приложение будет перезапущено.";
-        var applyNow = MessageBox.Show(
-            message,
+        MessageBox.Show(
+            BuildSuccessMessage(diagnostics)
+            + $"{Environment.NewLine}{Environment.NewLine}Настройки сохранены. Приложение будет перезапущено.",
             "Подключение к БД",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question,
-            MessageBoxResult.No);
-
-        if (applyNow == MessageBoxResult.Yes)
-        {
-            RestartApplication();
-        }
-        else
-        {
-            MessageBox.Show(
-                "Настройки сохранены. Перезапустите приложение, чтобы применить изменения.",
-                "Подключение к БД",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-        }
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+        RestartApplication();
     }
 
     private void TestConnection_Click(object sender, RoutedEventArgs e)
@@ -218,7 +217,7 @@ public partial class DbConnectionWindow : Window
         ApiWriteModeText.Text = "API-only write-path: заказы, подтверждение входящих веб-заявок, создание/проведение документов и строки документов.";
         var effective = _services.WpfCloseDocuments.GetEffectiveConfiguration();
         ApiWriteCoverageText.Text =
-            $"Effective API target: {effective.BaseUrl} | device: {effective.DeviceId} | timeout: {effective.CloseTimeoutSeconds}s | TLS override: {(effective.AllowInvalidTls ? "dev-only enabled" : "strict")}";
+            $"Effective DB: {_services.DatabasePath} | Effective API target: {effective.BaseUrl} | device: {effective.DeviceId} | timeout: {effective.CloseTimeoutSeconds}s | TLS override: {(effective.AllowInvalidTls ? "dev-only enabled" : "strict")}";
         ConfigLoadedText.Text = $"Config loaded: {(File.Exists(_services.SettingsPath) ? "yes" : "no")}";
 
         var overrides = GetServerEnvironmentOverrides();
@@ -582,6 +581,83 @@ public partial class DbConnectionWindow : Window
         return new EffectiveConfig(normalizedHost, port, database, user, isConfigured);
     }
 
+    private void RefreshDatabaseOverrideStatus(EffectiveConfig effective)
+    {
+        var overrides = GetPostgresEnvironmentOverrides();
+        if (overrides.Count == 0)
+        {
+            DatabaseEnvironmentOverrideText.Visibility = Visibility.Collapsed;
+            DatabaseEnvironmentOverrideText.Text = string.Empty;
+            return;
+        }
+
+        var target = effective.IsConfigured
+            ? $"{effective.Host}:{effective.Port}/{effective.Database} ({effective.Username})"
+            : "не настроено";
+        DatabaseEnvironmentOverrideText.Text =
+            $"Environment override active: {string.Join(", ", overrides)}. Активное подключение к БД берется из переменных окружения, а не из settings.json. Effective DB: {target}.";
+        DatabaseEnvironmentOverrideText.Visibility = Visibility.Visible;
+    }
+
+    private bool HasBlockingPostgresEnvironmentOverride(ConnectionInput input, out string message)
+    {
+        message = string.Empty;
+        var overrides = GetPostgresEnvironmentOverrides();
+        if (overrides.Count == 0)
+        {
+            return false;
+        }
+
+        var effective = GetEffectiveConfig();
+        var sameTarget =
+            string.Equals(NormalizeHost(effective.Host ?? string.Empty), NormalizeHost(input.Host), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(effective.Port ?? string.Empty, input.Port.ToString(CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(effective.Database ?? string.Empty, input.Database, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(effective.Username ?? string.Empty, input.Username, StringComparison.OrdinalIgnoreCase);
+
+        var envPassword = Environment.GetEnvironmentVariable("FLOWSTOCK_PG_PASSWORD");
+        var samePassword = string.IsNullOrWhiteSpace(envPassword) || string.Equals(envPassword, input.Password, StringComparison.Ordinal);
+
+        if (sameTarget && samePassword)
+        {
+            return false;
+        }
+
+        message =
+            "Переключение БД не будет применено, потому что активны переменные окружения PostgreSQL: "
+            + string.Join(", ", overrides)
+            + Environment.NewLine
+            + "Они имеют приоритет над %APPDATA%\\FlowStock\\settings.json. Уберите эти переменные из процесса/ярлыка/терминала и запустите WPF заново.";
+        return true;
+    }
+
+    private bool ConfirmApiTargetMatchesDatabase(ConnectionInput input)
+    {
+        var rawServerUrl = ServerBaseUrlBox.Text?.Trim();
+        if (!FlowStockUrlHelper.TryNormalizeRootUrl(rawServerUrl, Uri.UriSchemeHttps, out var normalizedServerUrl, out _)
+            || !Uri.TryCreate(normalizedServerUrl, UriKind.Absolute, out var serverUri))
+        {
+            return true;
+        }
+
+        if (AreEquivalentHosts(input.Host, serverUri.Host))
+        {
+            return true;
+        }
+
+        var result = MessageBox.Show(
+            $"БД выбрана: {NormalizeHost(input.Host)}:{input.Port}/{input.Database}{Environment.NewLine}"
+            + $"Server API URL: {normalizedServerUrl}{Environment.NewLine}{Environment.NewLine}"
+            + "Часть WPF уже работает через Server API. Эти операции записи пойдут в указанный Server API, а не напрямую в выбранную БД. "
+            + "Если это разные стенды, данные будут расходиться. Продолжить?",
+            "Проверка стенда FlowStock",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+
+        return result == MessageBoxResult.Yes;
+    }
+
     private static string? ReadEnvOrSettings(string envKey, string? settingsValue)
     {
         var value = Environment.GetEnvironmentVariable(envKey);
@@ -643,6 +719,40 @@ public partial class DbConnectionWindow : Window
         }
 
         return overrides;
+    }
+
+    private static List<string> GetPostgresEnvironmentOverrides()
+    {
+        var overrides = new List<string>();
+        foreach (var key in PostgresEnvironmentKeys)
+        {
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(key)))
+            {
+                overrides.Add(key);
+            }
+        }
+
+        return overrides;
+    }
+
+    private static bool AreEquivalentHosts(string left, string right)
+    {
+        var normalizedLeft = NormalizeHost(left.Trim());
+        var normalizedRight = NormalizeHost(right.Trim());
+
+        if (IsLoopback(normalizedLeft) && IsLoopback(normalizedRight))
+        {
+            return true;
+        }
+
+        return string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsLoopback(string host)
+    {
+        return string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(host, "::1", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed record EffectiveConfig(string? Host, string? Port, string? Database, string? Username, bool IsConfigured);

@@ -300,7 +300,8 @@ body.pc-body {
   z-index: 120;
 }
 
-.pc-order-suggest-item {
+.pc-order-suggest-item,
+.pc-order-suggest-partner {
   width: 100%;
   border: 0;
   border-bottom: 1px solid #ebf1f5;
@@ -313,15 +314,18 @@ body.pc-body {
   cursor: pointer;
 }
 
-.pc-order-suggest-item:last-child {
+.pc-order-suggest-item:last-child,
+.pc-order-suggest-partner:last-child {
   border-bottom: 0;
 }
 
-.pc-order-suggest-item:hover {
+.pc-order-suggest-item:hover,
+.pc-order-suggest-partner:hover {
   background: #f4f8fb;
 }
 
-.pc-order-suggest-item.is-selected {
+.pc-order-suggest-item.is-selected,
+.pc-order-suggest-partner.is-selected {
   background: #e8f3f8;
   color: #103447;
 }
